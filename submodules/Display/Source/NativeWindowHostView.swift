@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AccessModeUI
 import SwiftSignalKit
 
 private let orientationChangeDuration: Double = UIDevice.current.userInterfaceIdiom == .pad ? 0.4 : 0.3
@@ -241,7 +242,7 @@ private final class WindowRootViewController: UIViewController {
     }
 }
 
-private final class NativeWindow: UIWindow, WindowHost {
+private final class NativeWindow: SnapshotProtectedWindow, WindowHost {
     var updateSize: ((CGSize) -> Void)?
     var layoutSubviewsEvent: (() -> Void)?
     var updateIsUpdatingOrientationLayout: ((Bool) -> Void)?
@@ -355,6 +356,7 @@ private final class NativeWindow: UIWindow, WindowHost {
     }
     
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !self.isSnapshotProtected, self.isUserInteractionEnabled else { return nil }
         return self.hitTestImpl?(point, event)
     }
     
@@ -383,7 +385,7 @@ private final class NativeWindow: UIWindow, WindowHost {
     }
 }
 
-public func nativeWindowHostView() -> (UIWindow & WindowHost, WindowHostView) {
+public func nativeWindowHostView() -> (SnapshotProtectedWindow & WindowHost, WindowHostView) {
     let window = NativeWindow(frame: UIScreen.main.bounds)
     
     let rootViewController = WindowRootViewController()

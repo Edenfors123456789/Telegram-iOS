@@ -1,4 +1,5 @@
 import UIKit
+import AccessModeUI
 import SwiftSignalKit
 import Display
 import TelegramCore
@@ -240,7 +241,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
 @objc(AppDelegate) class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, UNUserNotificationCenterDelegate, URLSessionDelegate, URLSessionTaskDelegate {
     @objc var window: UIWindow?
-    var nativeWindow: (UIWindow & WindowHost)?
+    var nativeWindow: (SnapshotProtectedWindow & WindowHost)?
+    private let nativeSnapshotCover = NativeSnapshotCover()
+    private var nativeSnapshotTicket: NativeSnapshotTicket?
     var mainWindow: Window1!
     private var statusBarHost: ApplicationStatusBarHost?
     private var dataImportSplash: LegacyDataImportSplash?
@@ -2010,6 +2013,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     func handleWillResignActive() {
         // SceneDelegate calls synchronously before iOS captures the app snapshot.
+        if let window = self.nativeWindow {
+            self.nativeSnapshotTicket = self.nativeSnapshotCover.show(on: window)
+            window.endEditing(true)
+        }
         self.appLockContextImpl?.lock()
         self.isActiveValue = false
         self.isActivePromise.set(false)
@@ -2117,10 +2124,33 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func handleDidBecomeActive() {
+        if self.nativeSnapshotTicket != nil {
+            // Establish the internal lock barrier before the native cover can leave.
+            self.appLockContextImpl?.lock()
+        }
         self.isInForegroundValue = true
         self.isInForegroundPromise.set(true)
         self.isActiveValue = true
         self.isActivePromise.set(true)
+
+        if let ticket = self.nativeSnapshotTicket {
+            Queue.mainQueue().async { [weak self] in
+                guard let self, self.isActiveValue else { return }
+                let revealPIN: () -> Void = { [weak self] in
+                    guard let self, self.isActiveValue else { return }
+                    if self.nativeSnapshotCover.hide(ticket) {
+                        self.nativeSnapshotTicket = nil
+                    }
+                }
+                // Native share/payment/preview sheets can sit above Telegram's
+                // container. Retain the native barrier until their UI is dismissed.
+                if let controller = self.window?.rootViewController, controller.presentedViewController != nil {
+                    controller.dismiss(animated: false, completion: revealPIN)
+                } else {
+                    revealPIN()
+                }
+            }
+        }
 
         self.resetBadge()
         

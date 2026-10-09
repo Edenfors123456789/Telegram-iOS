@@ -10,6 +10,7 @@ swift_library(
         "-warnings-as-errors",
     ],
     deps = [
+        "//submodules/AccessModeUI",
     	"//submodules/ObjCRuntimeUtils:ObjCRuntimeUtils",
     	"//submodules/UIKitRuntimeUtils:UIKitRuntimeUtils",
         "//submodules/AppBundle:AppBundle",

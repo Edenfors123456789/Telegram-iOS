@@ -1,6 +1,8 @@
 # Integration and leakage matrix
 
-Reference source: upstream `f1dd7a2dbd02cbbf513e75d5695d8d36d1cf5838`. Paths are repository-relative. This is a verified source inventory; **all feature enforcement below is pending**. Core unit tests cannot establish coverage of these UI/extension surfaces.
+Reference source: upstream `f1dd7a2dbd02cbbf513e75d5695d8d36d1cf5838`. Paths are repository-relative. This is a verified source inventory; the table describes required acceptance, not completed coverage. Credential/policy foundations, opaque covers, immediate lifecycle locking and an optional standard PIN adapter have verified checkpoints. Dual PIN activation, fresh role roots and all account/history/extension gates remain incomplete. Core unit tests cannot establish coverage of these UI/extension surfaces.
+
+The app-owned native `SnapshotProtectedWindow` now keeps an opaque cover above newly added and reordered native views, blocks delegated touches and hides window accessibility during inactivity. `AppDelegate` installs it synchronously before its internal lock barrier; a generation ticket protects delayed foreground/modal-dismiss callbacks. Hosted tests exercise pixel opacity and the actual Telegram native host. This does not establish a physical app-switcher, keyboard/system-window, multi-scene or authenticated A-to-B frame guarantee. Fresh-root construction and the full iPhone matrix are still required.
 
 | Surface | Actual integration paths | Required enforcement / acceptance |
 |---|---|---|
