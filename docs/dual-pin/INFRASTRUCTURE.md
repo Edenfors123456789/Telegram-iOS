@@ -1,6 +1,6 @@
 # AccessModeCore integration contract
 
-Status: stage-2 foundation verified; not wired to Telegram's UI, history, account manager or notification services. This module alone does not provide Dual PIN behavior in the running app.
+Status: stage-2 foundation verified, with partial stage-3 PIN/AppLock/account/root adapters. Startup/configuration activation, native enrollment/management and history/notification integration remain incomplete. This module and the dormant adapters do not yet provide Dual PIN behavior in the running app.
 
 ## Authentication and configuration
 
@@ -16,7 +16,7 @@ Keep credential verification/file transactions off the main thread. File-backed 
 
 At PIN submission call `preparePINRequest` synchronously before dispatch, then `beginUnlock(pin:request:)` off the main thread. The single-use request binds the exact coordinator/generation; a later lock makes queued work unable to begin. Cancel a discarded result using `cancelPreparation(ticket)`: stale tickets have no effect, the current preparation locks, an active ticket cannot be cancelled through this API. `cooldownRemaining` exposes only the neutral shortest all-blocked cooldown, no role label/budget.
 
-The optional `ModePINEntryAuthentication` hook in PasscodeUI follows this contract and never issues a legacy protected-resource session. Its preparation callback must validate/build the root; there is no automatic app unlock. Main AppLock/configuration/root wiring is still pending, so this hook does not yet make the running Telegram app accept two PINs. The actual PIN node uses a stock theme/built-in wallpaper in both initial and updated presentation/keyboard data.
+The optional `ModePINEntryAuthentication` hook in PasscodeUI follows this contract and never issues a legacy protected-resource session. Its preparation callback must validate/build the root; there is no automatic app unlock. AppLock can now install this hook and refuses legacy unlock callbacks until its supplied root validator succeeds. Its held cover is released explicitly after preparation, so unrelated presentation updates cannot remove it early. An unavailable-vault requirement forces a denied synthetic six-digit reference rather than falling back to an unsecured/legacy challenge. Startup/configuration activation remains pending; the running Telegram app does not yet accept two PINs. The actual PIN node uses a stock theme/built-in wallpaper in both initial and updated presentation/keyboard data.
 
 Configuration validates one shared primary, exact installation/environment/record/self-user identities, unique server accounts, role-local selection and visible-only Premium limits. Hidden chats belong to the shared primary. Each hidden chat has a persistent generation: unhide removes it; rehide creates a new one. No role UI may consume the complete raw registry.
 
@@ -26,7 +26,19 @@ Configuration validates one shared primary, exact installation/environment/recor
 
 Enrollment is explicitly staged: `beginEnrollment` commits the role/flow origin before creating or exposing authorization UI; `bindEnrollment` durably binds its newly created provisional record; only `completeEnrollment` may adopt the confirmed self-user identity of that exact record. Grants, flow issuer, configuration/revocation and provisional record must all match. The permit is not Codable. An existing visible identity returns its permitted existing identity; an other-role collision returns only `unavailable`. The adapter must neutralize its own provisional session, never an existing raw account. Reusing a permit, another record, installation, issuer or revoked flow fails closed.
 
-Lock/configuration/PIN changes abandon pending authority. Unknown crash-created records remain quarantined rather than adopted into the next mode. This foundation does not implement provisional-session cleanup, restart recovery UI, live Premium refresh, Telegram's authorization callbacks or visible account streams; those adapters remain stage-3 work. A hidden role's Premium membership cannot increase the other role's enrollment allowance.
+Lock/configuration/PIN changes abandon pending authority. Unknown crash-created records remain quarantined rather than adopted into the next mode. This foundation does not implement provisional-session cleanup, restart recovery UI, live Premium refresh or Telegram's enrollment callbacks; those adapters remain stage-3 work. The dormant native account projection exists as described below. A hidden role's Premium membership cannot increase the other role's enrollment allowance.
+
+## Native root/account presentation contract
+
+`policy.projectAccounts` accepts observed record/environment/cloud-self-user identities. It preserves the order of matching visible accounts, excludes unknown/reused/wrong-namespace identities and denies ambiguous record/server duplicates. A missing selected account yields no primary; it never adopts the first raw/visible row.
+
+`AccessRootPresentation` owns a separate opaque root token. Its mandatory main-thread callbacks cover synchronously, discard old presentation, publish a ready root and finally remove the cover. PIN authentication alone cannot complete it: the exact prepared account, current generation, active application and durable grant must all match. Initial/lock I/O errors still leave a covered detached local root. An old completion/cancellation cannot disturb a newer preparation. A callback that locks or switches during ready publication cannot subsequently uncover its older root. `hideCover` may throw only before uncovering; failure must preserve the barrier and the driver discards/revokes the root.
+
+Use the driver's `selectAccount`/`setHidden` for native mutations: after a permitted preflight they detach local authority and cover/discard before storage mutation, then return a fresh root token. Denied other-role IDs/B hide actions leave the current permitted root intact. `canManageChatVisibility` and `isMarkedHidden` are A-only and apply to supported shared-account chats.
+
+`SharedAccountContextImpl` retains private raw contexts for normal account/network processing. Once its mode requirement is installed, public context/info emissions are revalidated on the main thread against current authority, including already queued old emissions; unauthenticated/preparing/unavailable states publish nothing. The root gets a separate preparation stream and validates exact context identity before construction/readiness. Native account switching persists role selection and drops reuse of old settings/chat controllers. While the enrollment adapter is absent, configured-mode authorization remains closed; the upstream automatic/duplicate-removal fallback cannot create or transfer a raw record. These APIs are not yet activated by startup/setup; no B root is enabled.
+
+`AppDelegate` carries the root token through the actual authorized-context pipeline and checks it before mounting/completing the ready controller. The future runtime must additionally install the native modal barrier, synchronously clear the window before blocking I/O, wire unavailable-vault requirements before publishing any raw UI, and retain covers while native sheets are dismissed. All account factory/navigation/send/async renderer boundaries still require the stage-4 audit. The hosted core tests use isolated UI callbacks; they do not prove native authenticated frame secrecy or account authorization.
 
 ## Initial legacy-owner migration
 

@@ -1,4 +1,5 @@
 import Foundation
+import AccessModeCore
 import Darwin
 import UIKit
 import TelegramCore
@@ -67,6 +68,15 @@ public final class AppLockContextImpl: AppLockContext {
     
     private var coveringView: LockedWindowCoveringView?
     private var passcodeController: PasscodeEntryController?
+
+    private var modeAuthentication: ModePINEntryAuthentication?
+    private var modeAuthenticationRequired = false
+    private var modeRootIsReady: () -> Bool = { false }
+    private var invalidateModeAccess: (() -> Void)?
+    private var modeCoverHeld = true
+    private var modeRootPreparationInProgress = false
+    private var modePresentationRevision: UInt64 = 0
+    private let modePresentationUpdates = ValuePromise<UInt64>(0)
     
     private var timestampRenewTimer: SwiftSignalKit.Timer?
     
@@ -116,9 +126,10 @@ public final class AppLockContextImpl: AppLockContext {
             presentationDataSignal,
             applicationBindings.applicationIsActive,
             applicationBindings.applicationInForeground,
-            self.currentState.get()
+            self.currentState.get(),
+            self.modePresentationUpdates.get()
         )
-        |> deliverOnMainQueue).startStrict(next: { [weak self] accessChallengeData, sharedData, presentationData, isApplicationActive, isApplicationInForeground, state in
+        |> deliverOnMainQueue).startStrict(next: { [weak self] accessChallengeData, sharedData, presentationData, isApplicationActive, isApplicationInForeground, state, _ in
             guard let strongSelf = self else {
                 return
             }
@@ -153,7 +164,13 @@ public final class AppLockContextImpl: AppLockContext {
             var shouldDisplayCoveringView = !isApplicationActive
             var isCurrentlyLocked = false
             
-            if !accessChallengeData.data.isLockable {
+            let lockPresentation = AccessLockPresentation(legacyIsLockable: accessChallengeData.data.isLockable,
+                manuallyLocked: isLocked(passcodeSettings: passcodeSettings, state: state),
+                modeState: strongSelf.modeAuthenticationRequired ? (strongSelf.modeAuthentication?.presentationState ?? .locked) : nil,
+                modeRootReady: strongSelf.modeAuthenticationRequired && strongSelf.modeRootIsReady(),
+                coverHeld: strongSelf.modeCoverHeld, applicationActive: isApplicationActive,
+                rootPreparationInProgress: strongSelf.modeRootPreparationInProgress)
+            if !lockPresentation.isLockable {
                 if let passcodeController = strongSelf.passcodeController {
                     strongSelf.passcodeController = nil
                     passcodeController.dismiss()
@@ -180,7 +197,7 @@ public final class AppLockContextImpl: AppLockContext {
                 
                 strongSelf.autolockTimeout.set(passcodeSettings.autolockTimeout)
                 
-                if isLocked(passcodeSettings: passcodeSettings, state: state) {
+                if lockPresentation.isLocked {
                     isCurrentlyLocked = true
                     
                     let biometrics: PasscodeEntryControllerBiometricsMode = .none
@@ -190,14 +207,15 @@ public final class AppLockContextImpl: AppLockContext {
                             passcodeController.requestBiometrics()
                         }
                         passcodeController.ensureInputFocused()
-                    } else {
-                        let passcodeController = PasscodeEntryController(applicationBindings: strongSelf.applicationBindings, accountManager: strongSelf.accountManager, appLockContext: strongSelf, presentationData: presentationData, presentationDataSignal: strongSelf.presentationDataSignal, statusBarHost: window?.statusBarHost, challengeData: accessChallengeData.data, biometrics: biometrics, arguments: PasscodeEntryControllerPresentationArguments(animated: !becameActiveRecently || strongSelf.suppressAutomaticBiometrics, lockIconInitialFrame: {
+                    } else if lockPresentation.shouldCreatePIN {
+                        let challenge: PostboxAccessChallengeData = strongSelf.modeAuthenticationRequired && strongSelf.modeAuthentication == nil ? .secured(id: "local-access-unavailable", kind: .digits6) : accessChallengeData.data
+                        let passcodeController = PasscodeEntryController(applicationBindings: strongSelf.applicationBindings, accountManager: strongSelf.accountManager, appLockContext: strongSelf, presentationData: presentationData, presentationDataSignal: strongSelf.presentationDataSignal, statusBarHost: window?.statusBarHost, challengeData: challenge, biometrics: biometrics, arguments: PasscodeEntryControllerPresentationArguments(animated: !becameActiveRecently || strongSelf.suppressAutomaticBiometrics, lockIconInitialFrame: {
                             if let lockViewFrame = lockIconInitialFrame() {
                                 return lockViewFrame
                             } else {
                                 return CGRect()
                             }
-                        }))
+                        }), modeAuthentication: strongSelf.modeAuthentication)
                         if becameActiveRecently, !strongSelf.suppressAutomaticBiometrics, isApplicationActive {
                             passcodeController.presentationCompleted = { [weak self, weak passcodeController] in
                                 if case .enabled = biometrics, self?.suppressAutomaticBiometrics == false {
@@ -339,6 +357,64 @@ public final class AppLockContextImpl: AppLockContext {
         window.hostView.containerView.layoutIfNeeded()
         CATransaction.flush()
     }
+
+    /// Initial setup/runtime installation never restores the legacy verification
+    /// path. A configured or unavailable Dual PIN vault must supply this adapter.
+    public func configureModeAuthentication(_ authentication: ModePINEntryAuthentication,
+                                            invalidateAccess: @escaping () -> Void,
+                                            isRootReady: @escaping () -> Bool) {
+        assert(Thread.isMainThread)
+        self.installOpaqueCover()
+        if let controller = self.passcodeController {
+            self.passcodeController = nil
+            controller.invalidatePendingPINInput()
+            controller.dismiss()
+        }
+        self.modeAuthentication = authentication
+        self.modeAuthenticationRequired = true
+        self.invalidateModeAccess = invalidateAccess
+        self.modeRootIsReady = isRootReady
+        self.lock()
+    }
+
+    /// A vault construction/Keychain/configuration error must not turn Dual PIN
+    /// into an unsecured legacy challenge. The synthetic reference cannot match
+    /// any UUID-backed legacy credential and therefore cannot issue a session.
+    public func requireModeAuthentication() {
+        assert(Thread.isMainThread)
+        self.modeAuthenticationRequired = true
+        if let controller = self.passcodeController {
+            self.passcodeController = nil
+            controller.invalidatePendingPINInput()
+            controller.dismiss()
+        }
+        self.lock()
+    }
+
+    /// Call after coordinator preparation/ready mutations, in the same main-thread
+    /// turn. Preparation retains the cover and does not prompt for another PIN.
+    public func refreshModePresentation() {
+        assert(Thread.isMainThread)
+        if self.modeAuthenticationRequired && (self.modeCoverHeld || !self.modeRootIsReady()) { self.installOpaqueCover() }
+        self.modePresentationRevision &+= 1
+        self.modePresentationUpdates.set(self.modePresentationRevision)
+    }
+
+    public func beginModeRootPreparation() {
+        assert(Thread.isMainThread)
+        self.modeCoverHeld = true
+        self.modeRootPreparationInProgress = true
+        self.installOpaqueCover()
+        self.refreshModePresentation()
+    }
+
+    /// The root driver calls this only after its final grant/root/lifecycle checks.
+    public func completeModeRootPreparation() -> Bool {
+        assert(Thread.isMainThread)
+        guard self.modeAuthentication != nil else { return false }
+        self.unlock()
+        return !self.modeCoverHeld
+    }
     
     public func _internalCrashForPasscodeMigrationTest(isLocked: Bool) throws -> Never {
         var writeError: Error?
@@ -380,17 +456,21 @@ public final class AppLockContextImpl: AppLockContext {
             DispatchQueue.main.sync { self.lock() }
             return
         }
+        self.modeRootPreparationInProgress = false
+        self.modeCoverHeld = true
         self.installOpaqueCover()
         self.window?.forEachViewController({ controller in
             (controller as? PasscodeEntryController)?.invalidatePendingPINInput()
             return true
         })
+        self.invalidateModeAccess?()
         PasscodeSession.invalidateAll()
         PasscodeSession.setApplicationAvailable(false)
         self.suppressAutomaticBiometrics = true
         var state = self.currentStateValue
         state.isManuallyLocked = true
         self.applyLockState(state)
+        self.refreshModePresentation()
     }
     
     public func unlock() {
@@ -398,6 +478,11 @@ public final class AppLockContextImpl: AppLockContext {
             DispatchQueue.main.sync { self.unlock() }
             return
         }
+        // Legacy completion/settings callbacks cannot dismiss a configured Dual PIN
+        // barrier. Only a freshly prepared, grant-validated root permits unlocking.
+        if self.modeAuthenticationRequired && !self.modeRootIsReady() { return }
+        self.modeCoverHeld = false
+        self.modeRootPreparationInProgress = false
         // The verified PIN callback and its state transition share one main-thread
         // turn: a queued unlock must not run after a later synchronous lock.
         var state = self.currentStateValue
@@ -407,6 +492,7 @@ public final class AppLockContextImpl: AppLockContext {
         let uptime = getDeviceUptimeSeconds(&bootTimestamp)
         state.applicationActivityTimestamp = MonotonicTimestamp(bootTimestamp: bootTimestamp, uptime: uptime)
         self.applyLockState(state)
+        self.refreshModePresentation()
     }
     
     public func failedUnlockAttempt() {

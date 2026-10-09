@@ -23,6 +23,7 @@ swift_library(
         "//submodules/AppLockState:AppLockState",
         "//submodules/PasscodeCore",
         "//submodules/AccessModeUI",
+        "//submodules/AccessModeCore",
     ],
     visibility = [
         "//visibility:public",

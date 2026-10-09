@@ -1,5 +1,6 @@
 import UIKit
 import AccessModeUI
+import AccessModeCore
 import SwiftSignalKit
 import Display
 import TelegramCore
@@ -1263,17 +1264,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.context.set(self.sharedContextPromise.get()
         |> deliverOnMainQueue
         |> mapToSignal { sharedApplicationContext -> Signal<AuthorizedApplicationContext?, NoError> in
-            return sharedApplicationContext.sharedContext.activeAccountContexts
-            |> map { primary, _, _ -> AccountContext? in
-                return primary
-            }
+            return sharedApplicationContext.sharedContext.accountContextsForRoot
             |> distinctUntilChanged(isEqual: { lhs, rhs in
-                if lhs !== rhs {
-                    return false
-                }
-                return true
+                return lhs == rhs
             })
-            |> mapToSignal { context -> Signal<(AccountContext, CallListSettings)?, NoError> in
+            |> mapToSignal { root -> Signal<(AccountContext, CallListSettings, AccessRootPreparation?)?, NoError> in
                 return sharedApplicationContext.sharedContext.accountManager.transaction { transaction -> CallListSettings? in
                     return transaction.getSharedData(ApplicationSpecificSharedDataKeys.callListSettings)?.get(CallListSettings.self)
                 }
@@ -1286,9 +1281,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     }
                     return result
                 }
-                |> map { callListSettings -> (AccountContext, CallListSettings)? in
-                    if let context = context {
-                        return (context, callListSettings ?? .defaultSettings)
+                |> map { callListSettings -> (AccountContext, CallListSettings, AccessRootPreparation?)? in
+                    if let context = root.context {
+                        return (context, callListSettings ?? .defaultSettings, root.preparation)
                     } else {
                         return nil
                     }
@@ -1296,8 +1291,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             }
             |> deliverOnMainQueue
             |> map { accountAndSettings -> AuthorizedApplicationContext? in
-                return accountAndSettings.flatMap { context, callListSettings in
-                    return AuthorizedApplicationContext(sharedApplicationContext: sharedApplicationContext, mainWindow: self.mainWindow, context: context as! AccountContextImpl, accountManager: sharedApplicationContext.sharedContext.accountManager, showCallsTab: callListSettings.showTab, reinitializedNotificationSettings: {
+                return accountAndSettings.flatMap { context, callListSettings, preparation in
+                    return AuthorizedApplicationContext(sharedApplicationContext: sharedApplicationContext, mainWindow: self.mainWindow, context: context as! AccountContextImpl, accountManager: sharedApplicationContext.sharedContext.accountManager, showCallsTab: callListSettings.showTab, modeRootPreparation: preparation, reinitializedNotificationSettings: {
                         let _ = (self.context.get()
                         |> take(1)
                         |> deliverOnMainQueue).start(next: { context in
@@ -1370,6 +1365,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.contextDisposable.set((self.context.get()
         |> deliverOnMainQueue).start(next: { context in
             print("Application: context took \(CFAbsoluteTimeGetCurrent() - startTime) to become available")
+
+            if let context, context.sharedApplicationContext.sharedContext.hasModeAccountAccess {
+                guard let preparation = context.modeRootPreparation,
+                      (try? context.sharedApplicationContext.sharedContext.validateModeAccountRoot(preparation, context: context.context)) != nil else { return }
+            }
             
             var network: Network?
             if let context = context {
@@ -1392,6 +1392,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 |> filter { $0 }
                 |> take(1)
                 |> deliverOnMainQueue).start(next: { _ in
+                    if context.sharedApplicationContext.sharedContext.hasModeAccountAccess {
+                        guard self.isActiveValue, self.contextValue === context,
+                              let preparation = context.modeRootPreparation,
+                              (try? context.sharedApplicationContext.sharedContext.validateModeAccountRoot(preparation, context: context.context)) != nil else { return }
+                    }
                     let readyTime = CFAbsoluteTimeGetCurrent() - startTime
                     if readyTime > 0.5 {
                         print("Application: context took \(readyTime) to become ready")
@@ -1412,6 +1417,13 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     }
                     self.mainWindow.topLevelOverlayControllers = [context.sharedApplicationContext.overlayMediaController, context.notificationController]
                     (context.context.sharedContext as? SharedAccountContextImpl)?.notificationController = context.notificationController
+                    if let preparation = context.modeRootPreparation {
+                        do { try context.sharedApplicationContext.sharedContext.completeModeAccountRoot(preparation, context: context.context) }
+                        catch {
+                            self.appLockContextImpl?.lock()
+                            return
+                        }
+                    }
                     var authorizeNotifications = true
                     if #available(iOS 10.0, *) {
                         authorizeNotifications = false

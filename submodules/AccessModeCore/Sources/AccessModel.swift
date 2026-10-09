@@ -148,6 +148,14 @@ public struct AccessModePolicy {
         return mode == .b && configuration.hiddenChats.contains(chat) ? .restrictedTranscript : .ordinary
     }
     public var canManageHiddenChats: Bool { mode == .a }
+    public func canManageChatVisibility(_ chat: ChatIdentity) -> Bool {
+        canManageHiddenChats && chat.supported && configuration.accounts.contains {
+            $0.ownership == .shared && $0.identity == chat.account
+        }
+    }
+    public func isMarkedHidden(_ chat: ChatIdentity) -> Bool {
+        canManageChatVisibility(chat) && configuration.hiddenChats.contains(chat)
+    }
     public var allowsPush: Bool { false }
     public var allowsBiometrics: Bool { false }
 

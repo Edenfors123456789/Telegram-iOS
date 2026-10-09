@@ -1,4 +1,5 @@
 import Foundation
+import AccessModeCore
 import UIKit
 import Intents
 import TelegramPresentationData
@@ -99,6 +100,7 @@ final class UnauthorizedApplicationContext {
 }
 
 final class AuthorizedApplicationContext {
+    let modeRootPreparation: AccessRootPreparation?
     let sharedApplicationContext: SharedApplicationContext
     let mainWindow: Window1
     let lockedCoveringView: LockedWindowCoveringView
@@ -155,7 +157,8 @@ final class AuthorizedApplicationContext {
     private var showCallsTabDisposable: Disposable?
     private var enablePostboxTransactionsDiposable: Disposable?
     
-    init(sharedApplicationContext: SharedApplicationContext, mainWindow: Window1, context: AccountContextImpl, accountManager: AccountManager<TelegramAccountManagerTypes>, showCallsTab: Bool, reinitializedNotificationSettings: @escaping () -> Void) {
+    init(sharedApplicationContext: SharedApplicationContext, mainWindow: Window1, context: AccountContextImpl, accountManager: AccountManager<TelegramAccountManagerTypes>, showCallsTab: Bool, modeRootPreparation: AccessRootPreparation? = nil, reinitializedNotificationSettings: @escaping () -> Void) {
+        self.modeRootPreparation = modeRootPreparation
         self.sharedApplicationContext = sharedApplicationContext
         
         setupLegacyComponents(context: context)

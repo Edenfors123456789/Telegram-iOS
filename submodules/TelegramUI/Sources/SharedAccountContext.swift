@@ -1,4 +1,5 @@
 import Foundation
+import AccessModeCore
 import UIKit
 import AsyncDisplayKit
 import Postbox
@@ -156,6 +157,15 @@ private enum AddedAccountsResult {
 
 private var testHasInstance = false
 
+struct ModeAccountRoot: Equatable {
+    let context: AccountContext?
+    let preparation: AccessRootPreparation?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.context === rhs.context && lhs.preparation == rhs.preparation
+    }
+}
+
 public final class SharedAccountContextImpl: SharedAccountContext {
     public let mainWindow: Window1?
     public let applicationBindings: TelegramApplicationBindings
@@ -190,11 +200,42 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private let activeAccountsPromise = Promise<(primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?)>()
     public var activeAccountContexts: Signal<(primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?), NoError> {
         return self.activeAccountsPromise.get()
+        |> deliverOnMainQueue
+        |> map { [weak self] value in
+            guard let self else { return (nil, [], nil) }
+            // Revalidate at delivery: an already queued old-role emission must not
+            // expose its cached contexts after a synchronous access transition.
+            return self.visibleAccountContexts(!self.modeAccountAccessRequired ? value : (self.activeAccountsValue ?? value))
+        }
     }
+    private var modeRootPresentation: AccessRootPresentation?
+    private var modeAccountAccessRequired = false
+    private var pendingModeRoot: AccessRootPreparation?
+    private let modeAccountRootPromise = ValuePromise<ModeAccountRoot>(ModeAccountRoot(context: nil, preparation: nil), ignoreRepeated: true)
+    var accountContextsForRoot: Signal<ModeAccountRoot, NoError> { self.modeAccountRootPromise.get() }
+    var hasModeAccountAccess: Bool { self.modeAccountAccessRequired }
     private let managedAccountDisposables = DisposableDict<AccountRecordId>()
     private let activeAccountsWithInfoPromise = Promise<(primary: AccountRecordId?, accounts: [AccountWithInfo])>()
     public var activeAccountsWithInfo: Signal<(primary: AccountRecordId?, accounts: [AccountWithInfo]), NoError> {
         return self.activeAccountsWithInfoPromise.get()
+        |> deliverOnMainQueue
+        |> map { [weak self] value in
+            guard let self else { return (nil, []) }
+            guard self.modeAccountAccessRequired else { return value }
+            guard let driver = self.modeRootPresentation else { return (nil, []) }
+            guard driver.hasActiveRoot else { return (nil, []) }
+            do {
+                return try driver.withActivePolicy { policy in
+                    let infos = value.accounts.filter { $0.peer.id == $0.account.peerId }
+                    let projection = try policy.projectAccounts(infos.map { self.observedAccount($0.account) })
+                    let ids = Set(projection.accounts.map(\.recordID))
+                    return (projection.primary.map { AccountRecordId(rawValue: $0.recordID) }, infos.filter { ids.contains($0.account.id.int64) })
+                }
+            } catch {
+                try? driver.lock()
+                return (nil, [])
+            }
+        }
     }
     
     private var activeUnauthorizedAccountValue: UnauthorizedAccount?
@@ -743,7 +784,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 var existingAccountPeerKeys = Set<AccountPeerKey>()
                 for accountRecord in addedAccounts {
                     if let account = accountRecord.1 {
-                        if existingAccountPeerKeys.contains(AccountPeerKey(peerId: account.peerId, isTestingEnvironment: account.testingEnvironment)) {
+                        if !self.modeAccountAccessRequired && existingAccountPeerKeys.contains(AccountPeerKey(peerId: account.peerId, isTestingEnvironment: account.testingEnvironment)) {
                             let _ = accountManager.transaction({ transaction in
                                 transaction.updateRecord(accountRecord.0, { _ in
                                     return nil
@@ -812,12 +853,12 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 }
                 if hadUpdates {
                     self.activeAccountsValue!.accounts.sort(by: { $0.2 < $1.2 })
-                    self.activeAccountsPromise.set(.single(self.activeAccountsValue!))
+                    self.publishAccountContexts()
                     
                     self.performAccountSettingsImportIfNecessary()
                 }
                 
-                if self.activeAccountsValue!.primary == nil && self.activeAccountsValue!.currentAuth == nil {
+                if !self.modeAccountAccessRequired && self.activeAccountsValue!.primary == nil && self.activeAccountsValue!.currentAuth == nil {
                     self.beginNewAuth(testingEnvironment: self.testingEnvironment)
                 }
             }))
@@ -1776,13 +1817,139 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }))
     }
     
+    private func observedAccount(_ account: Account) -> ObservedAccount {
+        ObservedAccount(environment: account.testingEnvironment ? .test : .production,
+            recordID: account.id.int64, userNamespace: account.peerId.namespace._internalGetInt32Value(),
+            userID: account.peerId.id._internalGetInt64Value())
+    }
+
+    private func visibleAccountContexts(_ raw: (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?)) -> (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?) {
+        guard self.modeAccountAccessRequired else { return raw }
+        guard let driver = self.modeRootPresentation else { return (nil, [], nil) }
+        guard driver.hasActiveRoot else { return (nil, [], nil) }
+        do {
+            return try driver.withActivePolicy { policy in
+                guard raw.accounts.allSatisfy({ $0.0 == $0.1.account.id }) else { throw AccessError.invalidConfiguration }
+                let projection = try policy.projectAccounts(raw.accounts.map { self.observedAccount($0.1.account) })
+                let ids = Set(projection.accounts.map(\.recordID))
+                let allowed = raw.accounts.filter { ids.contains($0.0.int64) }
+                let primary = projection.primary.flatMap { selected in allowed.first { $0.0.int64 == selected.recordID }?.1 }
+                guard primary != nil else { throw AccessError.unavailable }
+                // Unauthorized records are quarantined until the native durable
+                // enrollment adapter has bound their permit and current epoch.
+                return (primary, allowed, nil)
+            }
+        } catch {
+            try? driver.lock()
+            return (nil, [], nil)
+        }
+    }
+
+    private func publishAccountContexts() {
+        assert(Queue.mainQueue().isCurrent())
+        guard let raw = self.activeAccountsValue else { return }
+        self.activeAccountsPromise.set(.single(self.visibleAccountContexts(raw)))
+        if !self.modeAccountAccessRequired {
+            self.modeAccountRootPromise.set(ModeAccountRoot(context: raw.primary, preparation: nil))
+        } else if let pending = self.pendingModeRoot, self.modeRootPresentation?.hasActiveRoot == false {
+            do { try self.publishModeRoot(pending) }
+            catch { try? self.modeRootPresentation?.lock() }
+        }
+    }
+
+    func configureModeAccountAccess(_ driver: AccessRootPresentation) {
+        assert(Queue.mainQueue().isCurrent())
+        precondition(self.modeRootPresentation == nil)
+        self.modeAccountAccessRequired = true
+        self.modeRootPresentation = driver
+        self.clearModeAccountPresentation()
+    }
+
+    /// Called also for an existing corrupt/unavailable vault, before constructing
+    /// its driver. A failed factory cannot restore unrestricted raw streams.
+    func requireModeAccountAccess() {
+        assert(Queue.mainQueue().isCurrent())
+        self.modeAccountAccessRequired = true
+        self.clearModeAccountPresentation()
+    }
+
+    func clearModeAccountPresentation() {
+        assert(Queue.mainQueue().isCurrent())
+        self.pendingModeRoot = nil
+        self.switchingData = (nil, nil, nil)
+        self.modeAccountRootPromise.set(ModeAccountRoot(context: nil, preparation: nil))
+        self.activeAccountsPromise.set(.single((nil, [], nil)))
+    }
+
+    func prepareModeAccountRoot(_ preparation: AccessRootPreparation) throws {
+        assert(Queue.mainQueue().isCurrent())
+        self.pendingModeRoot = preparation
+        try self.publishModeRoot(preparation)
+    }
+
+    private func publishModeRoot(_ preparation: AccessRootPreparation) throws {
+        guard let driver = self.modeRootPresentation else { throw AccessError.authenticationRequired }
+        let raw = self.activeAccountsValue?.accounts ?? []
+        let context: AccountContext? = try driver.withPreparingPolicy(preparation) { policy in
+            let projection = try policy.projectAccounts(raw.map { self.observedAccount($0.1.account) })
+            return projection.primary.flatMap { selected in raw.first { $0.0.int64 == selected.recordID && $0.0 == $0.1.account.id }?.1 }
+        }
+        self.modeAccountRootPromise.set(ModeAccountRoot(context: context, preparation: context == nil ? nil : preparation))
+    }
+
+    func validateModeAccountRoot(_ preparation: AccessRootPreparation, context: AccountContext) throws -> AccountIdentity {
+        guard let driver = self.modeRootPresentation else { throw AccessError.authenticationRequired }
+        return try driver.withPreparingPolicy(preparation) { policy in
+            let raw = self.activeAccountsValue?.accounts ?? []
+            let projection = try policy.projectAccounts(raw.map { self.observedAccount($0.1.account) })
+            guard let selected = projection.primary, selected == preparation.account,
+                  raw.contains(where: { $0.0.int64 == selected.recordID && $0.1 === context && $0.0 == context.account.id }) else {
+                throw AccessError.staleAuthorization
+            }
+            return selected
+        }
+    }
+
+    func completeModeAccountRoot(_ preparation: AccessRootPreparation, context: AccountContext) throws {
+        let identity = try self.validateModeAccountRoot(preparation, context: context)
+        guard let driver = self.modeRootPresentation else { throw AccessError.authenticationRequired }
+        try driver.complete(preparation, preparedAccount: identity)
+    }
+
+    func publishModeAccountReady() {
+        assert(Queue.mainQueue().isCurrent())
+        self.publishAccountContexts()
+    }
+
     public func beginNewAuth(testingEnvironment: Bool) {
+        // The mode enrollment adapter must persist/bind a provisional owner first.
+        // Never create an unowned record as a fallback while Dual PIN is configured.
+        guard !self.modeAccountAccessRequired else { return }
         let _ = self.accountManager.transaction({ transaction -> Void in
             let _ = transaction.createAuth([.environment(AccountEnvironmentAttribute(environment: testingEnvironment ? .test : .production))])
         }).start()
     }
     
     public func switchToAccount(id: AccountRecordId, fromSettingsController settingsController: ViewController? = nil, withChatListController chatListController: ViewController? = nil) {
+        assert(Queue.mainQueue().isCurrent())
+        if self.modeAccountAccessRequired {
+            guard let driver = self.modeRootPresentation else { return }
+            do {
+                let identity = try driver.withActivePolicy { policy -> AccountIdentity in
+                    let projection = try policy.projectAccounts((self.activeAccountsValue?.accounts ?? []).map { self.observedAccount($0.1.account) })
+                    guard let identity = projection.accounts.first(where: { $0.recordID == id.int64 }) else { throw AccessError.authenticationRequired }
+                    return identity
+                }
+                let preparation = try driver.selectAccount(identity)
+                self.switchingData = (nil, nil, nil)
+                try self.prepareModeAccountRoot(preparation)
+            } catch {
+                // Denied IDs preserve the current permitted root. Failed mutations
+                // are already covered/locked by the root driver.
+                if (error as? AccessError) != .authenticationRequired { try? driver.lock() }
+            }
+            return
+        }
         if self.activeAccountsValue?.primary?.account.id == id {
             return
         }

@@ -6,7 +6,7 @@ Last updated: 2026-10-10 (Europe/Minsk).
 
 The user approved `DUAL_PIN_ACCESS_PLAN_v1.txt` and authorized autonomous staged implementation, relevant checks, repairs, and local Git checkpoints. Changes to agreed product behavior require confirmation.
 
-**Current stage: 3 — lock/UI/accounts integration. Stages 0, 1 and 2 passed. Opaque-cover/lifecycle hardening is being integrated; actual Dual PIN selection, enrollment and account visibility are not connected yet.**
+**Current stage: 3 — lock/UI/accounts integration. Stages 0, 1 and 2 passed. Opaque-cover/lifecycle hardening is verified; PIN/AppLock/account/root adapters exist, but startup/setup activation, enrollment and management UI remain pending. No B root is enabled.**
 
 The full unmodified Telegram application built successfully and was visually verified on an isolated simulator. The baseline gate is satisfied on stable Xcode 27.0, with the documented version override; it is not a reproduced Xcode-26.6 release build. Architecture and integration paths were checked against the approved behavior and current source tree; stage 2 is authorized.
 
@@ -58,9 +58,9 @@ The full unmodified Telegram application built successfully and was visually ver
 
 ## Next actions
 
-1. Integrate opaque covers and immediate lifecycle locks; remove biometric entry/settings paths.
-2. Integrate authenticated Dual PIN initialization/migration and grants with the standard PIN controller; never publish an unfiltered B root.
-3. Split raw account processing from role-visible streams, implement exact enrollment ownership/collisions and A-only hide management; verify before stage 4.
+1. Install the main-process runtime and native modal preparation barrier after the verified account/root/AppLock checkpoint below.
+2. Add authenticated Dual PIN setup/owner migration, unavailable-state retry and synchronized A-PIN changes; never publish an unfiltered B root.
+3. Complete native enrollment/cleanup and A-only hide/marker/management UI; verify the whole stage before stage 4.
 4. User authorized choosing bundle/API development values and discovering the IMO Apple team. See `docs/dual-pin/BUILD_CONFIGURATION.md`; the ignored development JSON exists. Physical signing still needs profiles for the new bundle/App Group and the eventual target iPhone.
 
 ## Stage 1 evidence
@@ -94,6 +94,7 @@ The full unmodified Telegram application built successfully and was visually ver
 - `0a57eadb37`: verified stage-3 lifecycle/opaque-cover checkpoint; full build, isolated launch, 28 Mac / 29 iOS core cases and 2 cover cases. Not the whole stage.
 - `7d93c2f653`: verified durable account/visibility command checkpoint; 36 Mac / 37 iOS cases and full app build. Native account-manager/management UI integration remains pending.
 - `c92bdab368`: verified standard-PIN adapter and initial legacy-owner migration checkpoint; 41 Mac / 42 iOS core cases, 5 migration cases and full app build. AppLock activation/setup/root/account adapters remain pending.
+- `20426e0066`: verified native-window modal cover checkpoint; 5 hosted UI cases, full app build and isolated onboarding launch. Background/app-switcher actions did not establish a transition; physical/mode frame checks remain pending.
 
 ## Stage 3 evidence and pending work
 
@@ -117,6 +118,10 @@ The full unmodified Telegram application built successfully and was visually ver
 - Replaced it with an app-owned `SnapshotProtectedWindow` that synchronously keeps the opaque cover last after native additions/reordering/layout. NativeWindow now inherits it and blocks delegated touches while protected. AppDelegate installs this before inactivity locking and keeps it until active return has an internal lock barrier and native sheets are dismissed; ticket matching prevents stale foreground/dismiss callbacks uncovering a newer lock.
 - The actual-native-host test's first build failed before execution because its internal hit-test hook needed `@testable import Display` (`native-cover-fixed.log`). The corrected target then timed out before any tests: a process sample demonstrated injected AsyncDisplayKit `+[ASDisplayNode load]` waiting on UIKit application-context preload while the latter waited on dyld (`native-cover-fixed-retry.log`, `native-cover-injection-timeout-xctest.log`, `native-cover-hang.sample.txt`). The upstream runner itself interrupted/rebooted its task-owned simulator and Bazel timed out; no unrelated process was killed. Moved Display into a dedicated UI test executable, matching normal app loading, without changing product initialization. Hosted run passed 5 cases; final additional reorder assertions also passed 5 cases, 0 failures, exit 0, 49.223 seconds (`native-cover-final.log`, `native-cover-final-xctest.log`).
 - Full app verification of the native cover passed: exit 0, 394.124 seconds, 682 actions (`native-cover-app-build.log` / `.json`). Retained fresh IPA: 607,120,617 bytes, SHA-256 `8bf8e2a393e7abdcfab6e6d40969048ec2ae15813d9430fd7ba98cbd85de628e`, fixture bundle `ph.telegra.Telegraph` 13.0/build 3, simulator SDK 27 / Xcode 27A266a. Installed/launched on the isolated simulator; ordinary onboarding verified (`native-cover-launch.json`, `native-cover-onboarding.jpg`). Home/gesture actions reported success but system screenshots did not confirm background/app-switcher state; Simulator was unavailable to CUA selection/inventory. Do not treat those actions as lifecycle or snapshot proof. Actual PIN/root transitions, system keyboard/windows and physical iPhone checks remain pending. This is a recoverable stage-3 checkpoint, not completed Dual PIN activation.
+- Added exact observed-account projection and a main-thread root driver with separate root tokens, held covers, matching selected-account readiness, stale-result/cancellation rejection and guarded visibility/selection mutations. Initial tests failed compilation before the APIs existed (`root-projection-red.log`). A focused publication regression then ran 9 cases and failed 3 assertions: storage/inactivity during ready publication retained the root, and inactivity retained active authority (`root-publication-red.log`). Corrected both; subsequent tests also cover native-uncover failure and a reentrant newer ready mode without relocking it.
+- Final Mac verification passed: 62 cases, 0 failures, warnings-as-errors (`account-root-native-final-mac.log`). Hosted iOS verification passed: 63 cases, 0 failures, exit 0, 66.983 seconds (`account-root-native-final-ios.log`, `account-root-native-final-ios-xctest.log`), including actual Keychain. These use isolated root/UI callbacks, not a logged-in native Telegram UI.
+- AppLock now accepts the Dual PIN adapter, forces locking even without a legacy challenge, holds preparation until explicit release and rejects legacy unlock callbacks without a validated ready root. Unavailable-mode requirements deny instead of falling back to legacy/unsecured state. SharedAccountContext separates raw processing from visible emissions and root preparation, revalidates queued context/info delivery, persists guarded mode selection, and quarantines auth until durable enrollment is wired. AppDelegate carries/checks root tokens before mounting and completing readiness. Startup/setup has not installed these adapters yet; native enrollment/management and all stage-4/5 gates remain pending.
+- Full application verification of those adapters passed: exit 0, 323.929 seconds, 518 executed actions (`account-root-native-app-build.log` / `.json`). Retained IPA: 607,490,713 bytes, SHA-256 `c3337f2c2e0e426610c456479ad6585684cc456aff8637b02912fcba826a8c63`, upstream fixture simulator identity, version 13.0/build 3. MobileBuildMCP installed/launched it on the isolated simulator (PID 19723); screenshot and 38-element semantic snapshot confirm ordinary onboarding. No accounts/PIN were configured: this is regression smoke evidence, not dual-mode/root-transition proof.
 
 ## Resume rules
 
