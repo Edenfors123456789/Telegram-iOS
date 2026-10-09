@@ -993,19 +993,6 @@ final class AuthorizedApplicationContext {
     }
     
     private func updateCoveringViewSnaphot(_ visible: Bool) {
-        if visible {
-            let scale: CGFloat = 0.5
-            let unscaledSize = self.mainWindow.hostView.containerView.frame.size
-            let image = generateImage(CGSize(width: floor(unscaledSize.width * scale), height: floor(unscaledSize.height * scale)), rotatedContext: { size, context in
-                context.clear(CGRect(origin: CGPoint(), size: size))
-                context.scaleBy(x: scale, y: scale)
-                UIGraphicsPushContext(context)
-                self.mainWindow.hostView.containerView.drawHierarchy(in: CGRect(origin: CGPoint(), size: unscaledSize), afterScreenUpdates: false)
-                UIGraphicsPopContext()
-            }).flatMap(applyScreenshotEffectToImage)
-            self.lockedCoveringView.updateSnapshot(image)
-        } else {
-            self.lockedCoveringView.updateSnapshot(nil)
-        }
+        // No capture of real UI is permitted for privacy covers.
     }
 }

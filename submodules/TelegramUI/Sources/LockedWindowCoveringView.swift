@@ -3,16 +3,18 @@ import UIKit
 import Display
 import TelegramPresentationData
 import AsyncDisplayKit
+import AccessModeUI
 
 final class LockedWindowCoveringView: WindowCoveringView {
-    private let contentView: UIImageView
+    private let contentView: OpaqueAccessCoverView
     
     init(theme: PresentationTheme) {
-        self.contentView = UIImageView()
+        self.contentView = OpaqueAccessCoverView(frame: .zero)
         
         super.init(frame: CGRect())
         
-        self.backgroundColor =  theme.chatList.backgroundColor
+        self.backgroundColor = .black
+        self.isOpaque = true
         self.addSubview(self.contentView)
     }
     
@@ -21,13 +23,7 @@ final class LockedWindowCoveringView: WindowCoveringView {
     }
     
     func updateTheme(_ theme: PresentationTheme) {
-        self.backgroundColor = theme.chatList.backgroundColor
-    }
-    
-    func updateSnapshot(_ image: UIImage?) {
-        if image != nil {
-            self.contentView.image = image   
-        }
+        // The cover is independent of account/theme data.
     }
     
     override func updateLayout(_ size: CGSize) {

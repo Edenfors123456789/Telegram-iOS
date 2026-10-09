@@ -31,6 +31,7 @@ swift_library(
         "//submodules/MonotonicTime",
         "//submodules/GradientBackground",
         "//submodules/PasscodeCore",
+        "//submodules/AccessModeCore",
     ],
     visibility = [
         "//visibility:public",

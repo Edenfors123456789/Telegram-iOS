@@ -258,6 +258,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private let sharedContextPromise = Promise<SharedApplicationContext>()
 
     private var accountManager: AccountManager<TelegramAccountManagerTypes>?
+    private var appLockContextImpl: AppLockContextImpl?
     private var accountManagerState: AccountManagerState?
     
     private var contextValue: AuthorizedApplicationContext?
@@ -1128,6 +1129,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             let appLockContext = AppLockContextImpl(rootPath: rootPath, window: self.mainWindow!, rootController: self.window?.rootViewController, applicationBindings: applicationBindings, accountManager: accountManager, presentationDataSignal: presentationDataPromise.get(), lockIconInitialFrame: {
                 return (self.mainWindow?.viewController as? TelegramRootController)?.chatListController?.lockViewFrame
             })
+            self.appLockContextImpl = appLockContext
             
             var setPresentationCall: ((PresentationCall?) -> Void)?
             let sharedContext = SharedAccountContextImpl(mainWindow: self.mainWindow, sharedContainerPath: legacyBasePath, basePath: rootPath, encryptionParameters: encryptionParameters, accountManager: accountManager, appLockContext: appLockContext, notificationController: nil, applicationBindings: applicationBindings, initialPresentationDataAndSettings: initialPresentationDataAndSettings, networkArguments: networkArguments, hasInAppPurchases: buildConfig.isAppStoreBuild && buildConfig.apiId == 1, rootPath: rootPath, legacyBasePath: legacyBasePath, apsNotificationToken: self.notificationTokenPromise.get() |> map(Optional.init), voipNotificationToken: self.voipTokenPromise.get() |> map(Optional.init), firebaseSecretStream: self.firebaseSecretStream.get(), setNotificationCall: { call in
@@ -2007,6 +2009,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func handleWillResignActive() {
+        // SceneDelegate calls synchronously before iOS captures the app snapshot.
+        self.appLockContextImpl?.lock()
         self.isActiveValue = false
         self.isActivePromise.set(false)
         self.clearNotificationsManager?.commitNow()

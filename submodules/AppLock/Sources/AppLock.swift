@@ -16,55 +16,8 @@ import PassKit
 import PasscodeCore
 
 private func isLocked(passcodeSettings: PresentationPasscodeSettings, state: LockState) -> Bool {
-    if state.isManuallyLocked {
-        return true
-    } else if let autolockTimeout = passcodeSettings.autolockTimeout {
-        var bootTimestamp: Int32 = 0
-        let uptime = getDeviceUptimeSeconds(&bootTimestamp)
-        let timestamp = MonotonicTimestamp(bootTimestamp: bootTimestamp, uptime: uptime)
-        
-        let applicationActivityTimestamp = state.applicationActivityTimestamp
-        
-        if let applicationActivityTimestamp = applicationActivityTimestamp {
-            if timestamp.bootTimestamp != applicationActivityTimestamp.bootTimestamp {
-                return true
-            }
-            if timestamp.uptime >= applicationActivityTimestamp.uptime + autolockTimeout {
-                return true
-            }
-        } else {
-            return true
-        }
-    }
-    return false
-}
-
-private func getCoveringViewSnaphot(window: Window1) -> UIImage? {
-    let scale: CGFloat = 0.5
-    let unscaledSize = window.hostView.containerView.frame.size
-    return generateImage(CGSize(width: floor(unscaledSize.width * scale), height: floor(unscaledSize.height * scale)), rotatedContext: { size, context in
-        context.clear(CGRect(origin: CGPoint(), size: size))
-        context.scaleBy(x: scale, y: scale)
-        UIGraphicsPushContext(context)
-
-        window.badgeView.alpha = 0.0
-        window.forEachViewController({ controller in
-            if let controller = controller as? PasscodeEntryController {
-                controller.displayNode.alpha = 0.0
-            }
-            return true
-        })
-        window.hostView.containerView.drawHierarchy(in: CGRect(origin: CGPoint(), size: unscaledSize), afterScreenUpdates: false)
-        window.forEachViewController({ controller in
-            if let controller = controller as? PasscodeEntryController {
-                controller.displayNode.alpha = 1.0
-            }
-            return true
-        })
-        window.badgeView.alpha = 1.0
-        
-        UIGraphicsPopContext()
-    }).flatMap(applyScreenshotEffectToImage)
+    // Every inactive transition locks synchronously; there is no grace interval.
+    return state.isManuallyLocked
 }
 
 private struct AppLockBiometricAuthenticationState {
@@ -152,6 +105,9 @@ public final class AppLockContextImpl: AppLockContext {
         } else {
             self.currentStateValue = LockState()
         }
+        // A previous process's unlock is never a fresh authentication.
+        self.currentStateValue.isManuallyLocked = true
+        self.installOpaqueCover()
         self.autolockTimeout.set(self.currentStateValue.autolockTimeout)
         
         self.disposable = (combineLatest(queue: .mainQueue(),
@@ -182,9 +138,7 @@ public final class AppLockContextImpl: AppLockContext {
                     strongSelf.lastActiveValue = true
                     strongSelf.lastActiveTimestamp = timestamp
                     
-                    if let data = try? Data(contentsOf: URL(fileURLWithPath: appLockStatePath(rootPath: strongSelf.rootPath))), let current = try? JSONDecoder().decode(LockState.self, from: data) {
-                        strongSelf.currentStateValue = current
-                    }
+                    // Do not restore a previous process/extension's unlocked state.
                 }
                 
                 if let lastActiveTimestamp = strongSelf.lastActiveTimestamp {
@@ -196,7 +150,7 @@ public final class AppLockContextImpl: AppLockContext {
                 strongSelf.lastActiveValue = false
             }
 
-            var shouldDisplayCoveringView = false
+            var shouldDisplayCoveringView = !isApplicationActive
             var isCurrentlyLocked = false
             
             if !accessChallengeData.data.isLockable {
@@ -229,12 +183,7 @@ public final class AppLockContextImpl: AppLockContext {
                 if isLocked(passcodeSettings: passcodeSettings, state: state) {
                     isCurrentlyLocked = true
                     
-                    let biometrics: PasscodeEntryControllerBiometricsMode
-                    if passcodeSettings.enableBiometrics {
-                        biometrics = .enabled(passcodeSettings.biometricsDomainState)
-                    } else {
-                        biometrics = .none
-                    }
+                    let biometrics: PasscodeEntryControllerBiometricsMode = .none
                     
                     if let passcodeController = strongSelf.passcodeController {
                         if becameActiveRecently, !strongSelf.suppressAutomaticBiometrics, case .enabled = biometrics, isApplicationActive {
@@ -275,13 +224,13 @@ public final class AppLockContextImpl: AppLockContext {
                 }
             }
             
+            shouldDisplayCoveringView = shouldDisplayCoveringView || isCurrentlyLocked
             strongSelf.updateTimestampRenewTimer(shouldRun: isApplicationActive && !isCurrentlyLocked)
             strongSelf.lockStatus.update(isPasscodeLocked: isCurrentlyLocked, isApplicationActive: isApplicationActive, isApplicationInForeground: isApplicationInForeground)
             
             if shouldDisplayCoveringView {
                 if strongSelf.coveringView == nil, let window = strongSelf.window {
                     let coveringView = LockedWindowCoveringView(theme: presentationData.theme)
-                    coveringView.updateSnapshot(getCoveringViewSnaphot(window: window))
                     strongSelf.coveringView = coveringView
                     window.coveringView = coveringView
                     
@@ -365,20 +314,30 @@ public final class AppLockContextImpl: AppLockContext {
     
     private func updateLockState(_ f: @escaping (LockState) -> LockState) {
         Queue.mainQueue().async {
-            let updatedState = f(self.currentStateValue)
-            if updatedState != self.currentStateValue {
-                self.currentStateValue = updatedState
-                self.currentState.set(.single(updatedState))
-                
-                let path = appLockStatePath(rootPath: self.rootPath)
-                
-                self.syncQueue.async {
-                    if let data = try? JSONEncoder().encode(updatedState) {
-                        let _ = try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
-                    }
-                }
+            self.applyLockState(f(self.currentStateValue))
+        }
+    }
+
+    private func applyLockState(_ updatedState: LockState) {
+        assert(Thread.isMainThread)
+        guard updatedState != self.currentStateValue else { return }
+        self.currentStateValue = updatedState
+        self.currentState.set(.single(updatedState))
+        let path = appLockStatePath(rootPath: self.rootPath)
+        self.syncQueue.async {
+            if let data = try? JSONEncoder().encode(updatedState) {
+                let _ = try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
             }
         }
+    }
+
+    private func installOpaqueCover() {
+        assert(Thread.isMainThread)
+        guard let window = self.window else { return }
+        if self.coveringView == nil { self.coveringView = LockedWindowCoveringView() }
+        window.coveringView = self.coveringView
+        window.hostView.containerView.layoutIfNeeded()
+        CATransaction.flush()
     }
     
     public func _internalCrashForPasscodeMigrationTest(isLocked: Bool) throws -> Never {
@@ -417,31 +376,37 @@ public final class AppLockContextImpl: AppLockContext {
     }
     
     public func lock() {
-        PasscodeSession.setApplicationAvailable(false)
-        self.updateLockState { state in
-            // Face ID may still send active events after the user manually locks.
-            self.suppressAutomaticBiometrics = true
-            var state = state
-            state.isManuallyLocked = true
-            return state
+        if !Thread.isMainThread {
+            DispatchQueue.main.sync { self.lock() }
+            return
         }
+        self.installOpaqueCover()
+        self.window?.forEachViewController({ controller in
+            (controller as? PasscodeEntryController)?.invalidatePendingPINInput()
+            return true
+        })
+        PasscodeSession.invalidateAll()
+        PasscodeSession.setApplicationAvailable(false)
+        self.suppressAutomaticBiometrics = true
+        var state = self.currentStateValue
+        state.isManuallyLocked = true
+        self.applyLockState(state)
     }
     
     public func unlock() {
-        self.updateLockState { state in
-            var state = state
-            
-            state.unlockAttempts = nil
-            
-            state.isManuallyLocked = false
-            
-            var bootTimestamp: Int32 = 0
-            let uptime = getDeviceUptimeSeconds(&bootTimestamp)
-            let timestamp = MonotonicTimestamp(bootTimestamp: bootTimestamp, uptime: uptime)
-            state.applicationActivityTimestamp = timestamp
-            
-            return state
+        if !Thread.isMainThread {
+            DispatchQueue.main.sync { self.unlock() }
+            return
         }
+        // The verified PIN callback and its state transition share one main-thread
+        // turn: a queued unlock must not run after a later synchronous lock.
+        var state = self.currentStateValue
+        state.unlockAttempts = nil
+        state.isManuallyLocked = false
+        var bootTimestamp: Int32 = 0
+        let uptime = getDeviceUptimeSeconds(&bootTimestamp)
+        state.applicationActivityTimestamp = MonotonicTimestamp(bootTimestamp: bootTimestamp, uptime: uptime)
+        self.applyLockState(state)
     }
     
     public func failedUnlockAttempt() {

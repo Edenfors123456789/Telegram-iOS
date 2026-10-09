@@ -279,24 +279,13 @@ private func passcodeOptionsControllerEntries(context: AccountContext, presentat
             entries.append(.changePasscode(presentationData.theme, presentationData.strings.PasscodeSettings_ChangePasscode))
             entries.append(.settingInfo(presentationData.theme, presentationData.strings.PasscodeSettings_Help))
             entries.append(.telegramHeader(presentationData.theme, presentationData.strings.PasscodeSettings_LockTelegram.uppercased()))
-            entries.append(.autoLock(presentationData.theme, presentationData.strings.PasscodeSettings_AutoLock, autolockStringForTimeout(strings: presentationData.strings, timeout: passcodeOptionsData.presentationSettings.autolockTimeout)))
-            if let biometricAuthentication = LocalAuth.biometricAuthentication {
-                switch biometricAuthentication {
-                    case .touchId:
-                        entries.append(.touchId(presentationData.theme, presentationData.strings.PasscodeSettings_UnlockWithTouchId, passcodeOptionsData.presentationSettings.enableBiometrics))
-                    case .faceId:
-                        entries.append(.touchId(presentationData.theme, presentationData.strings.PasscodeSettings_UnlockWithFaceId, passcodeOptionsData.presentationSettings.enableBiometrics))
-                }
-            }
+            // The fork locks on each inactive transition and requires PIN entry.
             if WalletConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 }).isAvailable {
                 entries.append(.walletHeader(presentationData.theme, presentationData.strings.PasscodeSettings_LockWallet.uppercased()))
                 let protectionEnabled = state.protection?.enabled == true
 
                 let controlsEnabled = !state.protectionUnavailable
                 entries.append(.walletPasscode(presentationData.theme, presentationData.strings.PasscodeSettings_WalletConfirmWithPasscode, protectionEnabled, controlsEnabled))
-                if protectionEnabled && (state.canUseBiometrics || state.protection?.biometricsEnabled == true) {
-                    entries.append(.walletBiometrics(presentationData.theme, state.faceID ? presentationData.strings.PasscodeSettings_WalletConfirmWithFaceId : presentationData.strings.PasscodeSettings_WalletConfirmWithTouchId, state.protection?.biometricsEnabled == true, controlsEnabled))
-                }
                 entries.append(.walletInfo(presentationData.theme, presentationData.strings.PasscodeSettings_WalletProtectionInfo))
             }
     }

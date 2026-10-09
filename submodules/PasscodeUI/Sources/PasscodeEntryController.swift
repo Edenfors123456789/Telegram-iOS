@@ -73,6 +73,7 @@ public final class PasscodeEntryController: ViewController {
     private let credentialLockDisposable = MetaDisposable()
     
     private let biometricsDisposable = MetaDisposable()
+    private let activeStateDisposable = MetaDisposable()
     private let biometricAuthenticationDisposable = MetaDisposable()
     private var hasOngoingBiometricsRequest = false
     private var skipNextBiometricsRequest = false
@@ -90,8 +91,10 @@ public final class PasscodeEntryController: ViewController {
         self.authenticationScope = authenticationScope
         self.authenticationLifetime = authenticationLifetime
         self.biometricReason = biometricReason
-        self.authenticateBiometrics = authenticateBiometrics
-        self.biometrics = biometrics
+        // PIN entry is mandatory, including extension and protected-resource prompts.
+        // Keep the parameters for upstream API compatibility.
+        self.authenticateBiometrics = nil
+        self.biometrics = .none
         self.arguments = arguments
         self.authenticationLifecycle = PasscodeEntryLifecycle(isMainApp: applicationBindings.isMainApp)
         
@@ -137,11 +140,20 @@ public final class PasscodeEntryController: ViewController {
             self.isPasscodeLocked = locked
             if locked, self.authenticated != nil { self.dismiss() }
         }))
+        self.activeStateDisposable.set((applicationBindings.applicationIsActive |> deliverOnMainQueue).start(next: { [weak self] active in
+            guard let self else { return }
+            if self.authenticationLifecycle.updateApplicationIsActive(active) {
+                self.invalidatePendingPINInput()
+                if self.authenticated != nil { self.dismiss() }
+            }
+            if active, self.isNodeLoaded { self.refreshCredentialCooldown() }
+        }))
     }
     
     deinit {
         self.presentationDataDisposable?.dispose()
         self.biometricsDisposable.dispose()
+        self.activeStateDisposable.dispose()
         self.biometricAuthenticationDisposable.dispose()
         self.inBackgroundDisposable?.dispose()
         self.credentialLockDisposable.dispose()
@@ -381,6 +393,18 @@ public final class PasscodeEntryController: ViewController {
     public func ensureInputFocused() {
         guard self.authenticationLifecycle.canAuthenticate else { return }
         self.controllerNode.activateInput()
+    }
+
+    /// Called synchronously before lifecycle signal delivery or credential persistence.
+    public func invalidatePendingPINInput() {
+        assert(Thread.isMainThread)
+        self.authenticationLifecycle.invalidatePendingResult()
+        self.cooldownRequestId &+= 1
+        self.checkingCode = false
+        if self.isNodeLoaded {
+            self.controllerNode.resetInput()
+            self.controllerNode.isUserInteractionEnabled = self.authenticationDismissal.phase == .active
+        }
     }
     
     public func requestBiometrics(force: Bool = false) {

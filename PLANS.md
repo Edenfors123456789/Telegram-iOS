@@ -6,7 +6,7 @@ Last updated: 2026-10-09 (Europe/Minsk).
 
 The user approved `DUAL_PIN_ACCESS_PLAN_v1.txt` and authorized autonomous staged implementation, relevant checks, repairs, and local Git checkpoints. Changes to agreed product behavior require confirmation.
 
-**Current stage: 3 — lock/UI/accounts integration. Stages 0, 1 and 2 passed; running Telegram UI still has upstream behavior.**
+**Current stage: 3 — lock/UI/accounts integration. Stages 0, 1 and 2 passed. Opaque-cover/lifecycle hardening is being integrated; actual Dual PIN selection, enrollment and account visibility are not connected yet.**
 
 The full unmodified Telegram application built successfully and was visually verified on an isolated simulator. The baseline gate is satisfied on stable Xcode 27.0, with the documented version override; it is not a reproduced Xcode-26.6 release build. Architecture and integration paths were checked against the approved behavior and current source tree; stage 2 is authorized.
 
@@ -90,6 +90,18 @@ The full unmodified Telegram application built successfully and was visually ver
 - `f6d3e99743`: verified original full simulator build, launch and 306 iOS tests; stage 0 gate passed.
 - `5c28249fce`: approved integration architecture, verified source-path leakage matrix; stage 1 passed.
 - `a646e1c8dc`: recoverable stage-2 checkpoint, 17 verified foundation cases (not the whole stage).
+- `947f725815`: completed stage-2 foundation, transcript provenance/expiry, 26 Mac and 27 hosted iOS cases including actual Keychain.
+
+## Stage 3 evidence and pending work
+
+- Added `AccessModeUI` opaque black cover. A red hosted UI test exposed transparent pixels; corrected cover and row-stride-aware pixel assertions passed 2 iOS cases, 0 failures (exit 0, 37.679 seconds, `build-input/dual-pin-stage3-cover-green.log`). The failed run stalled in Xcode failure-diagnostics export; only its identified task-owned xcodebuild process was terminated after preserving test output. No unrelated Xcode/device processes were changed.
+- Both existing window covers now retain no underlying screenshot/theme imagery. Main-app inactivity synchronously installs the cover and invalidates pending PIN results before queued lifecycle delivery; every inactive return requires a PIN. Legacy unlock applies in the verified callback's main-thread turn instead of queueing a later unlock behind a new lock.
+- PIN controller ignores biometric callbacks/modes; settings no longer offer biometric unlock or an autolock grace interval. Remaining biometric backend cleanup and complete dual setup/migration integration are pending.
+- New PIN lifecycle regressions reject verification across inactivity alone (before background), synchronous invalidation, and dismissal. SwiftPM warnings-as-errors: 28 cases, 0 failures, exit 0 (`build-input/dual-pin-stage3-pin-lifecycle.log`). This verifies the independent state machine, not all application frames.
+- Full application build passed: exit 0, 62.585 seconds, 80 executed actions, stable Xcode 27, upstream public configuration/profile fixtures, `debug_sim_arm64`, build number 3. Log/metadata: `build-input/dual-pin-stage3/app-cover-build.log` and `.json`. IPA 605,146,457 bytes, SHA-256 `e450ac1673c12beba8baa22a89daca38c02222ff94f908874f3bd2798cebbe72`. Fixture identity is for isolated no-account simulator regression only; it is not the chosen fork identity or device-signing readiness.
+- Fresh artifact installed/launched on the isolated simulator (PID 85167); screenshot and semantic snapshot confirm ordinary Telegram onboarding. Evidence: `app-cover-launch.json`, `app-cover-onboarding.jpg`. No actual account/PIN was configured; this smoke check does not prove mode transition/frame secrecy.
+- Hosted iOS core verification passed: exit 0, 53.009 seconds overall, 29 XCTest cases, 0 failures, including real Keychain and PIN lifecycle (`core-ios-tests.log`, `core-ios-xctest.log`).
+- Next: save the verified lifecycle checkpoint, then continue authenticated initialization/migration and role-visible account integration. Stage 3 remains incomplete; B must not be published before its guarded root/data adapters are ready.
 
 ## Resume rules
 

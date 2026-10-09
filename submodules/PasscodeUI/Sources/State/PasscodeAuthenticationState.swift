@@ -1,5 +1,6 @@
 import Foundation
 import PasscodeCore
+import AccessModeCore
 
 func validatedPasscodeBiometricSession(_ session: PasscodeSession, scope: PasscodeSession.Scope,
                                       lifetime: PasscodeSession.Lifetime,
@@ -14,41 +15,7 @@ func validatedPasscodeBiometricSession(_ session: PasscodeSession, scope: Passco
     }
 }
 
-struct PasscodeEntryLifecycle {
-    private let isMainApp: Bool
-    private var isInBackground = false
-    private var isDismissed = false
-    private(set) var generation: UInt64 = 0
-
-    init(isMainApp: Bool) {
-        self.isMainApp = isMainApp
-    }
-
-    var canAuthenticate: Bool {
-        return !self.isInBackground && !self.isDismissed
-    }
-
-    mutating func updateApplicationInForeground(_ value: Bool) -> Bool {
-        let isInBackground = self.isMainApp && !value
-        guard self.isInBackground != isInBackground else { return false }
-        self.isInBackground = isInBackground
-        if isInBackground {
-            self.generation &+= 1
-            return true
-        }
-        return false
-    }
-
-    func acceptsResult(generation: UInt64) -> Bool {
-        return self.canAuthenticate && self.generation == generation
-    }
-
-    mutating func dismiss() {
-        guard !self.isDismissed else { return }
-        self.isDismissed = true
-        self.generation &+= 1
-    }
-}
+typealias PasscodeEntryLifecycle = PINEntryLifecycle
 
 final class PasscodeAuthenticationDismissal {
     typealias Outcome = Result<PasscodeSession?, PasscodeError>

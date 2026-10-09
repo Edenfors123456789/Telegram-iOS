@@ -3,31 +3,23 @@ import UIKit
 import Display
 import TelegramPresentationData
 import AsyncDisplayKit
+import AccessModeUI
 
 final class LockedWindowCoveringView: WindowCoveringView {
-    private let contentView: UIImageView
+    private let contentView: OpaqueAccessCoverView
     
-    init(theme: PresentationTheme) {
-        self.contentView = UIImageView()
+    init(theme: PresentationTheme? = nil) {
+        self.contentView = OpaqueAccessCoverView(frame: .zero)
         
         super.init(frame: CGRect())
         
-        self.backgroundColor =  theme.chatList.backgroundColor
+        self.backgroundColor = .black
+        self.isOpaque = true
         self.addSubview(self.contentView)
     }
     
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-    
-    func updateTheme(_ theme: PresentationTheme) {
-        self.backgroundColor = theme.chatList.backgroundColor
-    }
-    
-    func updateSnapshot(_ image: UIImage?) {
-        if image != nil {
-            self.contentView.image = image   
-        }
     }
     
     override func updateLayout(_ size: CGSize) {
