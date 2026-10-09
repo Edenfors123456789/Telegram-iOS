@@ -16,6 +16,14 @@ Keep credential verification/file transactions off the main thread. File-backed 
 
 Configuration validates one shared primary, exact installation/environment/record/self-user identities, unique server accounts, role-local selection and visible-only Premium limits. Hidden chats belong to the shared primary. Each hidden chat has a persistent generation: unhide removes it; rehide creates a new one. No role UI may consume the complete raw registry.
 
+## Stage-3 management commands
+
+`coordinator.setHidden` and `selectAccount` replace authority only after the encrypted mutation commits. Their new ticket is preparing: attach the opaque cover first, discard the old query/navigation epoch, prepare the new revision/root, then complete preparation. Old tickets and cross-process old configuration grants are invalid. Hidden-management data is A-only; selection returns only the current role's account identity.
+
+Enrollment is explicitly staged: `beginEnrollment` commits the role/flow origin before creating or exposing authorization UI; `bindEnrollment` durably binds its newly created provisional record; only `completeEnrollment` may adopt the confirmed self-user identity of that exact record. Grants, flow issuer, configuration/revocation and provisional record must all match. The permit is not Codable. An existing visible identity returns its permitted existing identity; an other-role collision returns only `unavailable`. The adapter must neutralize its own provisional session, never an existing raw account. Reusing a permit, another record, installation, issuer or revoked flow fails closed.
+
+Lock/configuration/PIN changes abandon pending authority. Unknown crash-created records remain quarantined rather than adopted into the next mode. This foundation does not implement provisional-session cleanup, restart recovery UI, live Premium refresh, Telegram's authorization callbacks or visible account streams; those adapters remain stage-3 work. A hidden role's Premium membership cannot increase the other role's enrollment allowance.
+
 ## Transcript adapter contract
 
 - Only an explicit permitted B route calls `RestrictedTranscriptStore.begin`. Discovery, counters and incoming updates must not create a projection. Lists can include an activated projection using its filtered data, never the original raw dialog's preview/count.

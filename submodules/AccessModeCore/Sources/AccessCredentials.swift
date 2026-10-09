@@ -97,6 +97,7 @@ struct AccessVaultState: Codable {
     var attemptsA: PINAttemptBudget
     var attemptsB: PINAttemptBudget
     var revocation: UInt64
+    var pendingEnrollment: PendingAccountEnrollment? = nil
 
     func validate() throws {
         guard version == 1 else { throw AccessError.unsupportedVersion }
@@ -106,6 +107,10 @@ struct AccessVaultState: Codable {
         try attemptsA.validate()
         try attemptsB.validate()
         guard a.id != b.id, a.salt != b.salt, revocation > 0 else { throw AccessError.corrupt }
+        if let pendingEnrollment {
+            guard pendingEnrollment.revocation == revocation,
+                  pendingEnrollment.configurationRevision == configuration.revision else { throw AccessError.corrupt }
+        }
     }
 
     func require(_ grant: AuthenticatedModeGrant, issuer: UUID) throws {
@@ -118,8 +123,8 @@ struct AccessVaultState: Codable {
 }
 
 public final class AccessCredentialStore {
-    private let issuer = UUID()
-    private let file: EncryptedAccessFile<AccessVaultState>
+    let issuer = UUID()
+    let file: EncryptedAccessFile<AccessVaultState>
     private let iterations: Int
     private let clock: () throws -> AccessClockSnapshot
 
@@ -197,6 +202,7 @@ public final class AccessCredentialStore {
                                                        iterations: self.iterations, revision: old.revision + 1)
             if grant.mode == .a { state.a = replacement } else { state.b = replacement }
             state.revocation += 1
+            state.pendingEnrollment = nil
             stored = state
         }
     }
@@ -207,6 +213,7 @@ public final class AccessCredentialStore {
             try state.validate()
             guard state.revocation < UInt64.max else { throw AccessError.corrupt }
             state.revocation += 1
+            state.pendingEnrollment = nil
             stored = state
         }
     }
@@ -222,8 +229,8 @@ public final class AccessCredentialStore {
         }
     }
 
-    public func setHidden(_ chat: ChatIdentity, hidden: Bool, grant: AuthenticatedModeGrant,
-                          expectedRevision: UInt64) throws {
+    @discardableResult public func setHidden(_ chat: ChatIdentity, hidden: Bool, grant: AuthenticatedModeGrant,
+                          expectedRevision: UInt64) throws -> AuthenticatedModeGrant {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
             try state.require(grant, issuer: self.issuer)
@@ -241,11 +248,13 @@ public final class AccessCredentialStore {
             state.configuration = try AccessConfiguration(installation: config.installation, revision: config.revision + 1,
                 accounts: config.accounts, hiddenChats: hiddenChats, hiddenChatGenerations: generations,
                 selectedA: config.selectedA, selectedB: config.selectedB)
+            state.pendingEnrollment = nil
             stored = state
+            return self.grant(mode: grant.mode, state: state)
         }
     }
 
-    private func grant(mode: AccessMode, state: AccessVaultState) -> AuthenticatedModeGrant {
+    func grant(mode: AccessMode, state: AccessVaultState) -> AuthenticatedModeGrant {
         let credential = mode == .a ? state.a : state.b
         return AuthenticatedModeGrant(mode: mode, issuer: issuer, configurationRevision: state.configuration.revision,
             credentialID: credential.id, credentialRevision: credential.revision, revocation: state.revocation)

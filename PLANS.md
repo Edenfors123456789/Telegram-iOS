@@ -91,6 +91,7 @@ The full unmodified Telegram application built successfully and was visually ver
 - `5c28249fce`: approved integration architecture, verified source-path leakage matrix; stage 1 passed.
 - `a646e1c8dc`: recoverable stage-2 checkpoint, 17 verified foundation cases (not the whole stage).
 - `947f725815`: completed stage-2 foundation, transcript provenance/expiry, 26 Mac and 27 hosted iOS cases including actual Keychain.
+- `0a57eadb37`: verified stage-3 lifecycle/opaque-cover checkpoint; full build, isolated launch, 28 Mac / 29 iOS core cases and 2 cover cases. Not the whole stage.
 
 ## Stage 3 evidence and pending work
 
@@ -102,6 +103,9 @@ The full unmodified Telegram application built successfully and was visually ver
 - Fresh artifact installed/launched on the isolated simulator (PID 85167); screenshot and semantic snapshot confirm ordinary Telegram onboarding. Evidence: `app-cover-launch.json`, `app-cover-onboarding.jpg`. No actual account/PIN was configured; this smoke check does not prove mode transition/frame secrecy.
 - Hosted iOS core verification passed: exit 0, 53.009 seconds overall, 29 XCTest cases, 0 failures, including real Keychain and PIN lifecycle (`core-ios-tests.log`, `core-ios-xctest.log`).
 - Next: save the verified lifecycle checkpoint, then continue authenticated initialization/migration and role-visible account integration. Stage 3 remains incomplete; B must not be published before its guarded root/data adapters are ready.
+- Added durable coordinator commands for hide/selection revisions and provisional account enrollment ownership. A new preparing ticket replaces old authority only after commit; both roles keep independent selection. Enrollment binds an exact provisional record and confirmed server identity, returns neutral other-role collisions and rejects stale/replayed flows. No raw account is deleted by these commands.
+- Account-command tests initially failed compilation because the APIs were not implemented; those tests did not execute (`account-commands-red.log`). Final Mac run: 36 XCTest cases, 0 failures, warnings-as-errors. Hosted iOS run: 37 cases, 0 failures, exit 0, 55.223 seconds (`account-commands-final-mac.log`, `account-commands-ios.log`, `account-commands-ios-xctest.log`). Includes commit failure, exact record binding/replay, hidden Premium quota, restart persistence and other-role ownership denial.
+- Full app verification of the added commands passed: exit 0, 33.682 seconds, 29 executed actions (`account-commands-app-build.log`). Real Telegram enrollment/cleanup, migration UI and account stream adapters remain pending; isolated core tests do not establish their correctness.
 
 ## Resume rules
 

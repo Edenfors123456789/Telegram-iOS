@@ -68,6 +68,68 @@ public final class AccessModeCoordinator {
         return try body(AccessModePolicy(mode: verified.mode, configuration: config))
     }
 
+    /// Attach the cover before calling; replacement authority remains preparing until
+    /// the UI has discarded old results and prepared the new revision/root.
+    public func setHidden(_ chat: ChatIdentity, hidden: Bool, ticket: AccessTicket) throws -> AccessTicket {
+        try mutate(ticket) {
+            try store.setHidden(chat, hidden: hidden, grant: $0, expectedRevision: $0.configurationRevision)
+        }
+    }
+
+    public func selectAccount(_ account: AccountIdentity, ticket: AccessTicket) throws -> AccessTicket {
+        try mutate(ticket) { try store.selectAccount(account, grant: $0) }
+    }
+
+    public func beginEnrollment(ticket: AccessTicket) throws -> AccountEnrollmentPermit {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        do { return try store.beginEnrollment(grant: verified) }
+        catch { invalidate(); throw error }
+    }
+
+    public func cancelEnrollment(_ permit: AccountEnrollmentPermit, ticket: AccessTicket) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        do { try store.cancelEnrollment(permit, grant: verified) }
+        catch { invalidate(); throw error }
+    }
+
+    public func bindEnrollment(_ permit: AccountEnrollmentPermit, provisionalRecordID: Int64, ticket: AccessTicket) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        do { try store.bindEnrollment(permit, provisionalRecordID: provisionalRecordID, grant: verified) }
+        catch { invalidate(); throw error }
+    }
+
+    public func completeEnrollment(_ permit: AccountEnrollmentPermit, confirmedAccount: AccountIdentity,
+                                   isPremium: Bool, ticket: AccessTicket) throws -> (decision: AccountEnrollmentDecision, ticket: AccessTicket) {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        do {
+            let (decision, updated) = try store.completeEnrollment(permit, confirmedAccount: confirmedAccount, isPremium: isPremium, grant: verified)
+            return (decision, replaceAfterMutation(updated))
+        } catch { invalidate(); throw error }
+    }
+
+    private func mutate(_ ticket: AccessTicket, _ operation: (AuthenticatedModeGrant) throws -> AuthenticatedModeGrant) throws -> AccessTicket {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        do { return replaceAfterMutation(try operation(verified)) }
+        catch { invalidate(); throw error }
+    }
+
+    private func replaceAfterMutation(_ updated: AuthenticatedModeGrant) -> AccessTicket {
+        generation = UUID()
+        grant = updated
+        presentation = .preparing(updated.mode)
+        return AccessTicket(coordinator: id, generation: generation)
+    }
+
     private func requireLocal(_ ticket: AccessTicket, requireReady: Bool) throws -> AuthenticatedModeGrant {
         guard ticket.coordinator == id, ticket.generation == generation, let grant,
               !requireReady || presentation == .active(grant.mode) else { throw AccessError.staleAuthorization }

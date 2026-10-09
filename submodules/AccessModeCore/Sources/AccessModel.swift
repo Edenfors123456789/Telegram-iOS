@@ -125,6 +125,16 @@ public struct AccessModePolicy {
         self.configuration = configuration
     }
 
+    public var revision: UInt64 { configuration.revision }
+    public var selectedAccount: AccountIdentity { mode == .a ? configuration.selectedA : configuration.selectedB }
+    public var hiddenChatsForManagement: [ChatIdentity] {
+        guard canManageHiddenChats else { return [] }
+        return configuration.hiddenChats.sorted {
+            if $0.peerNamespace != $1.peerNamespace { return $0.peerNamespace < $1.peerNamespace }
+            return $0.peerID < $1.peerID
+        }
+    }
+
     public var visibleAccounts: [AccountIdentity] {
         guard (try? configuration.validate()) != nil else { return [] }
         return configuration.accounts.filter { $0.visible(in: mode) }.map(\.identity)
