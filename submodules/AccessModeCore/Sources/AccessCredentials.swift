@@ -1,0 +1,248 @@
+import Foundation
+import Darwin
+
+public struct AccessClockSnapshot {
+    public let bootID: String
+    public let uptime: TimeInterval
+
+    public init(bootID: String, uptime: TimeInterval) {
+        self.bootID = bootID
+        self.uptime = uptime
+    }
+
+    public static func system() throws -> AccessClockSnapshot {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &boot, &size, nil, 0) == 0 else { throw AccessError.unavailable }
+        return AccessClockSnapshot(bootID: "\(boot.tv_sec):\(boot.tv_usec)", uptime: ProcessInfo.processInfo.systemUptime)
+    }
+
+    func validate() throws {
+        guard !bootID.isEmpty, uptime.isFinite, uptime >= 0 else { throw AccessError.unavailable }
+    }
+}
+
+public struct AuthenticatedModeGrant {
+    public let mode: AccessMode
+    let issuer: UUID
+    let configurationRevision: UInt64
+    let credentialID: UUID
+    let credentialRevision: UInt64
+    let revocation: UInt64
+}
+
+struct PINCredential: Codable {
+    let mode: AccessMode
+    let id: UUID
+    let revision: UInt64
+    let salt: Data
+    let iterations: Int
+    let proof: Data
+
+    var context: String { "telegram.dual-pin.credential.v1:\(mode.rawValue):\(id.uuidString):\(revision)" }
+
+    func validate(expectedMode: AccessMode) throws {
+        guard mode == expectedMode, revision > 0, salt.count == 16, proof.count == 60,
+              (AccessCrypto.minimumIterations ... AccessCrypto.maximumIterations).contains(iterations) else { throw AccessError.corrupt }
+    }
+
+    static func create(mode: AccessMode, pin: String, deviceKey: Data, iterations: Int, revision: UInt64 = 1) throws -> PINCredential {
+        let id = UUID()
+        let salt = try AccessCrypto.random(16)
+        var derived = try AccessCrypto.derive(pin, deviceKey: deviceKey, salt: salt, iterations: iterations)
+        defer { derived.resetBytes(in: 0 ..< derived.count) }
+        let context = "telegram.dual-pin.credential.v1:\(mode.rawValue):\(id.uuidString):\(revision)"
+        return PINCredential(mode: mode, id: id, revision: revision, salt: salt, iterations: iterations,
+                             proof: try AccessCrypto.seal(AccessCrypto.random(32), key: derived, context: context))
+    }
+
+    func matches(_ pin: String, deviceKey: Data) throws -> Bool {
+        var derived = try AccessCrypto.derive(pin, deviceKey: deviceKey, salt: salt, iterations: iterations)
+        defer { derived.resetBytes(in: 0 ..< derived.count) }
+        guard var value = try? AccessCrypto.open(proof, key: derived, context: context) else { return false }
+        defer { value.resetBytes(in: 0 ..< value.count) }
+        return value.count == 32
+    }
+}
+
+struct PINAttemptBudget: Codable {
+    var failures = 0
+    var bootID: String?
+    var deadline: TimeInterval?
+
+    func validate() throws {
+        guard (0 ... 6).contains(failures),
+              (failures < 6 && bootID == nil && deadline == nil) ||
+                (failures == 6 && !(bootID ?? "").isEmpty && deadline?.isFinite == true && deadline! >= 0) else { throw AccessError.corrupt }
+    }
+
+    mutating func eligible(at clock: AccessClockSnapshot) -> Bool {
+        guard failures >= 6 else { return true }
+        // A reboot must not clear a cooldown. Start a fresh full delay in the new boot.
+        if bootID != clock.bootID { bootID = clock.bootID; deadline = clock.uptime + 60 }
+        return clock.uptime >= (deadline ?? .infinity)
+    }
+
+    mutating func fail(at clock: AccessClockSnapshot) {
+        failures = min(6, failures + 1)
+        if failures == 6 { bootID = clock.bootID; deadline = clock.uptime + 60 }
+    }
+}
+
+struct AccessVaultState: Codable {
+    let version: Int
+    var configuration: AccessConfiguration
+    var a: PINCredential
+    var b: PINCredential
+    var attemptsA: PINAttemptBudget
+    var attemptsB: PINAttemptBudget
+    var revocation: UInt64
+
+    func validate() throws {
+        guard version == 1 else { throw AccessError.unsupportedVersion }
+        try configuration.validate()
+        try a.validate(expectedMode: .a)
+        try b.validate(expectedMode: .b)
+        try attemptsA.validate()
+        try attemptsB.validate()
+        guard a.id != b.id, a.salt != b.salt, revocation > 0 else { throw AccessError.corrupt }
+    }
+
+    func require(_ grant: AuthenticatedModeGrant, issuer: UUID) throws {
+        try validate()
+        let credential = grant.mode == .a ? a : b
+        guard grant.issuer == issuer, grant.configurationRevision == configuration.revision,
+              grant.credentialID == credential.id, grant.credentialRevision == credential.revision,
+              grant.revocation == revocation else { throw AccessError.staleAuthorization }
+    }
+}
+
+public final class AccessCredentialStore {
+    private let issuer = UUID()
+    private let file: EncryptedAccessFile<AccessVaultState>
+    private let iterations: Int
+    private let clock: () throws -> AccessClockSnapshot
+
+    public init(directory: URL, namespace: String, keyProvider: AccessDeviceKeyProvider,
+                iterations: Int? = nil, clock: @escaping () throws -> AccessClockSnapshot = AccessClockSnapshot.system) throws {
+        let count = iterations ?? AccessCrypto.calibratedIterations()
+        guard (AccessCrypto.minimumIterations ... AccessCrypto.maximumIterations).contains(count) else { throw AccessError.invalidConfiguration }
+        self.iterations = count
+        self.clock = clock
+        self.file = try EncryptedAccessFile(directory: directory, namespace: namespace, keyProvider: keyProvider)
+    }
+
+    /// Stage-3 migration must authenticate the legacy owner before this initial-only operation.
+    /// An existing, corrupt or unsupported vault cannot be replaced through this method.
+    public func initialize(configuration: AccessConfiguration, pinA: String, pinB: String) throws {
+        try configuration.validate()
+        guard Self.validPIN(pinA), Self.validPIN(pinB) else { throw AccessError.invalidPIN }
+        guard pinA != pinB else { throw AccessError.identicalPINs }
+        try file.transaction(allowInitialization: true) { state, key in
+            guard state == nil else { throw AccessError.alreadyConfigured }
+            state = AccessVaultState(version: 1, configuration: configuration,
+                a: try PINCredential.create(mode: .a, pin: pinA, deviceKey: key, iterations: self.iterations),
+                b: try PINCredential.create(mode: .b, pin: pinB, deviceKey: key, iterations: self.iterations),
+                attemptsA: PINAttemptBudget(), attemptsB: PINAttemptBudget(), revocation: 1)
+            try state!.validate()
+        }
+    }
+
+    public func authenticate(pin: String) throws -> AuthenticatedModeGrant {
+        guard Self.validPIN(pin) else { throw AccessError.invalidPIN }
+        let result: Result<AuthenticatedModeGrant, AccessError> = try file.transaction { stored, key in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.validate()
+            let now = try self.clock()
+            try now.validate()
+            let eligibleA = state.attemptsA.eligible(at: now)
+            let eligibleB = state.attemptsB.eligible(at: now)
+            // Always derive/check both records; no early return indicating the matched role.
+            let matchesA = try state.a.matches(pin, deviceKey: key)
+            let matchesB = try state.b.matches(pin, deviceKey: key)
+            guard !(matchesA && matchesB) else { throw AccessError.corrupt }
+            let mode: AccessMode? = matchesA && eligibleA ? .a : (matchesB && eligibleB ? .b : nil)
+            let outcome: Result<AuthenticatedModeGrant, AccessError>
+            if let mode {
+                if mode == .a { state.attemptsA = PINAttemptBudget() } else { state.attemptsB = PINAttemptBudget() }
+                outcome = .success(self.grant(mode: mode, state: state))
+            } else {
+                // A known but temporarily blocked PIN must not count as a wrong guess for B.
+                if !matchesA && !matchesB {
+                    if eligibleA { state.attemptsA.fail(at: now) }
+                    if eligibleB { state.attemptsB.fail(at: now) }
+                }
+                outcome = .failure(!eligibleA && !eligibleB ? .cooldown : .invalidPIN)
+            }
+            stored = state
+            return outcome
+        }
+        // Persistence failure throws before a grant leaves the store.
+        return try result.get()
+    }
+
+    public func changePIN(grant: AuthenticatedModeGrant, currentPIN: String, newPIN: String) throws {
+        guard Self.validPIN(newPIN) else { throw AccessError.invalidPIN }
+        let current = try authenticate(pin: currentPIN)
+        guard current.mode == grant.mode else { throw AccessError.authenticationRequired }
+        try file.transaction { stored, key in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.require(grant, issuer: self.issuer)
+            try state.require(current, issuer: self.issuer)
+            let other = grant.mode == .a ? state.b : state.a
+            guard try !other.matches(newPIN, deviceKey: key) else { throw AccessError.identicalPINs }
+            let old = grant.mode == .a ? state.a : state.b
+            guard old.revision < UInt64.max, state.revocation < UInt64.max else { throw AccessError.corrupt }
+            let replacement = try PINCredential.create(mode: grant.mode, pin: newPIN, deviceKey: key,
+                                                       iterations: self.iterations, revision: old.revision + 1)
+            if grant.mode == .a { state.a = replacement } else { state.b = replacement }
+            state.revocation += 1
+            stored = state
+        }
+    }
+
+    public func revokeAll() throws {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.validate()
+            guard state.revocation < UInt64.max else { throw AccessError.corrupt }
+            state.revocation += 1
+            stored = state
+        }
+    }
+
+    func configuration(grant: AuthenticatedModeGrant) throws -> AccessConfiguration {
+        let state = try file.read()
+        try state.require(grant, issuer: issuer)
+        // Private adapters need the registry; never expose this raw configuration to a mode UI.
+        return state.configuration
+    }
+
+    public func setHidden(_ chat: ChatIdentity, hidden: Bool, grant: AuthenticatedModeGrant,
+                          expectedRevision: UInt64) throws {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.require(grant, issuer: self.issuer)
+            guard grant.mode == .a else { throw AccessError.authenticationRequired }
+            let config = state.configuration
+            guard config.revision == expectedRevision else { throw AccessError.revisionConflict }
+            guard config.revision < UInt64.max, chat.supported,
+                  config.accounts.contains(where: { $0.identity == chat.account && $0.ownership == .shared }) else { throw AccessError.invalidConfiguration }
+            var hiddenChats = config.hiddenChats
+            if hidden { hiddenChats.insert(chat) } else { hiddenChats.remove(chat) }
+            state.configuration = try AccessConfiguration(installation: config.installation, revision: config.revision + 1,
+                accounts: config.accounts, hiddenChats: hiddenChats, selectedA: config.selectedA, selectedB: config.selectedB)
+            stored = state
+        }
+    }
+
+    private func grant(mode: AccessMode, state: AccessVaultState) -> AuthenticatedModeGrant {
+        let credential = mode == .a ? state.a : state.b
+        return AuthenticatedModeGrant(mode: mode, issuer: issuer, configurationRevision: state.configuration.revision,
+            credentialID: credential.id, credentialRevision: credential.revision, revocation: state.revocation)
+    }
+
+    static func validPIN(_ value: String) -> Bool {
+        value.utf8.count == 6 && value.utf8.allSatisfy { (48 ... 57).contains($0) }
+    }
+}

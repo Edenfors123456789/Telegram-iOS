@@ -70,11 +70,22 @@ The full unmodified Telegram application built successfully and was visually ver
 - All referenced existing source paths were checked on disk; `git diff --check` passed. Documentation is consistent with the approved six-digit/no-biometrics/no-push/account-pool/transcript behavior.
 - The legacy PIN verifier increments attempts on each failed credential check; dual authentication must be a single operation with independent durable budgets, not two sequential legacy verifications.
 
+## Stage 2 working evidence (not complete)
+
+- Added independent `submodules/AccessModeCore` SwiftPM/Bazel module; it is not connected to Telegram UI yet.
+- Configuration validation and policy cover exact account identity, symmetric ownership, visible-only Premium limits, hidden discovery versus explicit opening, and unknown namespaces.
+- Credentials use separate salts, upstream-strength HMAC/PBKDF2-SHA256 and AES-GCM proofs; an encrypted atomic vault stores configuration and independent attempt budgets. Keychain adapter is device-local, non-synchronizing, without biometric evaluation.
+- Opaque verified grants and coordinator tickets bind issuer, credential/configuration revisions, persistent revocation and local generations. Preparation cannot submit; stale callbacks are discarded; a failed persistent lock still locks the local coordinator.
+- Initial policy regression run failed in 5 cases as expected; corrected run passed. Security run found a coordinator invalidation defect; corrected SwiftPM run with warnings-as-errors passed 17 XCTest cases, 0 failures. Logs: `build-input/dual-pin-stage2-policy-red.log`, `dual-pin-stage2-security-tests.log`, `dual-pin-stage2-security-green.log`.
+- Bazel host verification also passed: `//submodules/AccessModeCore:AccessModeCoreTests`, 17 XCTest cases, 0 failures, warnings-as-errors (log `build-input/dual-pin-stage2-bazel-checkpoint.log`).
+- Remaining for the stage: durable transcript boundary/provenance/expiry foundation, stronger failure/concurrency checks, iOS compiler/test verification, review and stage commit. No PIN UI, account filtering, notifications or history adapters are implemented yet.
+
 ## Commits
 
 - `79a4fc3024`: approved text plan, `AGENTS.md`, `PLANS.md`, and baseline documentation. Documentation checkpoint only; no product implementation.
 - `350ea8d941`: reproducible resource-limited original simulator runner, Metal tooling repair, and baseline host evidence. No app code changes.
 - `f6d3e99743`: verified original full simulator build, launch and 306 iOS tests; stage 0 gate passed.
+- `5c28249fce`: approved integration architecture, verified source-path leakage matrix; stage 1 passed.
 
 ## Resume rules
 
