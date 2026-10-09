@@ -6,9 +6,9 @@ Last updated: 2026-10-09 (Europe/Minsk).
 
 The user approved `DUAL_PIN_ACCESS_PLAN_v1.txt` and authorized autonomous staged implementation, relevant checks, repairs, and local Git checkpoints. Changes to agreed product behavior require confirmation.
 
-**Current stage: 1 — integration architecture and leakage map. Product implementation has not started. Stage 0 passed.**
+**Current stage: 2 — isolated access infrastructure. Stages 0 and 1 passed. UI integration has not started.**
 
-The full unmodified Telegram application built successfully and was visually verified on an isolated simulator. The baseline gate is satisfied on stable Xcode 27.0, with the documented version override; it is not a reproduced Xcode-26.6 release build. Stage 1 must be verified and committed before stage 2 product implementation.
+The full unmodified Telegram application built successfully and was visually verified on an isolated simulator. The baseline gate is satisfied on stable Xcode 27.0, with the documented version override; it is not a reproduced Xcode-26.6 release build. Architecture and integration paths were checked against the approved behavior and current source tree; stage 2 is authorized.
 
 ## Repository and environment
 
@@ -26,8 +26,8 @@ The full unmodified Telegram application built successfully and was visually ver
 | Stage | Status | Gate |
 |---|---|---|
 | 0: baseline | Passed | Full original app build exit 0; 42 host cases + 306 iOS cases; isolated simulator onboarding |
-| 1: architecture/docs | In progress; plan approved | Updated source integration and leakage map, committed continuity documents |
-| 2: infrastructure | Not started | Tested credentials/configuration/policy/epochs/transcript foundation |
+| 1: architecture/docs | Passed | Approved behavior mapped to source; 41 surface paths verified; architecture and leakage documentation |
+| 2: infrastructure | In progress | Tested credentials/configuration/policy/epochs/transcript foundation |
 | 3: lock/UI/accounts | Not started | Verified PIN selection, ownership, transitions and management UI |
 | 4: filtering/history | Not started | Verified surface coverage, seven-day projection and stale-result rejection |
 | 5: notifications/external | Not started | Verified no push registration and guarded/disabled external surfaces |
@@ -58,15 +58,23 @@ The full unmodified Telegram application built successfully and was visually ver
 
 ## Next actions
 
-1. Commit the verified stage-0 evidence.
-2. Complete architecture/interface documentation and the integration/leakage matrix against actual upstream components.
-3. Verify documentation links and consistency with the approved behavior; commit stage 1.
-4. Begin stage 2 with isolated policy/security tests; do not claim any UI integration until its later stages are implemented and verified.
+1. Build the independent AccessModeCore module, beginning with configuration/policy/epoch regression tests.
+2. Implement device-local encrypted configuration, dual credential verification and durable attempt budgets; verify restart, corruption and concurrent updates.
+3. Add the transcript boundary/provenance/window foundation and its tests before stage 3.
+4. Own bundle/API/Apple-team configuration is pending a user-provided local file path for later device signing. Continue isolated simulator/module work independently.
+
+## Stage 1 evidence
+
+- `docs/dual-pin/ARCHITECTURE.md` records separate authentication, policy, storage, coordinator and Telegram adapters, plus symmetric account ownership and restricted-transcript semantics.
+- `docs/dual-pin/SURFACES.md` maps 41 existing source paths and identifies pending enforcement/evidence. No surface is claimed implemented yet.
+- All referenced existing source paths were checked on disk; `git diff --check` passed. Documentation is consistent with the approved six-digit/no-biometrics/no-push/account-pool/transcript behavior.
+- The legacy PIN verifier increments attempts on each failed credential check; dual authentication must be a single operation with independent durable budgets, not two sequential legacy verifications.
 
 ## Commits
 
 - `79a4fc3024`: approved text plan, `AGENTS.md`, `PLANS.md`, and baseline documentation. Documentation checkpoint only; no product implementation.
 - `350ea8d941`: reproducible resource-limited original simulator runner, Metal tooling repair, and baseline host evidence. No app code changes.
+- `f6d3e99743`: verified original full simulator build, launch and 306 iOS tests; stage 0 gate passed.
 
 ## Resume rules
 
