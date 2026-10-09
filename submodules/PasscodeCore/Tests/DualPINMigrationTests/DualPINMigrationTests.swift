@@ -7,8 +7,12 @@ import AccessModeCore
 private final class MigrationStorage: PasscodeStorage {
     var items: [String: Data] = [:]
     var deniedRemoval: String?
+    var deniedWrite: String?
     func read(_ account: String, context: LAContext?) throws -> Data? { items[account] }
-    func write(_ data: Data, account: String, biometric: Bool) throws { items[account] = data }
+    func write(_ data: Data, account: String, biometric: Bool) throws {
+        if account == deniedWrite { throw PasscodeError.unavailable }
+        items[account] = data
+    }
     func remove(_ account: String) throws {
         if account == deniedRemoval { throw PasscodeError.unavailable }
         items.removeValue(forKey: account)
@@ -38,6 +42,7 @@ private final class MigrationFixture {
     }
 
     var migration: DualPINLegacyMigration { DualPINLegacyMigration(legacy: legacy, environment: environment) }
+    var journal: DualPINLegacyJournal { DualPINLegacyJournal(legacy: legacy, environment: environment) }
 
     func install(owner: PasscodeSession?, publish: (PasscodeCredentialReference) throws -> Void = { _ in }) throws -> PasscodeCredentialReference {
         try migration.install(store: vault, configuration: config, pinA: "123456", pinB: "654321", ownerSession: owner, didCommitLegacyReference: publish)
@@ -53,6 +58,158 @@ private final class MigrationFixture {
         PasscodeSession.invalidateAll()
         PasscodeSession.setApplicationAvailable(false)
         try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+final class DualPINJournalTests: XCTestCase {
+    func testLegacyWriteFailureCannotFinalizeJournalAndCanRetryWithoutResourceLoss() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let key = try f.resourceKey(code: "123456")
+        let original = f.storage.items["credential"]
+        let a = try f.vault.authenticate(pin: "123456")
+        _ = try f.journal.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222")
+        f.storage.deniedWrite = "credential"
+        XCTAssertThrowsError(try f.journal.recover(store: f.vault, didCommitLegacyReference: { _ in XCTFail("No legacy commit") }))
+        XCTAssertEqual(f.storage.items["credential"], original)
+        XCTAssertTrue(try f.vault.hasPendingOwnerPINChange())
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "654321"))
+        f.storage.deniedWrite = nil
+        XCTAssertTrue(try f.journal.recover(store: f.vault, didCommitLegacyReference: { _ in }))
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+    }
+
+    func testFinalVaultWriteFailureAfterLegacyCommitReplaysWithoutRewrappingAgain() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let key = try f.resourceKey(code: "123456")
+        let a = try f.vault.authenticate(pin: "123456")
+        _ = try f.journal.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222")
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: f.directory.path) }
+        XCTAssertThrowsError(try f.journal.recover(store: f.vault, didCommitLegacyReference: { _ in
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: f.directory.path)
+        }))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: f.directory.path)
+        let appliedRecord = f.storage.items["credential"]
+        XCTAssertTrue(try f.vault.hasPendingOwnerPINChange())
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "222222"))
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+        XCTAssertTrue(try f.journal.recover(store: f.vault, didCommitLegacyReference: { _ in }))
+        XCTAssertEqual(f.storage.items["credential"], appliedRecord)
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+        XCTAssertEqual(try f.vault.authenticate(pin: "222222").mode, .a)
+    }
+
+    func testBiometricCleanupFailureKeepsJournalDeniedUntilExactCleanupCompletes() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let key = try f.resourceKey(code: "123456")
+        var record = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(f.storage.items["credential"])) as? [String: Any])
+        record["biometricAccount"] = "biometric.journal-old"
+        f.storage.items["credential"] = try JSONSerialization.data(withJSONObject: record)
+        f.storage.items["biometric.journal-old"] = Data(repeating: 0x39, count: 32)
+        let a = try f.vault.authenticate(pin: "123456")
+        _ = try f.journal.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222")
+        f.storage.deniedRemoval = "biometric.journal-old"
+        XCTAssertThrowsError(try f.journal.recover(store: f.vault, didCommitLegacyReference: { _ in XCTFail("Incomplete cleanup") }))
+        XCTAssertTrue(try f.vault.hasPendingOwnerPINChange())
+        XCTAssertFalse(try f.legacy.protectionSettings().biometricsEnabled)
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "222222"))
+        f.storage.deniedRemoval = nil
+        XCTAssertTrue(try f.journal.recover(store: f.vault, didCommitLegacyReference: { _ in }))
+        XCTAssertNil(f.storage.items["biometric.journal-old"])
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+    }
+
+    func testAuthenticatedPlanRejectsTamperingWrongGroupAndUnexpectedLegacyRecord() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let owner = try f.legacy.verify("123456", scope: .settings)
+        let context = try f.environment.sharedAccessGroup()
+        let plan = try f.legacy.prepareOwnerPINRewrap("222222", session: owner, context: context)
+        owner.invalidate()
+        f.legacy.requireModePINManagement()
+        let original = f.storage.items["credential"]
+        var tampered = plan
+        tampered[20] ^= 1
+        XCTAssertThrowsError(try f.legacy.applyOwnerPINRewrap(tampered, context: context))
+        XCTAssertThrowsError(try f.legacy.applyOwnerPINRewrap(plan, context: "group.other.test"))
+        XCTAssertEqual(f.storage.items["credential"], original)
+        var record = try JSONDecoder().decode(PasscodeCredentialStore.Record.self, from: try XCTUnwrap(original))
+        record.id = UUID().uuidString
+        f.storage.items["credential"] = try JSONEncoder().encode(record)
+        let otherRecord = f.storage.items["credential"]
+        XCTAssertThrowsError(try f.legacy.applyOwnerPINRewrap(plan, context: context))
+        XCTAssertEqual(f.storage.items["credential"], otherRecord)
+        f.storage.items.removeValue(forKey: "credential")
+        XCTAssertThrowsError(try f.legacy.applyOwnerPINRewrap(plan, context: context))
+        XCTAssertNil(f.storage.items["credential"])
+    }
+    func testStagingDoesNotChangeResourcesAndRestartRecoveryPreservesTheirKey() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let key = try f.resourceKey(code: "123456")
+        let original = f.storage.items["credential"]
+        let a = try f.vault.authenticate(pin: "123456")
+        _ = try f.journal.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222")
+        XCTAssertEqual(f.storage.items["credential"], original)
+        XCTAssertTrue(try f.vault.hasPendingOwnerPINChange())
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "123456"))
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "654321"))
+        let restarted = PasscodeCredentialStore(storage: f.storage, iterations: { 600_000 })
+        let adapter = DualPINLegacyJournal(legacy: restarted, environment: f.environment)
+        var published: PasscodeCredentialReference?
+        XCTAssertTrue(try adapter.recover(store: f.vault, didCommitLegacyReference: { published = $0 }))
+        XCTAssertEqual(published?.kind, .digits6)
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+        XCTAssertThrowsError(try f.resourceKey(code: "123456"))
+        XCTAssertEqual(try f.vault.authenticate(pin: "222222").mode, .a)
+        XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
+        XCTAssertFalse(try adapter.recover(store: f.vault, didCommitLegacyReference: { _ in XCTFail("Already completed journal") }))
+    }
+
+    func testReferencePublicationFailureLeavesDeniedJournalAndRetriesSameWrapping() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let key = try f.resourceKey(code: "123456")
+        let a = try f.vault.authenticate(pin: "123456")
+        _ = try f.journal.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222")
+        var publications = 0
+        XCTAssertThrowsError(try f.journal.recover(store: f.vault, didCommitLegacyReference: { _ in
+            publications += 1
+            throw PasscodeError.unavailable
+        }))
+        XCTAssertEqual(publications, 1)
+        XCTAssertTrue(try f.vault.hasPendingOwnerPINChange())
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "222222"))
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+        let appliedRecord = f.storage.items["credential"]
+        let restarted = PasscodeCredentialStore(storage: f.storage, iterations: { 600_000 })
+        let adapter = DualPINLegacyJournal(legacy: restarted, environment: f.environment)
+        XCTAssertTrue(try adapter.recover(store: f.vault, didCommitLegacyReference: { reference in
+            publications += 1
+            XCTAssertEqual(try restarted.managedReference()!, reference)
+        }))
+        XCTAssertEqual(publications, 2)
+        XCTAssertEqual(f.storage.items["credential"], appliedRecord)
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+        XCTAssertEqual(try f.vault.authenticate(pin: "222222").mode, .a)
+    }
+
+    func testBAndExtensionCannotStageOrReplayOwnerChanges() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let original = f.storage.items["credential"]
+        let b = try f.vault.authenticate(pin: "654321")
+        XCTAssertThrowsError(try f.journal.stage(store: f.vault, grant: b, currentPIN: "654321", newPIN: "222222"))
+        XCTAssertEqual(f.storage.items["credential"], original)
+        let extensionEnvironment = PasscodeEnvironment()
+        try extensionEnvironment.configure(PasscodeConfiguration(appGroupIdentifier: "group.org.negrfors.telegram.dualpin.owner-tests", processRole: .appExtension))
+        let adapter = DualPINLegacyJournal(legacy: f.legacy, environment: extensionEnvironment)
+        let a = try f.vault.authenticate(pin: "123456")
+        XCTAssertThrowsError(try adapter.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222"))
+        XCTAssertThrowsError(try adapter.recover(store: f.vault, didCommitLegacyReference: { _ in XCTFail("Extension publication") }))
+        XCTAssertFalse(try f.vault.hasPendingOwnerPINChange())
     }
 }
 

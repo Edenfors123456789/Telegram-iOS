@@ -90,7 +90,7 @@ struct PINAttemptBudget: Codable {
 }
 
 struct AccessVaultState: Codable {
-    let version: Int
+    var version: Int
     var configuration: AccessConfiguration
     var a: PINCredential
     var b: PINCredential
@@ -98,9 +98,10 @@ struct AccessVaultState: Codable {
     var attemptsB: PINAttemptBudget
     var revocation: UInt64
     var pendingEnrollment: PendingAccountEnrollment? = nil
+    var pendingOwnerPINChange: PendingOwnerPINChange? = nil
 
     func validate() throws {
-        guard version == 1 else { throw AccessError.unsupportedVersion }
+        guard version == 1 || version == 2 else { throw AccessError.unsupportedVersion }
         try configuration.validate()
         try a.validate(expectedMode: .a)
         try b.validate(expectedMode: .b)
@@ -111,10 +112,15 @@ struct AccessVaultState: Codable {
             guard pendingEnrollment.revocation == revocation,
                   pendingEnrollment.configurationRevision == configuration.revision else { throw AccessError.corrupt }
         }
+        if let pendingOwnerPINChange {
+            guard version == 2, pendingEnrollment == nil else { throw AccessError.corrupt }
+            try pendingOwnerPINChange.validate(state: self)
+        }
     }
 
     func require(_ grant: AuthenticatedModeGrant, issuer: UUID) throws {
         try validate()
+        guard pendingOwnerPINChange == nil else { throw AccessError.unavailable }
         let credential = grant.mode == .a ? a : b
         guard grant.issuer == issuer, grant.configurationRevision == configuration.revision,
               grant.credentialID == credential.id, grant.credentialRevision == credential.revision,
@@ -168,6 +174,7 @@ public final class AccessCredentialStore {
         let result: Result<AuthenticatedModeGrant, AccessError> = try file.transaction { stored, key in
             guard var state = stored else { throw AccessError.authenticationRequired }
             try state.validate()
+            guard state.pendingOwnerPINChange == nil else { throw AccessError.unavailable }
             let now = try self.clock()
             try now.validate()
             let eligibleA = state.attemptsA.eligible(at: now)
@@ -197,6 +204,9 @@ public final class AccessCredentialStore {
     }
 
     public func changePIN(grant: AuthenticatedModeGrant, currentPIN: String, newPIN: String) throws {
+        // A wraps Telegram's protected-resource key as well as this credential.
+        // Its only replacement path is the durable owner journal below.
+        guard grant.mode == .b else { throw AccessError.authenticationRequired }
         guard Self.validPIN(newPIN) else { throw AccessError.invalidPIN }
         let current = try authenticate(pin: currentPIN)
         guard current.mode == grant.mode else { throw AccessError.authenticationRequired }
@@ -214,6 +224,64 @@ public final class AccessCredentialStore {
             state.revocation += 1
             state.pendingEnrollment = nil
             stored = state
+        }
+    }
+
+    /// Attach the cover and detach the root first. Preparation must return an
+    /// authenticated rewrap plan without modifying the other credential store.
+    /// Expensive crypto and I/O belong off the UI thread. No grant is returned.
+    public func beginOwnerPINChange(grant: AuthenticatedModeGrant, currentPIN: String, newPIN: String,
+                                    prepareProtectedResources: () throws -> Data) throws -> UUID {
+        guard grant.mode == .a else { throw AccessError.authenticationRequired }
+        guard Self.validPIN(newPIN) else { throw AccessError.invalidPIN }
+        let current = try authenticate(pin: currentPIN)
+        guard current.mode == .a else { throw AccessError.authenticationRequired }
+        return try file.transaction { stored, key in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.require(grant, issuer: issuer)
+            try state.require(current, issuer: issuer)
+            guard try !state.b.matches(newPIN, deviceKey: key) else { throw AccessError.identicalPINs }
+            guard state.a.revision < UInt64.max, state.revocation < UInt64.max else { throw AccessError.corrupt }
+            let replacement = try PINCredential.create(mode: .a, pin: newPIN, deviceKey: key,
+                iterations: iterations, revision: state.a.revision + 1)
+            let plan = try prepareProtectedResources()
+            guard !plan.isEmpty, plan.count <= PendingOwnerPINChange.maximumPlanBytes else { throw AccessError.invalidConfiguration }
+            let pending = PendingOwnerPINChange(id: UUID(), credentialID: state.a.id,
+                configurationRevision: state.configuration.revision, replacement: replacement, preparedResources: plan)
+            // Older readers must reject this schema, including after finalization.
+            // Keep the same file path: never interpret a new-schema vault as absent.
+            state.version = 2
+            state.revocation += 1
+            state.pendingEnrollment = nil
+            state.pendingOwnerPINChange = pending
+            try state.validate()
+            stored = state
+            return pending.id
+        }
+    }
+
+    public func hasPendingOwnerPINChange() throws -> Bool {
+        try file.withReadState { state in try state.validate(); return state.pendingOwnerPINChange != nil }
+    }
+
+    /// Main-process adapter only. Under the vault lock, idempotently apply the
+    /// prepared resource wrapping AND persist its AccountManager reference before
+    /// returning. Any error leaves a denied, replayable journal. Recovery never
+    /// authenticates the user or publishes a root; a fresh PIN is still required.
+    @discardableResult public func resumeOwnerPINChange(applyProtectedResources: (Data) throws -> Void) throws -> Bool {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.validate()
+            guard let pending = state.pendingOwnerPINChange else { return false }
+            guard state.revocation < UInt64.max else { throw AccessError.corrupt }
+            try applyProtectedResources(pending.preparedResources)
+            state.a = pending.replacement
+            state.attemptsA = PINAttemptBudget()
+            state.pendingOwnerPINChange = nil
+            state.revocation += 1
+            try state.validate()
+            stored = state
+            return true
         }
     }
 
@@ -243,6 +311,7 @@ public final class AccessCredentialStore {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
             try state.validate()
+            guard state.pendingOwnerPINChange == nil else { throw AccessError.unavailable }
             let now = try clock()
             try now.validate()
             let eligibleA = state.attemptsA.eligible(at: now)

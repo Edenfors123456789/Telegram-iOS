@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Security
 import LocalAuthentication
 import Darwin
@@ -567,6 +568,85 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
             try session.require(scope: session.scope, passcode: true)
         default:
             throw PasscodeError.authenticationRequired
+        }
+    }
+
+    private struct PreparedOwnerPINRewrap: Codable {
+        let version: Int
+        let expectedFingerprint: Data
+        let replacement: Record
+    }
+
+    private func ownerRewrapFingerprint(_ value: Record) throws -> Data {
+        var record = value
+        // Cleanup may have already removed some tokens after a committed rewrap.
+        // Every credential/resource/protection field remains part of the binding.
+        record.biometricCleanup = []
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return Data(SHA256.hash(data: try encoder.encode(record)))
+    }
+
+    func prepareOwnerPINRewrap(_ newPIN: String, session: PasscodeSession, context: String) throws -> Data {
+        try session.require(scope: .settings, passcode: true)
+        return try self.serialized {
+            guard !context.isEmpty, !Task.isCancelled else { throw PasscodeError.cancelled }
+            let old = try self.validatedRecord(session)
+            guard old.managedPasscode, old.kind == .digits6, old.protectionEnabled,
+                  old.unprotectedKey == nil, old.revision < UInt64.max else { throw PasscodeError.authenticationRequired }
+            var replacement = old
+            var key = try session.withKey { $0 }
+            defer { key.resetBytes(in: 0 ..< key.count) }
+            try self.wrap(code: newPIN, kind: .digits6, key: key, record: &replacement)
+            replacement.revision += 1
+            if let account = replacement.biometricAccount { replacement.biometricCleanup.append(account) }
+            if let account = replacement.pendingBiometricAccount { replacement.biometricCleanup.append(account) }
+            replacement.biometricAccount = nil
+            replacement.pendingBiometricAccount = nil
+            replacement.biometricCleanup = Array(Set(replacement.biometricCleanup)).sorted()
+            _ = try self.validatedRecord(session)
+            guard !Task.isCancelled else { throw PasscodeError.cancelled }
+            let plan = PreparedOwnerPINRewrap(version: 1, expectedFingerprint: try self.ownerRewrapFingerprint(old), replacement: replacement)
+            return try PasscodeCrypto.seal(JSONEncoder().encode(plan), key: self.deviceSecret(),
+                context: "telegram.dual-pin.legacy-rewrap.v1:" + context)
+        }
+    }
+
+    /// Called only with the plan recovered from a durably staged access vault.
+    /// No user session or PIN is needed/issued during replay; unexpected legacy
+    /// state is denied. The plan is authenticated with the existing device secret.
+    func applyOwnerPINRewrap(_ prepared: Data, context: String) throws -> PasscodeCredentialReference {
+        try self.serialized {
+            guard self.modePINManagementRequired, !context.isEmpty, prepared.count <= 65_536 else { throw PasscodeError.authenticationRequired }
+            let bytes = try PasscodeCrypto.open(prepared, key: self.deviceSecret(),
+                context: "telegram.dual-pin.legacy-rewrap.v1:" + context)
+            guard let plan = try? JSONDecoder().decode(PreparedOwnerPINRewrap.self, from: bytes),
+                  plan.version == 1, plan.expectedFingerprint.count == 32 else { throw PasscodeError.corrupted }
+            let replacement = plan.replacement
+            guard replacement.version == 1, !replacement.id.isEmpty, replacement.revision > 1,
+                  replacement.managedPasscode, replacement.kind == .digits6,
+                  replacement.protectionEnabled, replacement.unprotectedKey == nil,
+                  replacement.biometricAccount == nil, replacement.pendingBiometricAccount == nil,
+                  replacement.salt?.count == 16, replacement.wrappedKey?.count == 60,
+                  let iterations = replacement.iterations,
+                  (PasscodeCrypto.minimumIterations ... PasscodeCrypto.maximumIterations).contains(iterations),
+                  let loaded = try self.load() else { throw PasscodeError.corrupted }
+            var current = loaded
+            let fingerprint = try self.ownerRewrapFingerprint(current)
+            if fingerprint == plan.expectedFingerprint {
+                guard current.id == replacement.id, current.revision < UInt64.max,
+                      replacement.revision == current.revision + 1 else { throw PasscodeError.staleAuthorization }
+                // Any failure after this write is handled by exact idempotent replay.
+                try self.storage.remove("attempts")
+                try self.save(replacement)
+                current = replacement
+            } else {
+                guard fingerprint == (try self.ownerRewrapFingerprint(replacement)),
+                      Set(current.biometricCleanup).isSubset(of: Set(replacement.biometricCleanup)) else { throw PasscodeError.staleAuthorization }
+            }
+            PasscodeSession.invalidateAll()
+            try self.cleanupBiometrics(record: &current)
+            return PasscodeCredentialReference(id: current.id, kind: .digits6)
         }
     }
 
