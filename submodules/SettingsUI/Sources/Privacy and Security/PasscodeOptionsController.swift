@@ -294,6 +294,14 @@ private func passcodeOptionsControllerEntries(context: AccountContext, presentat
 }
 
 public func passcodeOptionsController(context: AccountContext, focusOnItemTag: PasscodeOptionsEntryTag? = nil, settingsSession: PasscodeSession? = nil) -> ViewController {
+    if context.sharedContext.requiresModePasscodeSettings {
+        settingsSession?.invalidate()
+        if let controller = context.sharedContext.makeModePasscodeSettings(context: context) { return controller }
+        context.sharedContext.appLockContext.lock()
+        let strings = context.sharedContext.currentPresentationData.with { $0 }.strings
+        return textAlertController(context: context, title: nil, text: strings.PasscodeSettings_UpdateError,
+            actions: [TextAlertAction(type: .defaultAction, title: strings.Common_OK, action: {})])
+    }
     var currentState = PasscodeOptionsControllerState()
     let initialState = currentState
     let sessionState = PasscodeSettingsSessionState(session: settingsSession)
@@ -751,11 +759,22 @@ public func passcodeOptionsController(context: AccountContext, focusOnItemTag: P
 }
 
 public func passcodeOptionsAccessController(context: AccountContext, preferredModalWidth: CGFloat? = nil, initialAutolockTimeout: Int32? = 60 * 60, useCustomNumericKeyboard: Bool = true, allowFourDigitPasscode: Bool = true, replaceController: @escaping (ViewController) -> Void, authorizationCompleted: @escaping (Result<PasscodeSession, PasscodeError>) -> Void) -> Signal<ViewController?, NoError> {
+    if context.sharedContext.requiresModePasscodeSettings {
+        let controller = context.sharedContext.makeModePasscodeSettings(context: context)
+        if controller == nil { context.sharedContext.appLockContext.lock() }
+        return .single(controller)
+    }
     return context.sharedContext.accountManager.transaction { transaction -> PostboxAccessChallengeData in
         transaction.getAccessChallengeData()
     }
     |> deliverOnMainQueue
     |> map { challenge -> ViewController? in
+        // An old legacy metadata callback may arrive after mode setup/locking.
+        if context.sharedContext.requiresModePasscodeSettings {
+            let controller = context.sharedContext.makeModePasscodeSettings(context: context)
+            if controller == nil { context.sharedContext.appLockContext.lock() }
+            return controller
+        }
         if case .none = challenge {
             weak var introController: PrivacyIntroController?
             var didProceed = false

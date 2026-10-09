@@ -1411,6 +1411,8 @@ public protocol SharedAccountContext: AnyObject {
     var mainWindow: Window1? { get }
     var accountManager: AccountManager<TelegramAccountManagerTypes> { get }
     var appLockContext: AppLockContext { get }
+    var requiresModePasscodeSettings: Bool { get }
+    func makeModePasscodeSettings(context: AccountContext) -> ViewController?
     
     var currentPresentationData: Atomic<PresentationData> { get }
     var presentationData: Signal<PresentationData, NoError> { get }
@@ -1749,6 +1751,11 @@ public struct ChatSendMessageActionSheetControllerSendParameters {
         self.effect = effect
         self.textIsAboveMedia = textIsAboveMedia
     }
+}
+
+public extension SharedAccountContext {
+    var requiresModePasscodeSettings: Bool { false }
+    func makeModePasscodeSettings(context: AccountContext) -> ViewController? { nil }
 }
 
 public enum ChatSendMessageActionSheetControllerSendMode {

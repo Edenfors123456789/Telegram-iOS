@@ -2119,6 +2119,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 })
             self.modeRootPresentation = driver
             sharedContext.configureModeAccountAccess(driver)
+            sharedContext.modePasscodeSettingsFactory = { [weak self] context in
+                self?.makeModePasscodeSettings(context: context)
+            }
             let authentication = ModePINEntryAuthentication(coordinator: coordinator, prepareRoot: { [weak sharedContext, weak appLock] ticket in
                 guard let sharedContext, let appLock else { throw AccessError.unavailable }
                 let preparation = try driver.prepare(ticket)
@@ -2140,6 +2143,49 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             sharedContext.requireModeAccountAccess()
             appLock.requireModeAuthentication()
         }
+    }
+
+    private func makeModePasscodeSettings(context: AccountContext) -> ViewController? {
+        assert(Thread.isMainThread)
+        guard let store = self.modeCredentialStore, let coordinator = self.modeCoordinator,
+              let driver = self.modeRootPresentation, let origin = self.contextValue?.modeRootPreparation,
+              let appLock = self.appLockContextImpl, let accountManager = self.accountManager else { return nil }
+        let isCurrent: () -> Bool = { [weak self, weak context] in
+            guard let self, let context, self.isActiveValue, self.modeCoordinator === coordinator,
+                  self.modeRootPresentation === driver, self.contextValue?.context === context,
+                  self.contextValue?.modeRootPreparation == origin, driver.hasActiveRoot else { return false }
+            return (try? driver.withActivePolicy { $0.selectedAccount == origin.account }) == true
+        }
+        guard isCurrent() else { return nil }
+        return OwnPINChangeController(context: context, isCurrent: isCurrent, submit: { [weak self, weak appLock] current, replacement in
+            guard let self, isCurrent() else { return }
+            let request: AccessPINChangeRequest
+            do { request = try driver.preparePINChange() }
+            catch { appLock?.refreshModePresentation(); self.revealNativeLockScreenIfSafe(); return }
+            self.modeManagementQueue.async { [weak self, weak appLock] in
+                do {
+                    try coordinator.executePINChange(request) { grant in
+                        if grant.mode == .a {
+                            _ = try DualPINLegacyJournal().stage(store: store, grant: grant, currentPIN: current, newPIN: replacement)
+                            _ = try DualPINLegacyJournal().recover(store: store, didCommitLegacyReference: { reference in
+                                try commitDualPINLegacyReference(reference, accountManager: accountManager)
+                            })
+                        } else {
+                            try store.changePIN(grant: grant, currentPIN: current, newPIN: replacement)
+                        }
+                    }
+                } catch {
+                    // Even failed changes leave the old form detached and access
+                    // locked; pending owner changes retain their encrypted journal.
+                }
+                Queue.mainQueue().async { [weak self = self, weak appLock = appLock] in
+                    guard let self, self.modeCoordinator === coordinator else { return }
+                    self.resumeModeJournalIfNeeded()
+                    appLock?.refreshModePresentation()
+                    self.revealNativeLockScreenIfSafe()
+                }
+            }
+        })
     }
 
     /// Protected-data/factory failures stay required. Retry may install an existing

@@ -214,6 +214,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private let modeAccountRootPromise = ValuePromise<ModeAccountRoot>(ModeAccountRoot(context: nil, preparation: nil), ignoreRepeated: true)
     var accountContextsForRoot: Signal<ModeAccountRoot, NoError> { self.modeAccountRootPromise.get() }
     var hasModeAccountAccess: Bool { self.modeAccountAccessRequired }
+    var modePasscodeSettingsFactory: ((AccountContext) -> ViewController?)?
+    public var requiresModePasscodeSettings: Bool { self.modeAccountAccessRequired }
+    public func makeModePasscodeSettings(context: AccountContext) -> ViewController? {
+        assert(Queue.mainQueue().isCurrent())
+        guard self.modeAccountAccessRequired else { return nil }
+        return self.modePasscodeSettingsFactory?(context)
+    }
     private let managedAccountDisposables = DisposableDict<AccountRecordId>()
     private let activeAccountsWithInfoPromise = Promise<(primary: AccountRecordId?, accounts: [AccountWithInfo])>()
     public var activeAccountsWithInfo: Signal<(primary: AccountRecordId?, accounts: [AccountWithInfo]), NoError> {

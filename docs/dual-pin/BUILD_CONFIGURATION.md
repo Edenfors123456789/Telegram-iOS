@@ -12,4 +12,16 @@ Before a physical installation, provision this fork's main app and retained exte
 
 Telegram explicitly provides sample API credentials for testing, warns of server-side limitations and requires an own API ID before publication: [Obtaining api_id](https://core.telegram.org/api/obtaining_api_id). Public development values do not establish release readiness or guarantee that real account authorization will work. Isolated unit/simulator verification can continue without live Telegram accounts.
 
-The stage-0 artifact remains the unmodified official bundle with its original public fixtures; changing its identity would invalidate that baseline comparison. Intermediate compilation/launch checks may retain that fixture identity solely on the isolated no-account simulator and must record the changed source revision/build number. They do not establish a fork-identity or device-signed build. Packaging for the chosen separate identity is still pending, with fresh artifact metadata required.
+The stage-0 artifact remains the unmodified official bundle with its original public fixtures; changing its identity would invalidate that baseline comparison. Intermediate checks retain that fixture identity solely on the isolated no-account simulator and record changed sources/build numbers.
+
+The separate development identity now builds through upstream configuration generation and Bazel's simulator profile-disabling flag:
+
+```sh
+python3 -u tools/dual-pin/build_development_simulator.py
+```
+
+The runner verifies the pinned Bazel digest, scopes stable Xcode to its child, overrides only an isolated ignored generated configuration module, and retains logs/result metadata/fresh IPA under `build-input/dual-pin-development/<UTC timestamp>/`. It accepts no device configuration and never reads or rewrites Apple provisioning profiles/certificates. The upstream default build remains available through ordinary Make. Do not run build commands concurrently.
+
+Verified run `20261009T235135Z`: exit 0, 24.249 seconds, 122 actions; org.negrfors.telegram.dualpin 13.0/build 4, simulator SDK 27.0 / Xcode 27A266a. IPA 608,234,649 bytes, SHA-256 `7a304c8f8500d90d93ccb6269b5810c9e69d3ce0ba606a277a98e21e30fca182`. Zero embedded profiles; all six extension IDs use the chosen bundle prefix. Installation, ordinary onboarding, corrupt-vault denial and exact probe cleanup/restored onboarding passed on the isolated simulator. The active MobileBuildMCP profile is `tg-fork-dualpin`; `tg-fork-baseline` still selects the original fixture app.
+
+This proves simulator packaging for the fork identity, not physical signing, live Telegram authorization or complete Dual PIN behavior. Siri/Widget/notification extensions are still packaged at this stage; their final disabling/guarding is stage-5 work. Configured PIN/account/history flows and iPhone verification remain pending.
