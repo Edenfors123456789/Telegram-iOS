@@ -373,6 +373,7 @@ public class Window1 {
     private let presentationContext: PresentationContext
     private let overlayPresentationContext: GlobalOverlayPresentationContext
     private let topPresentationContext: PresentationContext
+    private var accessPresentationAllowed: ((ContainableController?) -> Bool)?
     
     private var tracingStatusBarsInvalidated = false
     private var shouldUpdateDeferScreenEdgeGestures = false
@@ -1434,6 +1435,7 @@ public class Window1 {
     }
     
     public func present(_ controller: ContainableController, on level: PresentationSurfaceLevel, blockInteraction: Bool = false, completion: @escaping () -> Void = {}) {
+        guard self.accessPresentationAllowed?(controller) ?? true else { return }
         if level.rawValue <= 3, let controller = controller as? ViewController {
             for presentedController in self.presentationContext.controllers.reversed() {
                 if let navigationController = presentedController.0 as? NavigationController {
@@ -1457,6 +1459,7 @@ public class Window1 {
     }
     
     public func presentInGlobalOverlay(_ controller: ContainableController) {
+        guard self.accessPresentationAllowed?(controller) ?? true else { return }
         if let controller = controller as? ViewController {
             if let navigationController = self._rootController as? NavigationController {
                 navigationController.presentOverlay(controller: controller, inGlobal: true)
@@ -1467,10 +1470,12 @@ public class Window1 {
     }
     
     public func addGlobalPortalHostView(sourceView: PortalSourceView) {
+        guard self.accessPresentationAllowed?(nil) ?? true else { return }
         self.overlayPresentationContext.addGlobalPortalHostView(sourceView: sourceView)
     }
     
     public func presentNative(_ controller: UIViewController) {
+        guard self.accessPresentationAllowed?(controller as? ContainableController) ?? true else { return }
         if let nativeController = self.hostView.nativeController?() {
             nativeController.present(controller, animated: true, completion: nil)
         }
@@ -1647,6 +1652,23 @@ public class Window1 {
                 break
             }
         }
+    }
+
+    /// Access transitions discard both attached overlays and pending readiness.
+    /// The caller retains only its exact current lock controller, if present.
+    public func discardPresentedControllersForAccessTransition(keeping keep: (ContainableController) -> Bool) {
+        assert(Thread.isMainThread)
+        self.presentationContext.discardForAccessTransition(keeping: keep)
+        self.topPresentationContext.discardForAccessTransition(keeping: keep)
+        self.overlayPresentationContext.discardForAccessTransition()
+    }
+
+    public func setAccessPresentationGuard(_ allowed: @escaping (ContainableController?) -> Bool) {
+        assert(Thread.isMainThread)
+        self.accessPresentationAllowed = allowed
+        self.presentationContext.presentationAllowed = { allowed($0) }
+        self.topPresentationContext.presentationAllowed = { allowed($0) }
+        self.overlayPresentationContext.presentationAllowed = { allowed($0) }
     }
     
     public func doNotAnimateLikelyKeyboardAutocorrectionSwitch() {

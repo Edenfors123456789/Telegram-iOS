@@ -56,6 +56,8 @@ final class GlobalOverlayPresentationContext {
     private var globalPortalViews: [GlobalPortalView] = []
     
     private var presentationDisposables = DisposableSet()
+    private var accessGeneration = UUID()
+    var presentationAllowed: ((ContainableController) -> Bool)?
     private var layout: ContainerViewLayout?
     
     private var ready: Bool {
@@ -106,6 +108,8 @@ final class GlobalOverlayPresentationContext {
     }
     
     func present(_ controller: ContainableController) {
+        guard self.presentationAllowed?(controller) ?? true else { return }
+        let generation = self.accessGeneration
         let controllerReady = controller.ready.get()
         |> filter({ $0 })
         |> take(1)
@@ -128,6 +132,8 @@ final class GlobalOverlayPresentationContext {
             
             self.presentationDisposables.add(controllerReady.start(next: { [weak self, controller] _ in
                 if let strongSelf = self {
+                    guard generation == strongSelf.accessGeneration,
+                          strongSelf.presentationAllowed?(controller) ?? true else { return }
                     if strongSelf.controllers.contains(where: { $0 === controller }) {
                         return
                     }
@@ -152,7 +158,10 @@ final class GlobalOverlayPresentationContext {
                             view.addSubview(controller.view)
                         }
                         (controller as? UIViewController)?.setIgnoreAppearanceMethodInvocations(false)
+                        guard generation == strongSelf.accessGeneration,
+                              strongSelf.presentationAllowed?(controller) ?? true else { controller.view.removeFromSuperview(); return }
                         controller.viewWillAppear(false)
+                        guard generation == strongSelf.accessGeneration else { controller.view.removeFromSuperview(); return }
                         controller.viewDidAppear(false)
                     }
                 }
@@ -164,6 +173,25 @@ final class GlobalOverlayPresentationContext {
     
     deinit {
         self.presentationDisposables.dispose()
+    }
+
+    func discardForAccessTransition() {
+        assert(Thread.isMainThread)
+        self.accessGeneration = UUID()
+        self.presentationDisposables.dispose()
+        self.presentationDisposables = DisposableSet()
+        let old = self.controllers
+        self.controllers = []
+        for controller in old {
+            controller.viewWillDisappear(false)
+            controller.view.removeFromSuperview()
+            controller.viewDidDisappear(false)
+        }
+        let portals = self.globalPortalViews
+        self.globalPortalViews = []
+        for portal in portals { portal.view.removeFromSuperview() }
+        self.currentTrackingNode?.removeFromSupernode()
+        self.currentTrackingNode = nil
     }
     
     private func dismiss(_ controller: ContainableController) {

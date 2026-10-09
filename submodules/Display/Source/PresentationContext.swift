@@ -81,8 +81,17 @@ public final class PresentationContext {
         }
     }
     public var controllersUpdated: ([(ContainableController, PresentationSurfaceLevel)]) -> Void = { _ in }
+    public var presentationAllowed: ((ContainableController) -> Bool)?
     
     private var presentationDisposables = DisposableSet()
+    private final class PendingPresentation {
+        let controller: ContainableController
+        let disposable = MetaDisposable()
+        var valid = true
+        init(_ controller: ContainableController) { self.controller = controller }
+    }
+    private var pendingPresentations: [UUID: PendingPresentation] = [:]
+    private var displayedRequests: [ObjectIdentifier: PendingPresentation] = [:]
     
     public var topLevelSubview: () -> UIView? = { nil }
     
@@ -155,6 +164,7 @@ public final class PresentationContext {
     }
     
     public func present(_ controller: ContainableController, on level: PresentationSurfaceLevel, blockInteraction: Bool = false, completion: @escaping () -> Void) {
+        guard self.presentationAllowed?(controller) ?? true else { return }
         let controllerReady = controller.ready.get()
         |> filter({ $0 })
         |> take(1)
@@ -162,6 +172,10 @@ public final class PresentationContext {
         |> timeout(2.0, queue: Queue.mainQueue(), alternate: .single(true))
         
         if let _ = self.view, let initialLayout = self.layout {
+            let requestID = UUID()
+            let request = PendingPresentation(controller)
+            self.pendingPresentations[requestID] = request
+            self.presentationDisposables.add(request.disposable)
             if let controller = controller as? ViewController {
                 if controller.lockOrientation {
                     let orientations: UIInterfaceOrientationMask
@@ -177,19 +191,32 @@ public final class PresentationContext {
             let (controllerLayout, controllerFrame) = self.layoutForController(containerLayout: initialLayout, controller: controller)
             controller.view.frame = controllerFrame
             controller.containerLayoutUpdated(controllerLayout, transition: .immediate)
+            guard request.valid else {
+                self.pendingPresentations.removeValue(forKey: requestID)
+                self.presentationDisposables.remove(request.disposable)
+                return
+            }
             var blockInteractionToken: Int?
             if blockInteraction {
                 blockInteractionToken = self.addBlockInteraction()
             }
-            self.presentationDisposables.add((controllerReady |> afterDisposed { [weak self] in
+            request.disposable.set((controllerReady |> afterDisposed { [weak self] in
                 Queue.mainQueue().async {
+                    guard let self else { return }
                     if let blockInteractionToken = blockInteractionToken {
-                        self?.removeBlockInteraction(blockInteractionToken)
+                        self.removeBlockInteraction(blockInteractionToken)
                     }
-                    completion()
+                    self.pendingPresentations.removeValue(forKey: requestID)
+                    self.presentationDisposables.remove(request.disposable)
+                    if request.valid { completion() }
                 }
             }).start(next: { [weak self, controller] _ in
+                defer { request.disposable.dispose() }
                 if let strongSelf = self {
+                    guard request.valid, strongSelf.presentationAllowed?(controller) ?? true else {
+                        request.valid = false
+                        return
+                    }
                     if let blockInteractionToken = blockInteractionToken {
                         strongSelf.removeBlockInteraction(blockInteractionToken)
                     }
@@ -203,7 +230,9 @@ public final class PresentationContext {
                             insertIndex = i
                         }
                     }
+                    strongSelf.displayedRequests[ObjectIdentifier(controller)] = request
                     strongSelf.controllers.insert((controller, level), at: insertIndex ?? strongSelf.controllers.count)
+                    guard request.valid else { return }
                     if let view = strongSelf.view, let layout = strongSelf.layout {
                         let (updatedControllerLayout, updatedControllerFrame) = strongSelf.layoutForController(containerLayout: layout, controller: controller)
                         
@@ -230,10 +259,12 @@ public final class PresentationContext {
                         }
                         (controller as? UIViewController)?.setIgnoreAppearanceMethodInvocations(false)
                         strongSelf.updateViews()
+                        guard request.valid else { controller.view.removeFromSuperview(); return }
                         controller.viewWillAppear(false)
+                        guard request.valid else { controller.view.removeFromSuperview(); return }
                         if let controller = controller as? PresentableController {
                             controller.viewDidAppear(completion: { [weak self] in
-                                self?.notifyAccessibilityScreenChanged()
+                                if request.valid { self?.notifyAccessibilityScreenChanged() }
                             })
                         } else {
                             controller.viewDidAppear(false)
@@ -251,9 +282,23 @@ public final class PresentationContext {
     deinit {
         self.presentationDisposables.dispose()
     }
+
+    /// Synchronous access-transition teardown, without an outgoing animation.
+    public func discardForAccessTransition(keeping keep: (ContainableController) -> Bool) {
+        assert(Thread.isMainThread)
+        for request in Array(self.pendingPresentations.values) where !keep(request.controller) {
+            request.valid = false
+            request.disposable.dispose()
+        }
+        for (controller, _) in self.controllers where !keep(controller) {
+            self.displayedRequests[ObjectIdentifier(controller)]?.valid = false
+            self.dismiss(controller)
+        }
+    }
     
     private func dismiss(_ controller: ContainableController) {
         if let index = self.controllers.firstIndex(where: { $0.0 === controller }) {
+            self.displayedRequests.removeValue(forKey: ObjectIdentifier(controller))
             self.controllers.remove(at: index)
             controller.viewWillDisappear(false)
             controller.view.removeFromSuperview()

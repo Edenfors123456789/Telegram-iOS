@@ -727,6 +727,15 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             performAppGroupUpgrades(appGroupPath: appGroupUrl.path, rootPath: rootPath)
         }
         
+        // Inspect before AccountManager can run generic legacy migration/reset.
+        let modeBootstrap = AccessRuntimeBootstrap.inspect {
+            let group = try PasscodeEnvironment.shared.sharedAccessGroup()
+            let key = try KeychainAccessDeviceKey(service: baseAppBundleId + ".dual-pin.v1", accessGroup: group)
+            return try AccessCredentialStore(directory: URL(fileURLWithPath: rootPath).appendingPathComponent("dual-pin-access", isDirectory: true),
+                namespace: baseAppBundleId + ":" + group, keyProvider: key)
+        }
+        if modeBootstrap.requiresModeAuthentication { PasscodeCredentialStore.shared.requireModePINManagement() }
+
         let deviceSpecificEncryptionParameters = BuildConfig.deviceSpecificEncryptionParameters(rootPath, baseAppBundleId: baseAppBundleId)
         let encryptionParameters = ValueBoxEncryptionParameters(forceEncryptionIfNoSet: false, key: ValueBoxEncryptionParameters.Key(data: deviceSpecificEncryptionParameters.key)!, salt: ValueBoxEncryptionParameters.Salt(data: deviceSpecificEncryptionParameters.salt)!)
         
@@ -1133,18 +1142,20 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             let legacyBasePath = appGroupUrl.path
             
             let presentationDataPromise = Promise<PresentationData>()
-            let modeBootstrap = AccessRuntimeBootstrap.inspect {
-                guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else { throw AccessError.unavailable }
-                let group = try PasscodeEnvironment.shared.sharedAccessGroup()
-                let key = try KeychainAccessDeviceKey(service: bundleID + ".dual-pin.v1", accessGroup: group)
-                return try AccessCredentialStore(directory: URL(fileURLWithPath: rootPath).appendingPathComponent("dual-pin-access", isDirectory: true),
-                    namespace: bundleID + ":" + group, keyProvider: key)
-            }
             let appLockContext = AppLockContextImpl(rootPath: rootPath, window: self.mainWindow!, rootController: self.window?.rootViewController, applicationBindings: applicationBindings, accountManager: accountManager, presentationDataSignal: presentationDataPromise.get(), lockIconInitialFrame: {
                 return (self.mainWindow?.viewController as? TelegramRootController)?.chatListController?.lockViewFrame
             })
             self.appLockContextImpl = appLockContext
-            if modeBootstrap.requiresModeAuthentication { appLockContext.requireModeAuthentication() }
+            if modeBootstrap.requiresModeAuthentication {
+                appLockContext.requireModeAuthentication()
+                self.mainWindow.setAccessPresentationGuard { [weak self, weak appLockContext] controller in
+                    if let controller, appLockContext?.isCurrentLockController(controller) == true { return true }
+                    guard let self, self.isActiveValue, !self.nativeSnapshotCover.isVisible,
+                          let driver = self.modeRootPresentation, driver.hasActiveRoot else { return false }
+                    do { return try driver.withActivePolicy { _ in true } }
+                    catch { appLockContext?.lock(); return false }
+                }
+            }
             
             var setPresentationCall: ((PresentationCall?) -> Void)?
             let sharedContext = SharedAccountContextImpl(mainWindow: self.mainWindow, sharedContainerPath: legacyBasePath, basePath: rootPath, encryptionParameters: encryptionParameters, accountManager: accountManager, appLockContext: appLockContext, notificationController: nil, applicationBindings: applicationBindings, initialPresentationDataAndSettings: initialPresentationDataAndSettings, networkArguments: networkArguments, hasInAppPurchases: buildConfig.isAppStoreBuild && buildConfig.apiId == 1, rootPath: rootPath, legacyBasePath: legacyBasePath, apsNotificationToken: self.notificationTokenPromise.get() |> map(Optional.init), voipNotificationToken: self.voipTokenPromise.get() |> map(Optional.init), firebaseSecretStream: self.firebaseSecretStream.get(), setNotificationCall: { call in
@@ -2066,7 +2077,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                         appLock?.refreshModePresentation()
                         self?.revealNativeLockScreenIfSafe()
                     }
-                }, discardRoot: { [weak self, weak sharedContext] in
+                }, discardRoot: { [weak self, weak sharedContext, weak appLock] in
+                    self?.mainWindow.discardPresentedControllersForAccessTransition(keeping: { controller in
+                        appLock?.isCurrentLockController(controller) == true
+                    })
                     self?.mainWindow.viewController = nil
                     self?.mainWindow.topLevelOverlayControllers = []
                     self?.mainWindow.debugAction = nil

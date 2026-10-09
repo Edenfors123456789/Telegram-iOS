@@ -284,6 +284,7 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
     private let mutex = NSRecursiveLock()
     private var lockPath: String?
     private var expectsCredential = false
+    private var modePINManagementRequired = false
     private let iterationCount: () -> Int
     private let clock: () -> (boot: Int64, uptime: TimeInterval)
 
@@ -323,11 +324,20 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
         self.mutex.unlock()
     }
 
+    /// Main runtime latches this before exposing a configured/unavailable mode
+    /// vault. PIN A/resource wrapping must change only through its journal adapter.
+    public func requireModePINManagement() {
+        self.mutex.lock()
+        self.modePINManagementRequired = true
+        self.mutex.unlock()
+    }
+
     /// Destructive credential reset. The owner must remove all protected data
     /// before the access key is replaced. Cleanup runs under the credential lock;
     /// it must not reenter this store. A cleanup failure leaves persisted keys intact.
     public func resetCredential(removingProtectedData: () throws -> Void) throws {
         try self.serialized {
+            guard !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
             PasscodeSession.invalidateAll()
             try removingProtectedData()
             try self.storage.remove("attempts")
@@ -343,6 +353,7 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
     /// The continuation must commit the legacy state and terminate the process.
     public func _internalResetForPasscodeMigrationTest(removingProtectedData: () throws -> Void, then: () throws -> Never) throws -> Never {
         try self.serialized { () throws -> Never in
+            guard !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
             PasscodeSession.invalidateAll()
             try removingProtectedData()
             try self.storage.remove("attempts")
@@ -436,6 +447,7 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
 
     public func migrateLegacy(code: String, kind: PasscodeKind) throws -> PasscodeCredentialReference? {
         try self.serialized {
+            guard !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
             var record = try self.existingOrCreate()
             if record.managedPasscode { return self.reference(record) }
             guard let key = record.unprotectedKey else { throw PasscodeError.corrupted }
@@ -559,6 +571,7 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
     }
 
     private func updatePasscode(_ code: String, kind: PasscodeKind, access: PasscodeSession?, createSession: Bool) throws -> (reference: PasscodeCredentialReference, session: PasscodeSession?) {
+        guard !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
         guard !Task.isCancelled else { throw PasscodeError.cancelled }
         if let access { try self.requirePasscodeManagement(access) }
         var record = try self.existingOrCreate()
@@ -619,6 +632,7 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
     public func disablePasscode(session: PasscodeSession) throws {
         try self.requirePasscodeManagement(session)
         try self.serialized {
+            guard !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
             var record = try self.validatedRecord(session)
             record.unprotectedKey = try session.withKey { $0 }
             record.kind = nil
@@ -671,6 +685,7 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
         try session.require(scope: .settings, passcode: true)
         let account = "biometric." + UUID().uuidString
         try self.serialized {
+            guard !self.modePINManagementRequired else { throw PasscodeError.biometricsUnavailable }
             var record = try self.validatedRecord(session)
             guard record.protectionEnabled else { throw PasscodeError.authenticationRequired }
             try self.cleanupBiometrics(record: &record)
@@ -706,6 +721,7 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
     public func authenticateBiometrics(context: LAContext, scope: PasscodeSession.Scope, lifetime: PasscodeSession.Lifetime = .standard) throws -> PasscodeSession {
         guard case let .resource(namespace) = scope, !namespace.isEmpty else { throw PasscodeError.authenticationRequired }
         let record = try self.serialized { () throws -> Record in
+            guard !self.modePINManagementRequired else { throw PasscodeError.biometricsUnavailable }
             guard let record = try self.load(), record.protectionEnabled, record.biometricAccount != nil else { throw PasscodeError.biometricsUnavailable }
             return record
         }

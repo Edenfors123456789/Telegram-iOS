@@ -408,6 +408,11 @@ public final class AppLockContextImpl: AppLockContext {
         self.refreshModePresentation()
     }
 
+    public func isCurrentLockController(_ controller: ContainableController) -> Bool {
+        assert(Thread.isMainThread)
+        return controller === self.passcodeController
+    }
+
     /// The root driver calls this only after its final grant/root/lifecycle checks.
     public func completeModeRootPreparation() -> Bool {
         assert(Thread.isMainThread)

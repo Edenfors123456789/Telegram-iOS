@@ -57,6 +57,24 @@ private final class MigrationFixture {
 }
 
 final class DualPINMigrationTests: XCTestCase {
+    func testModeManagementRequirementRejectsLegacyOnlyChangesAndDestructiveReset() throws {
+        let f = try MigrationFixture()
+        let reference = try f.install(owner: nil)
+        let resource = try f.resourceKey(code: "123456")
+        let owner = try f.legacy.verify("123456", scope: .settings)
+        defer { owner.invalidate() }
+        f.legacy.requireModePINManagement()
+        XCTAssertThrowsError(try f.legacy.setPasscode("222222", kind: .digits6, session: owner))
+        XCTAssertThrowsError(try f.legacy.disablePasscode(session: owner))
+        var cleaned = false
+        XCTAssertThrowsError(try f.legacy.resetCredential(removingProtectedData: { cleaned = true }))
+        XCTAssertFalse(cleaned)
+        XCTAssertEqual(try f.legacy.managedReference()!, reference)
+        XCTAssertEqual(try f.resourceKey(code: "123456"), resource)
+        XCTAssertEqual(try f.vault.authenticate(pin: "123456").mode, .a)
+        XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
+    }
+
     func testInitialSetupAndExistingOwnerMigrationPreserveProtectedResourceKey() throws {
         let fresh = try MigrationFixture()
         let reference = try fresh.install(owner: nil)

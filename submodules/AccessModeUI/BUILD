@@ -15,7 +15,7 @@ swift_library(
     testonly = True,
     srcs = glob(["Tests/**/*.swift"]),
     copts = ["-warnings-as-errors"],
-    deps = [":AccessModeUI", "//submodules/Display"],
+    deps = [":AccessModeUI", "//submodules/Display", "//submodules/SSignalKit/SwiftSignalKit"],
 )
 
 ios_test_runner(
