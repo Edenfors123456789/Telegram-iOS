@@ -65,4 +65,27 @@ final class PolicyTests: XCTestCase {
             [AccountMembership(identity: identity(5), ownership: .a, isPremium: true)]
         XCTAssertThrowsError(try AccessConfiguration(installation: installation, accounts: members, selectedA: identity(1), selectedB: identity(1)))
     }
+
+    func testSymmetricAccountCollisionCannotRevealOrTransferHiddenAccount() throws {
+        let config = try configuration()
+        let a = AccessModePolicy(mode: .a, configuration: config)
+        let b = AccessModePolicy(mode: .b, configuration: config)
+        XCTAssertEqual(a.enrollment(environment: .production, userID: 3, isPremium: false), .unavailable)
+        XCTAssertEqual(b.enrollment(environment: .production, userID: 2, isPremium: true), .unavailable)
+        XCTAssertEqual(b.enrollment(environment: .production, userID: 1, isPremium: false), .existingVisible(identity(1)))
+        XCTAssertEqual(a.enrollment(environment: .production, userID: 9, isPremium: false), .new(.a))
+        XCTAssertEqual(b.enrollment(environment: .production, userID: 9, isPremium: false), .new(.b))
+    }
+
+    func testSevenRawAccountsAndOrdinaryBHistoryRemainSupported() throws {
+        let members = [AccountMembership(identity: identity(1), ownership: .shared, isPremium: true)] +
+            (2 ... 4).map { AccountMembership(identity: identity(Int64($0)), ownership: .a) } +
+            (5 ... 7).map { AccountMembership(identity: identity(Int64($0)), ownership: .b) }
+        let config = try AccessConfiguration(installation: installation, accounts: members, selectedA: identity(2), selectedB: identity(5))
+        let b = AccessModePolicy(mode: .b, configuration: config)
+        XCTAssertEqual(b.visibleAccounts.count, 4)
+        XCTAssertEqual(b.explicitOpen(ChatIdentity(account: identity(5), peerNamespace: 0, peerID: 100)), .ordinary)
+        XCTAssertEqual(b.explicitOpen(ChatIdentity(account: identity(1), peerNamespace: 0, peerID: 100)), .ordinary)
+        XCTAssertEqual(b.enrollment(environment: .production, userID: 9, isPremium: true), .unavailable)
+    }
 }

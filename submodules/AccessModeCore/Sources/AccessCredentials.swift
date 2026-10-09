@@ -212,10 +212,14 @@ public final class AccessCredentialStore {
     }
 
     func configuration(grant: AuthenticatedModeGrant) throws -> AccessConfiguration {
-        let state = try file.read()
-        try state.require(grant, issuer: issuer)
-        // Private adapters need the registry; never expose this raw configuration to a mode UI.
-        return state.configuration
+        try withValidatedGrant(grant) { $0 }
+    }
+
+    func withValidatedGrant<T>(_ grant: AuthenticatedModeGrant, _ body: (AccessConfiguration) throws -> T) throws -> T {
+        try file.withReadState { state in
+            try state.require(grant, issuer: issuer)
+            return try body(state.configuration)
+        }
     }
 
     public func setHidden(_ chat: ChatIdentity, hidden: Bool, grant: AuthenticatedModeGrant,
@@ -229,9 +233,14 @@ public final class AccessCredentialStore {
             guard config.revision < UInt64.max, chat.supported,
                   config.accounts.contains(where: { $0.identity == chat.account && $0.ownership == .shared }) else { throw AccessError.invalidConfiguration }
             var hiddenChats = config.hiddenChats
-            if hidden { hiddenChats.insert(chat) } else { hiddenChats.remove(chat) }
+            var generations = config.hiddenChatGenerations
+            if hidden {
+                hiddenChats.insert(chat)
+                if generations[chat] == nil { generations[chat] = UUID() }
+            } else { hiddenChats.remove(chat); generations.removeValue(forKey: chat) }
             state.configuration = try AccessConfiguration(installation: config.installation, revision: config.revision + 1,
-                accounts: config.accounts, hiddenChats: hiddenChats, selectedA: config.selectedA, selectedB: config.selectedB)
+                accounts: config.accounts, hiddenChats: hiddenChats, hiddenChatGenerations: generations,
+                selectedA: config.selectedA, selectedB: config.selectedB)
             stored = state
         }
     }

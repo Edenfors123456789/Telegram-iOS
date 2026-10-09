@@ -4,9 +4,11 @@ import XCTest
 final class TestDeviceKey: AccessDeviceKeyProvider {
     var key: Data? = Data(repeating: 0x57, count: 32)
     var denied = false
+    var onLoad: (() throws -> Void)?
     func loadKey(allowCreation: Bool) throws -> Data {
         if denied { throw AccessError.unavailable }
         guard let key else { throw AccessError.missingKey }
+        try onLoad?()
         return key
     }
 }
@@ -148,12 +150,31 @@ final class CredentialTests: XCTestCase {
         f.keys.denied = true
         XCTAssertThrowsError(try f.store.authenticate(pin: "123456"))
         f.keys.denied = false
-        // Atomic replacement cannot rename over a directory. Failure occurs after verification.
-        let obstruction = f.directory.appendingPathComponent("access-state.v1.enc.saved")
-        try FileManager.default.moveItem(at: f.file, to: obstruction)
-        try FileManager.default.createDirectory(at: f.file, withIntermediateDirectories: false)
-        XCTAssertThrowsError(try f.store.authenticate(pin: "123456"))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: obstruction.path))
+        let bytes = try Data(contentsOf: f.file)
+        // Remove directory write permission after a successful read/key load, so the
+        // authentication result exists but committing it cannot create the temporary file.
+        let directoryPath = f.directory.path
+        f.keys.onLoad = { try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directoryPath) }
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: f.directory.path) }
+        XCTAssertThrowsError(try f.store.authenticate(pin: "123456")) { XCTAssertEqual($0 as? AccessError, .unavailable) }
+        XCTAssertEqual(try Data(contentsOf: f.file), bytes)
+    }
+
+    func testSwappedCredentialsOrUntrustedWorkFactorFailBeforeDerivation() throws {
+        let f = try VaultFixture()
+        let raw = try EncryptedAccessFile<AccessVaultState>(directory: f.directory, namespace: "test.fork", keyProvider: f.keys)
+        try raw.transaction { state, _ in
+            let old = state!
+            state = AccessVaultState(version: 1, configuration: old.configuration, a: old.b, b: old.a,
+                attemptsA: old.attemptsA, attemptsB: old.attemptsB, revocation: old.revocation)
+        }
+        XCTAssertThrowsError(try f.store.authenticate(pin: "123456")) { XCTAssertEqual($0 as? AccessError, .corrupt) }
+        try raw.transaction { state, _ in
+            let originalA = state!.b
+            state!.b = state!.a
+            state!.a = PINCredential(mode: .a, id: originalA.id, revision: 1, salt: originalA.salt, iterations: Int.max, proof: originalA.proof)
+        }
+        XCTAssertThrowsError(try f.store.authenticate(pin: "654321")) { XCTAssertEqual($0 as? AccessError, .corrupt) }
     }
 }
 

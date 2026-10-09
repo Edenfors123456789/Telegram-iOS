@@ -61,16 +61,19 @@ public struct AccessConfiguration: Codable, Equatable, Sendable {
     public let revision: UInt64
     public let accounts: [AccountMembership]
     public let hiddenChats: Set<ChatIdentity>
+    public let hiddenChatGenerations: [ChatIdentity: UUID]
     public let selectedA: AccountIdentity
     public let selectedB: AccountIdentity
 
     public init(installation: UUID, revision: UInt64 = 1, accounts: [AccountMembership],
-                hiddenChats: Set<ChatIdentity> = [], selectedA: AccountIdentity, selectedB: AccountIdentity) throws {
+                hiddenChats: Set<ChatIdentity> = [], hiddenChatGenerations: [ChatIdentity: UUID]? = nil,
+                selectedA: AccountIdentity, selectedB: AccountIdentity) throws {
         self.version = 1
         self.installation = installation
         self.revision = revision
         self.accounts = accounts
         self.hiddenChats = hiddenChats
+        self.hiddenChatGenerations = hiddenChatGenerations ?? Dictionary(uniqueKeysWithValues: hiddenChats.map { ($0, UUID()) })
         self.selectedA = selectedA
         self.selectedB = selectedB
         try validate()
@@ -100,13 +103,18 @@ public struct AccessConfiguration: Codable, Equatable, Sendable {
                 throw AccessError.invalidConfiguration
             }
         }
-        guard hiddenChats.allSatisfy({ chat in
+        guard Set(hiddenChatGenerations.keys) == hiddenChats, hiddenChats.allSatisfy({ chat in
             chat.supported && accounts.contains(where: { $0.identity == chat.account && $0.ownership == .shared })
         }) else { throw AccessError.invalidConfiguration }
     }
 }
 
 public enum HistoryAccess: Equatable { case denied, ordinary, restrictedTranscript }
+public enum AccountEnrollmentDecision: Equatable {
+    case existingVisible(AccountIdentity)
+    case new(AccountOwnership)
+    case unavailable
+}
 
 public struct AccessModePolicy {
     public let mode: AccessMode
@@ -132,4 +140,16 @@ public struct AccessModePolicy {
     public var canManageHiddenChats: Bool { mode == .a }
     public var allowsPush: Bool { false }
     public var allowsBiometrics: Bool { false }
+
+    /// Call only after authoritative self identity confirmation. A hidden collision returns
+    /// the same neutral outcome as other unavailable enrollments, without another role's ID.
+    public func enrollment(environment: AccountEnvironment, userID: Int64, isPremium: Bool) -> AccountEnrollmentDecision {
+        guard userID > 0, (try? configuration.validate()) != nil else { return .unavailable }
+        if let existing = configuration.accounts.first(where: { $0.identity.environment == environment && $0.identity.userID == userID }) {
+            return existing.visible(in: mode) ? .existingVisible(existing.identity) : .unavailable
+        }
+        let visible = configuration.accounts.filter { $0.visible(in: mode) }
+        let maximum = isPremium || visible.contains(where: \.isPremium) ? 4 : 3
+        return visible.count < maximum ? .new(mode == .a ? .a : .b) : .unavailable
+    }
 }

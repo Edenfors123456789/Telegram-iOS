@@ -6,7 +6,7 @@ Last updated: 2026-10-09 (Europe/Minsk).
 
 The user approved `DUAL_PIN_ACCESS_PLAN_v1.txt` and authorized autonomous staged implementation, relevant checks, repairs, and local Git checkpoints. Changes to agreed product behavior require confirmation.
 
-**Current stage: 2 — isolated access infrastructure. Stages 0 and 1 passed. UI integration has not started.**
+**Current stage: 3 — lock/UI/accounts integration. Stages 0, 1 and 2 passed; running Telegram UI still has upstream behavior.**
 
 The full unmodified Telegram application built successfully and was visually verified on an isolated simulator. The baseline gate is satisfied on stable Xcode 27.0, with the documented version override; it is not a reproduced Xcode-26.6 release build. Architecture and integration paths were checked against the approved behavior and current source tree; stage 2 is authorized.
 
@@ -27,8 +27,8 @@ The full unmodified Telegram application built successfully and was visually ver
 |---|---|---|
 | 0: baseline | Passed | Full original app build exit 0; 42 host cases + 306 iOS cases; isolated simulator onboarding |
 | 1: architecture/docs | Passed | Approved behavior mapped to source; 41 surface paths verified; architecture and leakage documentation |
-| 2: infrastructure | In progress | Tested credentials/configuration/policy/epochs/transcript foundation |
-| 3: lock/UI/accounts | Not started | Verified PIN selection, ownership, transitions and management UI |
+| 2: infrastructure | Passed | 26 Mac cases (SwiftPM/Bazel), 27 hosted iOS cases including real Keychain; transcript/policy/storage/revocation verified |
+| 3: lock/UI/accounts | In progress | Verified PIN selection, ownership, transitions and management UI |
 | 4: filtering/history | Not started | Verified surface coverage, seven-day projection and stale-result rejection |
 | 5: notifications/external | Not started | Verified no push registration and guarded/disabled external surfaces |
 | 6: stabilization | Not started | Final build/tests, iPhone checklist, performance comparison, limitations |
@@ -58,10 +58,10 @@ The full unmodified Telegram application built successfully and was visually ver
 
 ## Next actions
 
-1. Build the independent AccessModeCore module, beginning with configuration/policy/epoch regression tests.
-2. Implement device-local encrypted configuration, dual credential verification and durable attempt budgets; verify restart, corruption and concurrent updates.
-3. Add the transcript boundary/provenance/window foundation and its tests before stage 3.
-4. Own bundle/API/Apple-team configuration is pending a user-provided local file path for later device signing. Continue isolated simulator/module work independently.
+1. Integrate opaque covers and immediate lifecycle locks; remove biometric entry/settings paths.
+2. Integrate authenticated Dual PIN initialization/migration and grants with the standard PIN controller; never publish an unfiltered B root.
+3. Split raw account processing from role-visible streams, implement exact enrollment ownership/collisions and A-only hide management; verify before stage 4.
+4. User authorized choosing bundle/API development values and discovering the IMO Apple team. See `docs/dual-pin/BUILD_CONFIGURATION.md`; the ignored development JSON exists. Physical signing still needs profiles for the new bundle/App Group and the eventual target iPhone.
 
 ## Stage 1 evidence
 
@@ -70,7 +70,7 @@ The full unmodified Telegram application built successfully and was visually ver
 - All referenced existing source paths were checked on disk; `git diff --check` passed. Documentation is consistent with the approved six-digit/no-biometrics/no-push/account-pool/transcript behavior.
 - The legacy PIN verifier increments attempts on each failed credential check; dual authentication must be a single operation with independent durable budgets, not two sequential legacy verifications.
 
-## Stage 2 working evidence (not complete)
+## Stage 2 evidence
 
 - Added independent `submodules/AccessModeCore` SwiftPM/Bazel module; it is not connected to Telegram UI yet.
 - Configuration validation and policy cover exact account identity, symmetric ownership, visible-only Premium limits, hidden discovery versus explicit opening, and unknown namespaces.
@@ -78,7 +78,10 @@ The full unmodified Telegram application built successfully and was visually ver
 - Opaque verified grants and coordinator tickets bind issuer, credential/configuration revisions, persistent revocation and local generations. Preparation cannot submit; stale callbacks are discarded; a failed persistent lock still locks the local coordinator.
 - Initial policy regression run failed in 5 cases as expected; corrected run passed. Security run found a coordinator invalidation defect; corrected SwiftPM run with warnings-as-errors passed 17 XCTest cases, 0 failures. Logs: `build-input/dual-pin-stage2-policy-red.log`, `dual-pin-stage2-security-tests.log`, `dual-pin-stage2-security-green.log`.
 - Bazel host verification also passed: `//submodules/AccessModeCore:AccessModeCoreTests`, 17 XCTest cases, 0 failures, warnings-as-errors (log `build-input/dual-pin-stage2-bazel-checkpoint.log`).
-- Remaining for the stage: durable transcript boundary/provenance/expiry foundation, stronger failure/concurrency checks, iOS compiler/test verification, review and stage commit. No PIN UI, account filtering, notifications or history adapters are implemented yet.
+- Expanded foundation passed 23 XCTest cases through Bazel on Mac and the iOS 26.5 simulator; 0 failures. Includes durable restricted transcript boundary, offline pending sends, restart/ACK in A, deletion, seven-day expiry/clock rollback and rehide-generation rejection. Logs: `dual-pin-stage2-bazel-tests.log` and `dual-pin-stage2-ios-tests.log` under `build-input/`.
+- Further tests passed 26 cases on Mac (SwiftPM and Bazel). An initial real iOS Keychain-adapter test exposed `errSecNotAvailable` (-25291), also for a plain query; that failed run had 27 cases and 2 assertions in the adapter test. Evidence: `build-input/dual-pin-stage2-final-ios.log` and `dual-pin-stage2-keychain-probe.log`.
+- Resolved that failure with a hosted test app and its unique simulator application/keychain entitlements: actual Keychain test passed without skips or weaker storage protection. Final hosted iOS run: 27 cases, 0 failures, Bazel exit 0, 47.750 seconds (`build-input/dual-pin-stage2-hosted-entitled-ios.log`). Unhosted and host-without-entitlements failures remain recorded; the failed hosted run also hit an upstream xctestrunner failure-report export exception.
+- Stage-2 source and whitespace review completed; transcript metadata backend limits and all pending adapter/device guarantees are explicit in `docs/dual-pin/INFRASTRUCTURE.md`. No PIN UI, account filtering, notifications or actual history adapters are implemented yet.
 
 ## Commits
 
@@ -86,6 +89,7 @@ The full unmodified Telegram application built successfully and was visually ver
 - `350ea8d941`: reproducible resource-limited original simulator runner, Metal tooling repair, and baseline host evidence. No app code changes.
 - `f6d3e99743`: verified original full simulator build, launch and 306 iOS tests; stage 0 gate passed.
 - `5c28249fce`: approved integration architecture, verified source-path leakage matrix; stage 1 passed.
+- `a646e1c8dc`: recoverable stage-2 checkpoint, 17 verified foundation cases (not the whole stage).
 
 ## Resume rules
 

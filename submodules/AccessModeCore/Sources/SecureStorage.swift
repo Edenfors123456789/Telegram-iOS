@@ -133,9 +133,13 @@ final class EncryptedAccessFile<State: Codable> {
     }
 
     func read() throws -> State {
+        try withReadState { $0 }
+    }
+
+    func withReadState<Result>(_ body: (State) throws -> Result) throws -> Result {
         try locked {
             guard let value = try load().state else { throw AccessError.authenticationRequired }
-            return value
+            return try body(value)
         }
     }
 
