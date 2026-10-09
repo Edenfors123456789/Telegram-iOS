@@ -31,6 +31,11 @@ public final class NativeSnapshotCover {
     public init() {}
     public var isVisible: Bool { !entries.isEmpty }
 
+    public func isCurrent(_ ticket: NativeSnapshotTicket) -> Bool {
+        assert(Thread.isMainThread)
+        return isVisible && ticket.owner == owner && ticket.generation == generation
+    }
+
     @discardableResult public func show(on window: SnapshotProtectedWindow) -> NativeSnapshotTicket {
         assert(Thread.isMainThread)
         generation = UUID()

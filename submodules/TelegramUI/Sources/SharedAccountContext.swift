@@ -355,11 +355,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private let energyUsageAutomaticDisposable = MetaDisposable()
     private var webProxyCarrierHost: WebProxyCarrierWindowHost?
     
-    init(mainWindow: Window1?, sharedContainerPath: String, basePath: String, encryptionParameters: ValueBoxEncryptionParameters, accountManager: AccountManager<TelegramAccountManagerTypes>, appLockContext: AppLockContext, notificationController: NotificationContainerController?, applicationBindings: TelegramApplicationBindings, initialPresentationDataAndSettings: InitialPresentationDataAndSettings, networkArguments: NetworkInitializationArguments, hasInAppPurchases: Bool, rootPath: String, legacyBasePath: String?, apsNotificationToken: Signal<Data?, NoError>, voipNotificationToken: Signal<Data?, NoError>, firebaseSecretStream: Signal<[String: String], NoError>, setNotificationCall: @escaping (PresentationCall?) -> Void, navigateToChat: @escaping (AccountRecordId, PeerId, MessageId?, Bool) -> Void, displayUpgradeProgress: @escaping (Float?) -> Void = { _ in }, appDelegate: AppDelegate?, testingEnvironment: Bool = false) {
+    init(mainWindow: Window1?, sharedContainerPath: String, basePath: String, encryptionParameters: ValueBoxEncryptionParameters, accountManager: AccountManager<TelegramAccountManagerTypes>, appLockContext: AppLockContext, notificationController: NotificationContainerController?, applicationBindings: TelegramApplicationBindings, initialPresentationDataAndSettings: InitialPresentationDataAndSettings, networkArguments: NetworkInitializationArguments, hasInAppPurchases: Bool, rootPath: String, legacyBasePath: String?, apsNotificationToken: Signal<Data?, NoError>, voipNotificationToken: Signal<Data?, NoError>, firebaseSecretStream: Signal<[String: String], NoError>, setNotificationCall: @escaping (PresentationCall?) -> Void, navigateToChat: @escaping (AccountRecordId, PeerId, MessageId?, Bool) -> Void, displayUpgradeProgress: @escaping (Float?) -> Void = { _ in }, appDelegate: AppDelegate?, testingEnvironment: Bool = false, modeAccountAccessRequired: Bool = false) {
         assert(Queue.mainQueue().isCurrent())
 
         precondition(!testHasInstance)
         testHasInstance = true
+        // Set before subscriptions/automatic authorization can process raw records.
+        self.modeAccountAccessRequired = modeAccountAccessRequired
         
         self.appDelegate = appDelegate
         self.mainWindow = mainWindow

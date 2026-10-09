@@ -21,6 +21,7 @@ public final class AccessRootPresentation {
     private let coordinator: AccessModeCoordinator
     private let owner = UUID()
     private let isApplicationActive: () -> Bool
+    private let authorizeRoot: (AccessModePolicy) throws -> Void
     private let showCover: () -> Void
     private let discardRoot: () -> Void
     private let publishReady: (AccessRootPreparation) -> Void
@@ -35,11 +36,13 @@ public final class AccessRootPresentation {
     }
 
     public init(coordinator: AccessModeCoordinator, isApplicationActive: @escaping () -> Bool,
+                authorizeRoot: @escaping (AccessModePolicy) throws -> Void = { _ in },
                 showCover: @escaping () -> Void, discardRoot: @escaping () -> Void,
                 publishReady: @escaping (AccessRootPreparation) -> Void, hideCover: @escaping () throws -> Void) throws {
         precondition(Thread.isMainThread)
         self.coordinator = coordinator
         self.isApplicationActive = isApplicationActive
+        self.authorizeRoot = authorizeRoot
         self.showCover = showCover
         self.discardRoot = discardRoot
         self.publishReady = publishReady
@@ -72,7 +75,11 @@ public final class AccessRootPresentation {
         showCover()
         discardRoot()
         // A lifecycle event may reenter while root observers are being cleared.
-        try withPreparingPolicy(token) { _ in }
+        do { try withPreparingPolicy(token, authorizeRoot) }
+        catch {
+            if matches(token, preparing) { try? lock() }
+            throw error
+        }
         return token
     }
 
@@ -99,7 +106,10 @@ public final class AccessRootPresentation {
             try lock()
             throw AccessError.invalidTransition
         }
-        do { try coordinator.completePreparation(token.ticket) }
+        do {
+            try withPreparingPolicy(token, authorizeRoot)
+            try coordinator.completePreparation(token.ticket)
+        }
         catch {
             // Only a current preparation reaches here; an old completion never
             // clears the root/cover of a newer mode.
@@ -115,7 +125,7 @@ public final class AccessRootPresentation {
             try lock()
             throw AccessError.invalidTransition
         }
-        do { try coordinator.withPolicy(token.ticket) { _ in } }
+        do { try coordinator.withPolicy(token.ticket, authorizeRoot) }
         catch {
             if matches(token, active) { try? lock() }
             throw error

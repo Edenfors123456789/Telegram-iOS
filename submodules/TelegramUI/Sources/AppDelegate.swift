@@ -51,6 +51,7 @@ import ProxyServerPreviewScreen
 import WalletContext
 import WalletSendScreen
 import PasscodeCore
+import PasscodeUI
 import LiquidGlassShapes
 import MTProtoRustEngine
 
@@ -263,6 +264,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     private var accountManager: AccountManager<TelegramAccountManagerTypes>?
     private var appLockContextImpl: AppLockContextImpl?
+    private var modeCoordinator: AccessModeCoordinator?
+    private var modeRootPresentation: AccessRootPresentation?
     private var accountManagerState: AccountManagerState?
     
     private var contextValue: AuthorizedApplicationContext?
@@ -1130,10 +1133,18 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             let legacyBasePath = appGroupUrl.path
             
             let presentationDataPromise = Promise<PresentationData>()
+            let modeBootstrap = AccessRuntimeBootstrap.inspect {
+                guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else { throw AccessError.unavailable }
+                let group = try PasscodeEnvironment.shared.sharedAccessGroup()
+                let key = try KeychainAccessDeviceKey(service: bundleID + ".dual-pin.v1", accessGroup: group)
+                return try AccessCredentialStore(directory: URL(fileURLWithPath: rootPath).appendingPathComponent("dual-pin-access", isDirectory: true),
+                    namespace: bundleID + ":" + group, keyProvider: key)
+            }
             let appLockContext = AppLockContextImpl(rootPath: rootPath, window: self.mainWindow!, rootController: self.window?.rootViewController, applicationBindings: applicationBindings, accountManager: accountManager, presentationDataSignal: presentationDataPromise.get(), lockIconInitialFrame: {
                 return (self.mainWindow?.viewController as? TelegramRootController)?.chatListController?.lockViewFrame
             })
             self.appLockContextImpl = appLockContext
+            if modeBootstrap.requiresModeAuthentication { appLockContext.requireModeAuthentication() }
             
             var setPresentationCall: ((PresentationCall?) -> Void)?
             let sharedContext = SharedAccountContextImpl(mainWindow: self.mainWindow, sharedContainerPath: legacyBasePath, basePath: rootPath, encryptionParameters: encryptionParameters, accountManager: accountManager, appLockContext: appLockContext, notificationController: nil, applicationBindings: applicationBindings, initialPresentationDataAndSettings: initialPresentationDataAndSettings, networkArguments: networkArguments, hasInAppPurchases: buildConfig.isAppStoreBuild && buildConfig.apiId == 1, rootPath: rootPath, legacyBasePath: legacyBasePath, apsNotificationToken: self.notificationTokenPromise.get() |> map(Optional.init), voipNotificationToken: self.voipTokenPromise.get() |> map(Optional.init), firebaseSecretStream: self.firebaseSecretStream.get(), setNotificationCall: { call in
@@ -1156,7 +1167,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                         self.mainWindow.coveringView = nil
                     }
                 }
-            }, appDelegate: self, testingEnvironment: isUITest)
+            }, appDelegate: self, testingEnvironment: isUITest, modeAccountAccessRequired: modeBootstrap.requiresModeAuthentication)
+            if case let .configured(store) = modeBootstrap {
+                self.installModeRuntime(store: store, sharedContext: sharedContext, appLock: appLockContext)
+            }
             
             presentationDataPromise.set(sharedContext.presentationData)
             #if targetEnvironment(simulator)
@@ -1392,45 +1406,53 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 |> filter { $0 }
                 |> take(1)
                 |> deliverOnMainQueue).start(next: { _ in
-                    if context.sharedApplicationContext.sharedContext.hasModeAccountAccess {
-                        guard self.isActiveValue, self.contextValue === context,
-                              let preparation = context.modeRootPreparation,
-                              (try? context.sharedApplicationContext.sharedContext.validateModeAccountRoot(preparation, context: context.context)) != nil else { return }
-                    }
-                    let readyTime = CFAbsoluteTimeGetCurrent() - startTime
-                    if readyTime > 0.5 {
-                        print("Application: context took \(readyTime) to become ready")
-                    }
-                    print("Launch to ready took \((CFAbsoluteTimeGetCurrent() - launchStartTime) * 1000.0) ms")
-
-                    self.mainWindow.debugAction = nil
-                    self.mainWindow.viewController = context.rootController
-                    
-                    if firstTime {
-                        let layer = context.rootController.view.layer
-                        layer.allowsGroupOpacity = true
-                        layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2, completion: { [weak layer] _ in
-                            if let layer = layer {
-                                layer.allowsGroupOpacity = false
-                            }
-                        })
-                    }
-                    self.mainWindow.topLevelOverlayControllers = [context.sharedApplicationContext.overlayMediaController, context.notificationController]
-                    (context.context.sharedContext as? SharedAccountContextImpl)?.notificationController = context.notificationController
-                    if let preparation = context.modeRootPreparation {
-                        do { try context.sharedApplicationContext.sharedContext.completeModeAccountRoot(preparation, context: context.context) }
-                        catch {
-                            self.appLockContextImpl?.lock()
-                            return
+                    let mountRoot: () -> Void = { [weak self = self] in
+                        guard let self else { return }
+                        if context.sharedApplicationContext.sharedContext.hasModeAccountAccess {
+                            guard self.isActiveValue, self.contextValue === context,
+                                  let preparation = context.modeRootPreparation,
+                                  (try? context.sharedApplicationContext.sharedContext.validateModeAccountRoot(preparation, context: context.context)) != nil else { return }
                         }
-                    }
-                    var authorizeNotifications = true
-                    if #available(iOS 10.0, *) {
-                        authorizeNotifications = false
-                    }
-                    self.registerForNotifications(context: context.context, authorize: authorizeNotifications)
+                        let readyTime = CFAbsoluteTimeGetCurrent() - startTime
+                        if readyTime > 0.5 {
+                            print("Application: context took \(readyTime) to become ready")
+                        }
+                        print("Launch to ready took \((CFAbsoluteTimeGetCurrent() - launchStartTime) * 1000.0) ms")
+
+                        self.mainWindow.debugAction = nil
+                        self.mainWindow.viewController = context.rootController
                     
-                    self.resetIntentsIfNeeded(context: context.context)
+                        if firstTime {
+                            let layer = context.rootController.view.layer
+                            layer.allowsGroupOpacity = true
+                            layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.2, completion: { [weak layer] _ in
+                                if let layer = layer {
+                                    layer.allowsGroupOpacity = false
+                                }
+                            })
+                        }
+                        self.mainWindow.topLevelOverlayControllers = [context.sharedApplicationContext.overlayMediaController, context.notificationController]
+                        (context.context.sharedContext as? SharedAccountContextImpl)?.notificationController = context.notificationController
+                        if let preparation = context.modeRootPreparation {
+                            do { try context.sharedApplicationContext.sharedContext.completeModeAccountRoot(preparation, context: context.context) }
+                            catch {
+                                self.appLockContextImpl?.lock()
+                                return
+                            }
+                        }
+                        var authorizeNotifications = true
+                        if #available(iOS 10.0, *) {
+                            authorizeNotifications = false
+                        }
+                        self.registerForNotifications(context: context.context, authorize: authorizeNotifications)
+
+                        self.resetIntentsIfNeeded(context: context.context)
+                    }
+                    if context.modeRootPreparation != nil {
+                        self.mountModeRootAfterNativeDismissal(context, mount: mountRoot)
+                    } else {
+                        mountRoot()
+                    }
                 }))
             } else {
                 self.mainWindow.viewController = nil
@@ -2023,6 +2045,113 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }))
     }
 
+    private func installModeRuntime(store: AccessCredentialStore, sharedContext: SharedAccountContextImpl, appLock: AppLockContextImpl) {
+        assert(Thread.isMainThread)
+        let coordinator = AccessModeCoordinator(store: store)
+        self.modeCoordinator = coordinator
+        do {
+            let driver = try AccessRootPresentation(coordinator: coordinator, isApplicationActive: { [weak self] in self?.isActiveValue == true },
+                authorizeRoot: { policy in
+                    // This intermediate stage must never publish raw B history.
+                    // Remove this denial only with verified stage-4/5 adapters.
+                    guard policy.mode == .a else { throw AccessError.unavailable }
+                }, showCover: { [weak self, weak appLock] in
+                    guard let self else { return }
+                    self.showModeNativeCover()
+                    appLock?.beginModeRootPreparation()
+                    // Lock I/O can fail, or occur from a policy-delivery boundary.
+                    // Refresh after that synchronous transition; a stale queued
+                    // callback cannot reveal a newer preparing/active generation.
+                    Queue.mainQueue().async { [weak self, weak appLock] in
+                        appLock?.refreshModePresentation()
+                        self?.revealNativeLockScreenIfSafe()
+                    }
+                }, discardRoot: { [weak self, weak sharedContext] in
+                    self?.mainWindow.viewController = nil
+                    self?.mainWindow.topLevelOverlayControllers = []
+                    self?.mainWindow.debugAction = nil
+                    self?.contextValue = nil
+                    self?.authContextValue = nil
+                    sharedContext?.notificationController = nil
+                    sharedContext?.clearModeAccountPresentation()
+                }, publishReady: { [weak sharedContext] _ in
+                    sharedContext?.publishModeAccountReady()
+                }, hideCover: { [weak self, weak appLock] in
+                    guard let self, let appLock, self.isActiveValue,
+                          self.window?.rootViewController?.presentedViewController == nil,
+                          let ticket = self.nativeSnapshotTicket,
+                          self.nativeSnapshotCover.isCurrent(ticket),
+                          appLock.completeModeRootPreparation() else { throw AccessError.unavailable }
+                    // A reentrant lifecycle event rotates this ticket and retains
+                    // its new native cover. Never remove that cover with old work.
+                    guard self.nativeSnapshotCover.hide(ticket) else { throw AccessError.staleAuthorization }
+                    self.nativeSnapshotTicket = nil
+                })
+            self.modeRootPresentation = driver
+            sharedContext.configureModeAccountAccess(driver)
+            let authentication = ModePINEntryAuthentication(coordinator: coordinator, prepareRoot: { [weak sharedContext, weak appLock] ticket in
+                guard let sharedContext, let appLock else { throw AccessError.unavailable }
+                let preparation = try driver.prepare(ticket)
+                appLock.refreshModePresentation()
+                try sharedContext.prepareModeAccountRoot(preparation)
+            })
+            appLock.configureModeAuthentication(authentication, invalidateAccess: {
+                try? driver.lock()
+            }, isRootReady: { [weak self] in
+                guard let self, self.isActiveValue, driver.hasActiveRoot,
+                      let context = self.contextValue,
+                      context.modeRootPreparation != nil else { return false }
+                return self.mainWindow.viewController === context.rootController
+            })
+        } catch {
+            sharedContext.requireModeAccountAccess()
+            appLock.requireModeAuthentication()
+        }
+    }
+
+    private func showModeNativeCover() {
+        assert(Thread.isMainThread)
+        if let window = self.nativeWindow {
+            self.nativeSnapshotTicket = self.nativeSnapshotCover.show(on: window)
+            window.endEditing(true)
+        }
+    }
+
+    /// Native UIKit sheets can outlive the old root. Dismiss them while covered;
+    /// revalidate the root token after the asynchronous completion, before mount.
+    private func mountModeRootAfterNativeDismissal(_ context: AuthorizedApplicationContext, mount: @escaping () -> Void) {
+        assert(Thread.isMainThread)
+        let ready: () -> Void = { [weak self] in
+            guard let self, self.isActiveValue, self.contextValue === context,
+                  let preparation = context.modeRootPreparation,
+                  self.window?.rootViewController?.presentedViewController == nil,
+                  (try? context.sharedApplicationContext.sharedContext.validateModeAccountRoot(preparation, context: context.context)) != nil else { return }
+            mount()
+        }
+        if let controller = self.window?.rootViewController, controller.presentedViewController != nil {
+            controller.dismiss(animated: false, completion: ready)
+        } else {
+            ready()
+        }
+    }
+
+    private func revealNativeLockScreenIfSafe() {
+        assert(Thread.isMainThread)
+        guard self.isActiveValue, let ticket = self.nativeSnapshotTicket,
+              self.modeCoordinator == nil || self.modeCoordinator?.state == .locked else { return }
+        let reveal: () -> Void = { [weak self] in
+            guard let self, self.isActiveValue,
+                  self.window?.rootViewController?.presentedViewController == nil,
+                  self.modeCoordinator == nil || self.modeCoordinator?.state == .locked else { return }
+            if self.nativeSnapshotCover.hide(ticket) { self.nativeSnapshotTicket = nil }
+        }
+        if let controller = self.window?.rootViewController, controller.presentedViewController != nil {
+            controller.dismiss(animated: false, completion: reveal)
+        } else {
+            reveal()
+        }
+    }
+
     func handleWillResignActive() {
         // SceneDelegate calls synchronously before iOS captures the app snapshot.
         if let window = self.nativeWindow {
@@ -2145,24 +2274,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.isActiveValue = true
         self.isActivePromise.set(true)
 
-        if let ticket = self.nativeSnapshotTicket {
-            Queue.mainQueue().async { [weak self] in
-                guard let self, self.isActiveValue else { return }
-                let revealPIN: () -> Void = { [weak self] in
-                    guard let self, self.isActiveValue else { return }
-                    if self.nativeSnapshotCover.hide(ticket) {
-                        self.nativeSnapshotTicket = nil
-                    }
-                }
-                // Native share/payment/preview sheets can sit above Telegram's
-                // container. Retain the native barrier until their UI is dismissed.
-                if let controller = self.window?.rootViewController, controller.presentedViewController != nil {
-                    controller.dismiss(animated: false, completion: revealPIN)
-                } else {
-                    revealPIN()
-                }
-            }
-        }
+        Queue.mainQueue().async { [weak self] in self?.revealNativeLockScreenIfSafe() }
 
         self.resetBadge()
         

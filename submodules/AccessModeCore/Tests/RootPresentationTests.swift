@@ -8,9 +8,11 @@ private final class RootUI {
     var events: [String] = []
     var ready: (() -> Void)?
     var hideError: Error?
+    var authorize: (AccessModePolicy) throws -> Void = { _ in }
 
     func controller(_ coordinator: AccessModeCoordinator) throws -> AccessRootPresentation {
         try AccessRootPresentation(coordinator: coordinator, isApplicationActive: { self.active },
+            authorizeRoot: { try self.authorize($0) },
             showCover: { self.covered = true; self.events.append("cover") },
             discardRoot: { self.root = nil; self.events.append("discard") },
             publishReady: { preparation in
@@ -23,6 +25,36 @@ private final class RootUI {
 }
 
 final class RootPresentationTests: XCTestCase {
+    func testUnimplementedRestrictedAdaptersCannotPublishBAndDiscardPreviousRoot() throws {
+        let f = try VaultFixture()
+        let coordinator = AccessModeCoordinator(store: f.store)
+        let ui = RootUI()
+        ui.authorize = { policy in if policy.mode == .b { throw AccessError.unavailable } }
+        let controller = try ui.controller(coordinator)
+        let a = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(a, preparedAccount: f.config.selectedA)
+        XCTAssertFalse(ui.covered)
+        XCTAssertThrowsError(try controller.prepare(coordinator.beginUnlock(pin: "654321")))
+        XCTAssertTrue(ui.covered)
+        XCTAssertNil(ui.root)
+        XCTAssertEqual(coordinator.state, .locked)
+        XCTAssertThrowsError(try controller.withActivePolicy { $0.mode })
+    }
+
+    func testReadinessRevokedWhilePreparingCannotPublishOrUncover() throws {
+        let f = try VaultFixture()
+        let coordinator = AccessModeCoordinator(store: f.store)
+        let ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let token = try controller.prepare(coordinator.beginUnlock(pin: "654321"))
+        ui.authorize = { _ in throw AccessError.unavailable }
+        XCTAssertThrowsError(try controller.complete(token, preparedAccount: f.config.selectedB))
+        XCTAssertFalse(ui.events.contains("ready"))
+        XCTAssertTrue(ui.covered)
+        XCTAssertNil(ui.root)
+        XCTAssertEqual(coordinator.state, .locked)
+    }
+
     func testOnlyMatchingReadyRootCanUncoverAfterAuthentication() throws {
         let f = try VaultFixture()
         let coordinator = AccessModeCoordinator(store: f.store)
