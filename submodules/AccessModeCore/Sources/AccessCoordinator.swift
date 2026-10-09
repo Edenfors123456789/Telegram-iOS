@@ -14,6 +14,17 @@ public struct AccessPINRequest {
     let generation: UUID
 }
 
+public struct AccessPINChangeRequest {
+    let coordinator: UUID
+    let generation: UUID
+    let grant: AuthenticatedModeGrant
+}
+
+public struct AccessJournalRecoveryRequest {
+    let coordinator: UUID
+    let generation: UUID
+}
+
 /// The UI attaches its opaque cover before calling lock/beginUnlock and removes it
 /// only after completePreparation. Tickets must be rechecked at async delivery/side effects.
 public final class AccessModeCoordinator {
@@ -34,6 +45,8 @@ public final class AccessModeCoordinator {
         mutex.lock(); defer { mutex.unlock() }
         return presentation
     }
+
+    var permitsPINManagement: Bool { process == .mainApplication }
 
     public func lock() throws {
         mutex.lock(); defer { mutex.unlock() }
@@ -66,6 +79,73 @@ public final class AccessModeCoordinator {
     public func cooldownRemaining() throws -> Int {
         mutex.lock(); defer { mutex.unlock() }
         return try store.cooldownRemaining()
+    }
+
+    public func preparePINChange(ticket: AccessTicket) throws -> AccessPINChangeRequest {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard permitsPINManagement else { throw AccessError.authenticationRequired }
+        // Local invalidation precedes persistent work and survives its failure.
+        invalidate()
+        let temporary = try store.revokeAndReissueForPINChange(verified)
+        presentation = .preparing(temporary.mode)
+        return AccessPINChangeRequest(coordinator: id, generation: generation, grant: temporary)
+    }
+
+    /// Dispatch only after main-thread preparation covered/detached the root.
+    /// The trusted adapter must verify the own current PIN and use the A journal
+    /// or the B-only replacement API. It must not retain the temporary grant.
+    /// No completion can authenticate a root, including after a committed change.
+    public func executePINChange(_ request: AccessPINChangeRequest, operation: (AuthenticatedModeGrant) throws -> Void) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard permitsPINManagement, request.coordinator == id, request.generation == generation,
+              presentation == .preparing(request.grant.mode), grant == nil else { throw AccessError.staleAuthorization }
+        generation = UUID()
+        let execution = generation
+        let result = Result {
+            try store.validatePINChangeGrant(request.grant)
+            try operation(request.grant)
+        }
+        // Reentrant newer authentication/locking must survive an old completion.
+        guard generation == execution else { throw AccessError.staleAuthorization }
+        invalidate()
+        do { try store.revokeAll() }
+        catch { if case .success = result { throw error } }
+        try result.get()
+    }
+
+    public func prepareJournalRecovery() throws -> AccessJournalRecoveryRequest? {
+        mutex.lock(); defer { mutex.unlock() }
+        guard permitsPINManagement else { throw AccessError.authenticationRequired }
+        guard presentation == .locked, grant == nil else { throw AccessError.invalidTransition }
+        invalidate()
+        guard try store.hasPendingOwnerPINChange() else { return nil }
+        // Presentation preparation only: no user credential has been verified,
+        // and there is no grant for account/data/settings access.
+        presentation = .preparing(.a)
+        return AccessJournalRecoveryRequest(coordinator: id, generation: generation)
+    }
+
+    /// Trusted main-process recovery on the worker queue. The operation must
+    /// complete the pending journal, including durable resource/ref publication.
+    /// Failure/duplicate/stale completion cannot open a root or unlock with an
+    /// old code. Background lock revokes queued requests like normal PIN work.
+    public func executeJournalRecovery(_ request: AccessJournalRecoveryRequest, operation: () throws -> Void) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard permitsPINManagement, request.coordinator == id, request.generation == generation,
+              presentation == .preparing(.a), grant == nil else { throw AccessError.staleAuthorization }
+        generation = UUID()
+        let execution = generation
+        let result = Result {
+            guard try store.hasPendingOwnerPINChange() else { throw AccessError.invalidTransition }
+            try operation()
+            guard try !store.hasPendingOwnerPINChange() else { throw AccessError.unavailable }
+        }
+        guard generation == execution else { throw AccessError.staleAuthorization }
+        invalidate()
+        do { try store.revokeAll() }
+        catch { if case .success = result { throw error } }
+        try result.get()
     }
 
     public func cancelPreparation(_ ticket: AccessTicket) throws {

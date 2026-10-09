@@ -22,6 +22,8 @@ public struct AccessClockSnapshot {
     }
 }
 
+enum AccessGrantPurpose { case access, pinChange }
+
 public struct AuthenticatedModeGrant {
     public let mode: AccessMode
     let issuer: UUID
@@ -29,6 +31,7 @@ public struct AuthenticatedModeGrant {
     let credentialID: UUID
     let credentialRevision: UInt64
     let revocation: UInt64
+    let purpose: AccessGrantPurpose
 }
 
 struct PINCredential: Codable {
@@ -118,9 +121,10 @@ struct AccessVaultState: Codable {
         }
     }
 
-    func require(_ grant: AuthenticatedModeGrant, issuer: UUID) throws {
+    func require(_ grant: AuthenticatedModeGrant, issuer: UUID, permitsPINChange: Bool = false) throws {
         try validate()
         guard pendingOwnerPINChange == nil else { throw AccessError.unavailable }
+        guard grant.purpose == .access || (permitsPINChange && grant.purpose == .pinChange) else { throw AccessError.authenticationRequired }
         let credential = grant.mode == .a ? a : b
         guard grant.issuer == issuer, grant.configurationRevision == configuration.revision,
               grant.credentialID == credential.id, grant.credentialRevision == credential.revision,
@@ -212,7 +216,7 @@ public final class AccessCredentialStore {
         guard current.mode == grant.mode else { throw AccessError.authenticationRequired }
         try file.transaction { stored, key in
             guard var state = stored else { throw AccessError.authenticationRequired }
-            try state.require(grant, issuer: self.issuer)
+            try state.require(grant, issuer: self.issuer, permitsPINChange: true)
             try state.require(current, issuer: self.issuer)
             let other = grant.mode == .a ? state.b : state.a
             guard try !other.matches(newPIN, deviceKey: key) else { throw AccessError.identicalPINs }
@@ -238,7 +242,7 @@ public final class AccessCredentialStore {
         guard current.mode == .a else { throw AccessError.authenticationRequired }
         return try file.transaction { stored, key in
             guard var state = stored else { throw AccessError.authenticationRequired }
-            try state.require(grant, issuer: issuer)
+            try state.require(grant, issuer: issuer, permitsPINChange: true)
             try state.require(current, issuer: issuer)
             guard try !state.b.matches(newPIN, deviceKey: key) else { throw AccessError.identicalPINs }
             guard state.a.revision < UInt64.max, state.revocation < UInt64.max else { throw AccessError.corrupt }
@@ -307,6 +311,27 @@ public final class AccessCredentialStore {
         }
     }
 
+    /// Replace active authority with a capability held only by an opaque,
+    /// single-use management request. Existing extension grants are revoked too.
+    func revokeAndReissueForPINChange(_ grant: AuthenticatedModeGrant) throws -> AuthenticatedModeGrant {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.require(grant, issuer: issuer)
+            guard state.revocation < UInt64.max else { throw AccessError.corrupt }
+            state.revocation += 1
+            state.pendingEnrollment = nil
+            stored = state
+            return self.grant(mode: grant.mode, state: state, purpose: .pinChange)
+        }
+    }
+
+    func validatePINChangeGrant(_ grant: AuthenticatedModeGrant) throws {
+        try file.withReadState { state in
+            guard grant.purpose == .pinChange else { throw AccessError.authenticationRequired }
+            try state.require(grant, issuer: issuer, permitsPINChange: true)
+        }
+    }
+
     public func cooldownRemaining() throws -> Int {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
@@ -360,10 +385,10 @@ public final class AccessCredentialStore {
         }
     }
 
-    func grant(mode: AccessMode, state: AccessVaultState) -> AuthenticatedModeGrant {
+    func grant(mode: AccessMode, state: AccessVaultState, purpose: AccessGrantPurpose = .access) -> AuthenticatedModeGrant {
         let credential = mode == .a ? state.a : state.b
         return AuthenticatedModeGrant(mode: mode, issuer: issuer, configurationRevision: state.configuration.revision,
-            credentialID: credential.id, credentialRevision: credential.revision, revocation: state.revocation)
+            credentialID: credential.id, credentialRevision: credential.revision, revocation: state.revocation, purpose: purpose)
     }
 
     static func validPIN(_ value: String) -> Bool {

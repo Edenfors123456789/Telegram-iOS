@@ -2,6 +2,8 @@ import XCTest
 import Foundation
 import LocalAuthentication
 import AccessModeCore
+import TelegramCore
+import SwiftSignalKit
 @testable import PasscodeCore
 
 private final class MigrationStorage: PasscodeStorage {
@@ -210,6 +212,117 @@ final class DualPINJournalTests: XCTestCase {
         XCTAssertThrowsError(try adapter.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222"))
         XCTAssertThrowsError(try adapter.recover(store: f.vault, didCommitLegacyReference: { _ in XCTFail("Extension publication") }))
         XCTAssertFalse(try f.vault.hasPendingOwnerPINChange())
+    }
+}
+
+final class DualPINReferenceCommitTests: XCTestCase {
+    private func manager(_ f: MigrationFixture, reference: Atomic<PasscodeCredentialReference?>) -> AccountManager<TelegramAccountManagerTypes> {
+        // Upstream initializes a missing atomic state only through this flag.
+        // Use it solely for our verified-new UUID fixture, never for the reader.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.directory.appendingPathComponent("account-manager").path))
+        let manager = AccountManager<TelegramAccountManagerTypes>(basePath: f.directory.appendingPathComponent("account-manager").path,
+            isTemporary: false, isReadOnly: false, useCaches: false, removeDatabaseOnError: true,
+            accessChallenge: AccountManagerAccessChallenge(prepare: { _ in _ = f.directory }, resolve: { _, _ in
+                if let value = reference.with({ $0 }) { return accessChallengeData(reference: value) }
+                return .some(.none)
+            }, finishInitialization: {}))
+        let ready = expectation(description: "Isolated metadata initialized")
+        let disposable = manager.transaction { $0.getAccessChallengeData() }.start(next: { data in
+            XCTAssertEqual(data, .none)
+            ready.fulfill()
+        })
+        wait(for: [ready], timeout: 5)
+        disposable.dispose()
+        return manager
+    }
+
+    func testMainCallerAndSilentlyRejectedReferenceAreDenied() throws {
+        let f = try MigrationFixture()
+        let reference = PasscodeCredentialReference(id: UUID().uuidString, kind: .digits6)
+        let manager = self.manager(f, reference: Atomic(value: nil))
+        XCTAssertThrowsError(try commitDualPINLegacyReference(reference, accountManager: manager))
+        let done = expectation(description: "Rejected publication")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try commitDualPINLegacyReference(reference, accountManager: manager)
+                XCTFail("Silently refused metadata cannot acknowledge publication")
+            } catch {}
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 7)
+    }
+
+    func testAcknowledgedReferenceSurvivesReopeningRealMetadataWithNoResolverFallback() throws {
+        let f = try MigrationFixture()
+        let trusted = Atomic<PasscodeCredentialReference?>(value: nil)
+        let manager = self.manager(f, reference: trusted)
+        let reference = PasscodeCredentialReference(id: UUID().uuidString, kind: .digits6)
+        _ = trusted.swap(reference)
+        let done = expectation(description: "Committed reference")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { try commitDualPINLegacyReference(reference, accountManager: manager) }
+            catch { XCTFail("Publication failed: \(error)") }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 7)
+        let reader = AccountManager<TelegramAccountManagerTypes>(basePath: manager.basePath,
+            isTemporary: false, isReadOnly: true, useCaches: false, removeDatabaseOnError: false,
+            accessChallenge: AccountManagerAccessChallenge(prepare: { _ in }, resolve: { _, _ in nil }, finishInitialization: {}))
+        let read = expectation(description: "Read committed reference")
+        let disposable = reader.transaction { $0.getAccessChallengeData() }.start(next: { data in
+            XCTAssertEqual(data, accessChallengeData(reference: reference))
+            read.fulfill()
+        })
+        wait(for: [read], timeout: 5)
+        disposable.dispose()
+    }
+
+    func testTimedOutPublicationKeepsRealJournalDeniedAndLateCommitCanRetry() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        let key = try f.resourceKey(code: "123456")
+        let trusted = Atomic<PasscodeCredentialReference?>(value: nil)
+        let manager = self.manager(f, reference: trusted)
+        let a = try f.vault.authenticate(pin: "123456")
+        _ = try f.journal.stage(store: f.vault, grant: a, currentPIN: "123456", newPIN: "222222")
+        let blocker = DispatchSemaphore(value: 0)
+        let blocking = expectation(description: "Only isolated metadata queue blocked")
+        let blocked = manager.transaction { _ -> Void in
+            blocking.fulfill()
+            _ = blocker.wait(timeout: .now() + 5)
+        }.start()
+        defer { blocker.signal(); blocked.dispose() }
+        wait(for: [blocking], timeout: 5)
+        let failed = expectation(description: "Publication timed out")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try f.journal.recover(store: f.vault, didCommitLegacyReference: { reference in
+                    _ = trusted.swap(reference)
+                    try commitDualPINLegacyReference(reference, accountManager: manager, timeout: 0.05)
+                })
+                XCTFail("Timed-out reference publication cannot finalize the journal")
+            } catch {}
+            failed.fulfill()
+        }
+        wait(for: [failed], timeout: 3)
+        XCTAssertTrue(try f.vault.hasPendingOwnerPINChange())
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "222222"))
+        let applied = f.storage.items["credential"]
+        blocker.signal()
+        let retry = expectation(description: "Late metadata publication replayed")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let recovered = try f.journal.recover(store: f.vault, didCommitLegacyReference: { reference in
+                    try commitDualPINLegacyReference(reference, accountManager: manager)
+                })
+                XCTAssertTrue(recovered)
+            } catch { XCTFail("Retry failed: \(error)") }
+            retry.fulfill()
+        }
+        wait(for: [retry], timeout: 7)
+        XCTAssertEqual(f.storage.items["credential"], applied)
+        XCTAssertEqual(try f.resourceKey(code: "222222"), key)
+        XCTAssertEqual(try f.vault.authenticate(pin: "222222").mode, .a)
     }
 }
 

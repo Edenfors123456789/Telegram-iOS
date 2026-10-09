@@ -28,6 +28,7 @@ public final class AccessRootPresentation {
     private let hideCover: () throws -> Void
     private var preparing: AccessRootPreparation?
     private var active: AccessRootPreparation?
+    private var pinChangeCoverEpoch: UUID?
 
     /// Presentation status only; data access still requires a fresh policy check.
     public var hasActiveRoot: Bool {
@@ -56,6 +57,7 @@ public final class AccessRootPresentation {
         precondition(Thread.isMainThread)
         preparing = nil
         active = nil
+        pinChangeCoverEpoch = nil
         showCover()
         discardRoot()
         // Even if protected storage is unavailable, both local presentation layers
@@ -71,6 +73,7 @@ public final class AccessRootPresentation {
                                          mode: policy.mode, ticket: ticket)
         }
         preparing = token
+        pinChangeCoverEpoch = nil
         active = nil
         showCover()
         discardRoot()
@@ -155,6 +158,32 @@ public final class AccessRootPresentation {
             try coordinator.setHidden(chat, hidden: hidden, ticket: old.ticket)
         } preflight: { policy in
             guard policy.canManageChatVisibility(chat) else { throw AccessError.authenticationRequired }
+        }
+    }
+
+    public func preparePINChange() throws -> AccessPINChangeRequest {
+        precondition(Thread.isMainThread)
+        guard let old = active else { throw AccessError.staleAuthorization }
+        try withActivePolicy { _ in
+            guard coordinator.permitsPINManagement else { throw AccessError.authenticationRequired }
+        }
+        guard isApplicationActive() else { try lock(); throw AccessError.invalidTransition }
+        let epoch = UUID()
+        pinChangeCoverEpoch = epoch
+        active = nil
+        preparing = nil
+        showCover()
+        guard pinChangeCoverEpoch == epoch else { throw AccessError.staleAuthorization }
+        discardRoot()
+        guard pinChangeCoverEpoch == epoch else { throw AccessError.staleAuthorization }
+        do {
+            guard isApplicationActive() else { throw AccessError.invalidTransition }
+            let request = try coordinator.preparePINChange(ticket: old.ticket)
+            pinChangeCoverEpoch = nil
+            return request
+        } catch {
+            if pinChangeCoverEpoch == epoch { try? lock() }
+            throw error
         }
     }
 

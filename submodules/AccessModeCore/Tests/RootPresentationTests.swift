@@ -7,13 +7,14 @@ private final class RootUI {
     var active = true
     var events: [String] = []
     var ready: (() -> Void)?
+    var cover: (() -> Void)?
     var hideError: Error?
     var authorize: (AccessModePolicy) throws -> Void = { _ in }
 
     func controller(_ coordinator: AccessModeCoordinator) throws -> AccessRootPresentation {
         try AccessRootPresentation(coordinator: coordinator, isApplicationActive: { self.active },
             authorizeRoot: { try self.authorize($0) },
-            showCover: { self.covered = true; self.events.append("cover") },
+            showCover: { self.covered = true; self.events.append("cover"); self.cover?() },
             discardRoot: { self.root = nil; self.events.append("discard") },
             publishReady: { preparation in
                 self.root = preparation.account; self.events.append("ready"); self.ready?()
@@ -25,6 +26,70 @@ private final class RootUI {
 }
 
 final class RootPresentationTests: XCTestCase {
+    func testReentrantNewRootDuringPINChangeCoverSurvivesOldPreparationFailure() throws {
+        let f = try VaultFixture()
+        let coordinator = AccessModeCoordinator(store: f.store)
+        let ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let old = try controller.prepare(coordinator.beginUnlock(pin: "654321"))
+        try controller.complete(old, preparedAccount: f.config.selectedB)
+        ui.cover = {
+            ui.cover = nil
+            do {
+                let newer = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+                try controller.complete(newer, preparedAccount: f.config.selectedA)
+            } catch { XCTFail("Fresh root failed: \(error)") }
+        }
+        XCTAssertThrowsError(try controller.preparePINChange())
+        XCTAssertEqual(try controller.withActivePolicy { $0.mode }, .a)
+        XCTAssertFalse(ui.covered)
+        XCTAssertEqual(ui.root, f.config.selectedA)
+    }
+
+    func testInactivePINManagementDiscardsRootAndExtensionDenialPreservesOwnRoot() throws {
+        let f = try VaultFixture()
+        let coordinator = AccessModeCoordinator(store: f.store)
+        let ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let active = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(active, preparedAccount: f.config.selectedA)
+        ui.active = false
+        XCTAssertThrowsError(try controller.preparePINChange())
+        XCTAssertTrue(ui.covered)
+        XCTAssertNil(ui.root)
+        XCTAssertEqual(coordinator.state, .locked)
+        let otherCoordinator = AccessModeCoordinator(store: f.store, process: .shareExtension)
+        let otherUI = RootUI()
+        let other = try otherUI.controller(otherCoordinator)
+        let external = try other.prepare(otherCoordinator.beginUnlock(pin: "654321"))
+        try other.complete(external, preparedAccount: f.config.selectedB)
+        XCTAssertThrowsError(try other.preparePINChange())
+        XCTAssertFalse(otherUI.covered)
+        XCTAssertEqual(try other.withActivePolicy { $0.mode }, .b)
+    }
+    func testPINManagementDetachesAndCoversRootBeforeQueuedOperation() throws {
+        let f = try VaultFixture()
+        let coordinator = AccessModeCoordinator(store: f.store)
+        let ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let token = try controller.prepare(coordinator.beginUnlock(pin: "654321"))
+        try controller.complete(token, preparedAccount: f.config.selectedB)
+        let request = try controller.preparePINChange()
+        XCTAssertTrue(ui.covered)
+        XCTAssertNil(ui.root)
+        XCTAssertFalse(controller.hasActiveRoot)
+        XCTAssertThrowsError(try controller.withActivePolicy { $0.mode })
+        XCTAssertEqual(Array(ui.events.suffix(2)), ["cover", "discard"])
+        try coordinator.executePINChange(request) { grant in
+            XCTAssertTrue(ui.covered)
+            XCTAssertNil(ui.root)
+            try f.store.changePIN(grant: grant, currentPIN: "654321", newPIN: "222222")
+        }
+        XCTAssertTrue(ui.covered)
+        XCTAssertNil(ui.root)
+        XCTAssertFalse(controller.hasActiveRoot)
+        XCTAssertEqual(coordinator.state, .locked)
+    }
     func testUnimplementedRestrictedAdaptersCannotPublishBAndDiscardPreviousRoot() throws {
         let f = try VaultFixture()
         let coordinator = AccessModeCoordinator(store: f.store)

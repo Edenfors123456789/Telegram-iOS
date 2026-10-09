@@ -266,6 +266,12 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var appLockContextImpl: AppLockContextImpl?
     private var modeCoordinator: AccessModeCoordinator?
     private var modeRootPresentation: AccessRootPresentation?
+    private var modeCredentialStore: AccessCredentialStore?
+    private var modeStoreFactory: (() throws -> AccessCredentialStore)?
+    private weak var modeSharedContext: SharedAccountContextImpl?
+    private var modeRuntimeRetryInFlight = false
+    private var modeRecoveryRun: UUID?
+    private let modeManagementQueue = DispatchQueue(label: "org.negrfors.telegram.dualpin.management", qos: .userInitiated)
     private var accountManagerState: AccountManagerState?
     
     private var contextValue: AuthorizedApplicationContext?
@@ -728,12 +734,14 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         
         // Inspect before AccountManager can run generic legacy migration/reset.
-        let modeBootstrap = AccessRuntimeBootstrap.inspect {
+        let makeModeStore: () throws -> AccessCredentialStore = {
             let group = try PasscodeEnvironment.shared.sharedAccessGroup()
             let key = try KeychainAccessDeviceKey(service: baseAppBundleId + ".dual-pin.v1", accessGroup: group)
             return try AccessCredentialStore(directory: URL(fileURLWithPath: rootPath).appendingPathComponent("dual-pin-access", isDirectory: true),
                 namespace: baseAppBundleId + ":" + group, keyProvider: key)
         }
+        let modeBootstrap = AccessRuntimeBootstrap.inspect(makeModeStore)
+        if modeBootstrap.requiresModeAuthentication { self.modeStoreFactory = makeModeStore }
         if modeBootstrap.requiresModeAuthentication { PasscodeCredentialStore.shared.requireModePINManagement() }
 
         let deviceSpecificEncryptionParameters = BuildConfig.deviceSpecificEncryptionParameters(rootPath, baseAppBundleId: baseAppBundleId)
@@ -1182,6 +1190,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             if case let .configured(store) = modeBootstrap {
                 self.installModeRuntime(store: store, sharedContext: sharedContext, appLock: appLockContext)
             }
+            if modeBootstrap.requiresModeAuthentication {
+                self.modeSharedContext = sharedContext
+                self.retryModeRuntimeIfNeeded()
+            }
             
             presentationDataPromise.set(sharedContext.presentationData)
             #if targetEnvironment(simulator)
@@ -1629,6 +1641,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             self.isInForegroundPromise.set(true)
             self.isActiveValue = true
             self.isActivePromise.set(true)
+            self.retryModeRuntimeIfNeeded()
+            self.resumeModeJournalIfNeeded()
             
             SharedDisplayLinkDriver.shared.updateForegroundState(self.isActiveValue)
             
@@ -2059,6 +2073,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private func installModeRuntime(store: AccessCredentialStore, sharedContext: SharedAccountContextImpl, appLock: AppLockContextImpl) {
         assert(Thread.isMainThread)
         let coordinator = AccessModeCoordinator(store: store)
+        self.modeCredentialStore = store
+        self.modeSharedContext = sharedContext
         self.modeCoordinator = coordinator
         do {
             let driver = try AccessRootPresentation(coordinator: coordinator, isApplicationActive: { [weak self] in self?.isActiveValue == true },
@@ -2117,9 +2133,70 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                       context.modeRootPreparation != nil else { return false }
                 return self.mainWindow.viewController === context.rootController
             })
+            self.resumeModeJournalIfNeeded()
         } catch {
+            self.modeCoordinator = nil
+            self.modeCredentialStore = nil
             sharedContext.requireModeAccountAccess()
             appLock.requireModeAuthentication()
+        }
+    }
+
+    /// Protected-data/factory failures stay required. Retry may install an existing
+    /// valid vault, but confirmed absence after an unavailable startup never clears
+    /// mode requirements or exposes ordinary authorization as an automatic fallback.
+    private func retryModeRuntimeIfNeeded() {
+        assert(Thread.isMainThread)
+        guard self.isActiveValue, self.modeCoordinator == nil, !self.modeRuntimeRetryInFlight,
+              let makeStore = self.modeStoreFactory, let shared = self.modeSharedContext,
+              let appLock = self.appLockContextImpl else { return }
+        self.modeRuntimeRetryInFlight = true
+        self.modeManagementQueue.async { [weak self, weak shared, weak appLock] in
+            let result = AccessRuntimeBootstrap.inspect(makeStore)
+            Queue.mainQueue().async { [weak self = self, weak shared = shared, weak appLock = appLock] in
+                guard let self else { return }
+                self.modeRuntimeRetryInFlight = false
+                guard self.isActiveValue, self.modeCoordinator == nil,
+                      let shared, let appLock, case let .configured(store) = result else { return }
+                self.installModeRuntime(store: store, sharedContext: shared, appLock: appLock)
+            }
+        }
+    }
+
+    private func resumeModeJournalIfNeeded() {
+        assert(Thread.isMainThread)
+        guard self.isActiveValue, self.modeRecoveryRun == nil,
+              let store = self.modeCredentialStore, let coordinator = self.modeCoordinator,
+              let appLock = self.appLockContextImpl, let accountManager = self.accountManager,
+              coordinator.state == .locked else { return }
+        let request: AccessJournalRecoveryRequest
+        do {
+            guard let prepared = try coordinator.prepareJournalRecovery() else { return }
+            request = prepared
+        } catch { return }
+        let run = UUID()
+        self.modeRecoveryRun = run
+        self.showModeNativeCover()
+        appLock.beginModeRootPreparation()
+        appLock.refreshModePresentation()
+        self.modeManagementQueue.async { [weak self, weak appLock] in
+            do {
+                try coordinator.executeJournalRecovery(request) {
+                    _ = try DualPINLegacyJournal().recover(store: store, didCommitLegacyReference: { reference in
+                        try commitDualPINLegacyReference(reference, accountManager: accountManager)
+                    })
+                }
+            } catch {
+                // The journal/requirements remain denied. Foreground or protected
+                // data availability may retry; never reset credentials on failure.
+            }
+            Queue.mainQueue().async { [weak self = self, weak appLock = appLock] in
+                guard let self, self.modeRecoveryRun == run else { return }
+                self.modeRecoveryRun = nil
+                guard self.modeCoordinator === coordinator else { return }
+                appLock?.refreshModePresentation()
+                self.revealNativeLockScreenIfSafe()
+            }
         }
     }
 
@@ -2288,6 +2365,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.isActiveValue = true
         self.isActivePromise.set(true)
 
+        self.retryModeRuntimeIfNeeded()
+        self.resumeModeJournalIfNeeded()
+
         Queue.mainQueue().async { [weak self] in self?.revealNativeLockScreenIfSafe() }
 
         self.resetBadge()
@@ -2315,6 +2395,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     
     func applicationWillTerminate(_ application: UIApplication) {
         Logger.shared.log("App \(self.episodeId)", "terminating")
+    }
+
+    func applicationProtectedDataDidBecomeAvailable(_ application: UIApplication) {
+        self.retryModeRuntimeIfNeeded()
+        self.resumeModeJournalIfNeeded()
     }
     
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

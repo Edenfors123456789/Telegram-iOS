@@ -20,7 +20,7 @@ swift_library(
     testonly = True,
     srcs = glob(["Tests/DualPINMigrationTests/*.swift"]),
     copts = ["-warnings-as-errors"],
-    deps = [":PasscodeCore", "//submodules/AccessModeCore"],
+    deps = [":PasscodeCore", "//submodules/AccessModeCore", "//submodules/TelegramCore", "//submodules/SSignalKit/SwiftSignalKit"],
 )
 
 ios_test_runner(

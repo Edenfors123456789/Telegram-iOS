@@ -1,4 +1,6 @@
 import TelegramCore
+import Foundation
+import SwiftSignalKit
 #if os(macOS)
 import PasscodeCore
 #endif
@@ -32,6 +34,25 @@ public func accessChallengeData(reference: PasscodeCredentialReference) -> Postb
         kind = .alphanumeric
     }
     return .secured(id: reference.id, kind: kind)
+}
+
+public func commitDualPINLegacyReference<Types: AccountManagerTypes>(_ reference: PasscodeCredentialReference,
+        accountManager: AccountManager<Types>, timeout: TimeInterval = 5) throws {
+    guard !Thread.isMainThread else { throw PasscodeError.authenticationRequired }
+    guard timeout.isFinite, timeout > 0, timeout <= 5 else { throw PasscodeError.unavailable }
+    let expected = accessChallengeData(reference: reference)
+    let acknowledged = Atomic<Bool>(value: false)
+    let completion = DispatchSemaphore(value: 0)
+    let disposable = accountManager.transaction { transaction -> Bool in
+        transaction.setAccessChallengeData(expected)
+        return transaction.getAccessChallengeData() == expected
+    }.start(next: { value in
+        _ = acknowledged.swap(value)
+        completion.signal()
+    })
+    defer { disposable.dispose() }
+    guard completion.wait(timeout: .now() + timeout) == .success,
+          acknowledged.with({ $0 }) else { throw PasscodeError.unavailable }
 }
 
 /// nil input requests authority without migrating legacy metadata. A nil result
