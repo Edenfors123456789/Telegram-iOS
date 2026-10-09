@@ -43,18 +43,23 @@ The next stage cannot begin until the full unmodified Telegram application build
 - The repository provides simulator profile fixtures matching the upstream application/extension bundle IDs. These can satisfy analysis inputs without using any private signing repository or importing certificates.
 - `Make.py --bazelArguments` is parsed but not wired into build invocation in this baseline. Do not rely on it to limit resources or disable profile inputs; diagnose separately if needed.
 - Started a full native upstream Make build with stable Xcode, `--overrideXcodeVersion`, fixture profiles, `debug_sim_arm64`, and `--lock`. Log: `build-input/dual-pin-stage0/baseline-simulator-build.log`.
-- Full build result: pending. No product source has been modified.
+- Full build result: exit 1 after successful analysis of the complete app (1,223 packages, 74,806 configured targets). The missing Widget profile is resolved. Compilation stopped at `WallpaperBackgroundShaders.air` because Xcode's Metal Toolchain component is absent.
+- Completed the supported repair: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain`, exit 0. Xcode reports component 27A266a installed; `xcrun metal --version` succeeds (32023.921). Download log: `build-input/dual-pin-stage0/metal-toolchain-download.log`.
+- No product source has been modified.
+- Baseline host tests completed with exit 0: `//submodules/UrlWhitelist:UrlWhitelistTests`, `//third-party/libprisma:SyntaxHighlighterTests`, and `//submodules/MTProtoRustEngine:MTProtoRustEngineMappingTests`; 3/3 Bazel test targets passed. These are component tests, not full application build evidence. Log: `build-input/dual-pin-stage0/baseline-host-tests.log`.
+- Added `tools/dual-pin/build_original_simulator.py`, a stage-0 build orchestration helper, not app product code. It refuses changed product files/submodule pins, verifies Bazel's digest, delegates to upstream Make.py, and records logs/exit status/IPA SHA-256. A generated ignored launcher adds only resource limits (3 jobs, 8192 MiB memory scheduling, 2 Swift workers), compensating for the unwired `--bazelArguments` option without editing upstream tooling.
+- Started the post-Metal full app retry through the helper. Timestamped log and JSON evidence: `build-input/dual-pin-stage0/baseline-build-*`. Result pending.
 
 ## Next actions
 
-1. Inspect the running baseline build and its exact exit status.
+1. Inspect the post-Metal full baseline build, its timestamped JSON record, and exact exit status.
 2. Diagnose any next failure with bounded source/log reads; prefer environment/configuration solutions that preserve upstream product code.
 3. When successful, record the fresh IPA identity and compilation evidence, then run available baseline tests and isolated simulator smoke checks.
 4. Commit stage-0 evidence before proceeding to implementation documentation and infrastructure.
 
 ## Commits
 
-No Dual PIN implementation commits yet. The approved text plan and continuity documents are being prepared for a local checkpoint.
+- `79a4fc3024`: approved text plan, `AGENTS.md`, `PLANS.md`, and baseline documentation. Documentation checkpoint only; no product implementation.
 
 ## Resume rules
 

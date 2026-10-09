@@ -35,4 +35,43 @@ The baseline pins Xcode 26.6. This host currently has stable Xcode 27.0 (27A266a
 
 ## Current result
 
-Build started; outcome pending. The complete local log is ignored by Git. Update this document with exit status, failure or artifact SHA-256, and baseline test results before advancing.
+The fixture-profile build exited 1 after analyzing the complete application (1,223 packages; 74,806 configured targets). The missing provisioning input is resolved. Compilation stopped at `WallpaperBackgroundShaders.air`:
+
+```text
+cannot execute tool 'metal' due to missing Metal Toolchain;
+use: xcodebuild -downloadComponent MetalToolchain
+```
+
+The next environment repair is:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+xcodebuild -downloadComponent MetalToolchain
+```
+
+Repair completed with exit 0. Xcode reports Metal Toolchain 27A266a installed, and `xcrun metal --version` succeeds (32023.921).
+
+## Reproducible retry
+
+```sh
+python3 tools/dual-pin/build_original_simulator.py
+```
+
+The helper verifies unchanged upstream product files and submodule pins, verifies the pinned Bazel digest, and invokes the same original Make command with a generated Bazel launcher adding only resource scheduling limits. The full app and its normal extensions remain enabled. Limits are 3 jobs, 8192 MiB scheduled memory, and 2 Swift workers; no compiler checks are suppressed. Logs and JSON evidence are timestamped under `build-input/dual-pin-stage0/`. A successful build records IPA SHA-256 and size. The native failed log above is retained.
+
+No product source has been changed. A successful application build remains unconfirmed. Completed component checks are recorded below. Full logs are under ignored `build-input/dual-pin-stage0/`.
+
+## Completed baseline host checks
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+./build-input/bazel-9.2.0-darwin-arm64 test \
+  //submodules/UrlWhitelist:UrlWhitelistTests \
+  //third-party/libprisma:SyntaxHighlighterTests \
+  //submodules/MTProtoRustEngine:MTProtoRustEngineMappingTests \
+  --lockfile_mode=error --test_output=errors --cache_test_results=no \
+  --jobs=3 --local_resources=memory=8192 \
+  --disk_cache=/tmp/tg-dual-pin-bazel-cache
+```
+
+Exit status 0; 3/3 Bazel test targets passed (44.939 seconds). XML evidence contains 7 URL tests, 34 MTProto mapping tests, and 1 C++ executable test: 42 cases, no failures or skips. Log: `build-input/dual-pin-stage0/baseline-host-tests.log`. Upstream Swift ArgumentParser emits non-fatal deprecation warnings with Xcode 27.0. This result does not establish a successful full app build or any Dual PIN functionality.
