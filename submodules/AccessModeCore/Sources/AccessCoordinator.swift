@@ -8,6 +8,12 @@ public struct AccessTicket {
     let generation: UUID
 }
 
+/// Capture synchronously at PIN submission, before dispatching expensive work.
+public struct AccessPINRequest {
+    let coordinator: UUID
+    let generation: UUID
+}
+
 /// The UI attaches its opaque cover before calling lock/beginUnlock and removes it
 /// only after completePreparation. Tickets must be rechecked at async delivery/side effects.
 public final class AccessModeCoordinator {
@@ -37,12 +43,38 @@ public final class AccessModeCoordinator {
     }
 
     public func beginUnlock(pin: String) throws -> AccessTicket {
+        try beginUnlock(pin: pin, request: preparePINRequest())
+    }
+
+    public func preparePINRequest() throws -> AccessPINRequest {
         mutex.lock(); defer { mutex.unlock() }
         try lock()
+        return AccessPINRequest(coordinator: id, generation: generation)
+    }
+
+    public func beginUnlock(pin: String, request: AccessPINRequest) throws -> AccessTicket {
+        mutex.lock(); defer { mutex.unlock() }
+        guard request.coordinator == id, request.generation == generation, presentation == .locked else { throw AccessError.staleAuthorization }
+        // Consume once even when PIN verification fails.
+        generation = UUID()
         let verified = try store.authenticate(pin: pin)
         grant = verified
         presentation = .preparing(verified.mode)
         return AccessTicket(coordinator: id, generation: generation)
+    }
+
+    public func cooldownRemaining() throws -> Int {
+        mutex.lock(); defer { mutex.unlock() }
+        return try store.cooldownRemaining()
+    }
+
+    public func cancelPreparation(_ ticket: AccessTicket) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard ticket.coordinator == id, ticket.generation == generation else { return }
+        let verified = try requireLocal(ticket, requireReady: false)
+        guard presentation == .preparing(verified.mode) else { throw AccessError.invalidTransition }
+        invalidate()
+        if process == .mainApplication { try store.revoke(verified) }
     }
 
     public func completePreparation(_ ticket: AccessTicket) throws {

@@ -1,6 +1,6 @@
 # Dual PIN Access — progress and continuation
 
-Last updated: 2026-10-09 (Europe/Minsk).
+Last updated: 2026-10-10 (Europe/Minsk).
 
 ## Approval and current gate
 
@@ -92,6 +92,7 @@ The full unmodified Telegram application built successfully and was visually ver
 - `a646e1c8dc`: recoverable stage-2 checkpoint, 17 verified foundation cases (not the whole stage).
 - `947f725815`: completed stage-2 foundation, transcript provenance/expiry, 26 Mac and 27 hosted iOS cases including actual Keychain.
 - `0a57eadb37`: verified stage-3 lifecycle/opaque-cover checkpoint; full build, isolated launch, 28 Mac / 29 iOS core cases and 2 cover cases. Not the whole stage.
+- `7d93c2f653`: verified durable account/visibility command checkpoint; 36 Mac / 37 iOS cases and full app build. Native account-manager/management UI integration remains pending.
 
 ## Stage 3 evidence and pending work
 
@@ -106,6 +107,11 @@ The full unmodified Telegram application built successfully and was visually ver
 - Added durable coordinator commands for hide/selection revisions and provisional account enrollment ownership. A new preparing ticket replaces old authority only after commit; both roles keep independent selection. Enrollment binds an exact provisional record and confirmed server identity, returns neutral other-role collisions and rejects stale/replayed flows. No raw account is deleted by these commands.
 - Account-command tests initially failed compilation because the APIs were not implemented; those tests did not execute (`account-commands-red.log`). Final Mac run: 36 XCTest cases, 0 failures, warnings-as-errors. Hosted iOS run: 37 cases, 0 failures, exit 0, 55.223 seconds (`account-commands-final-mac.log`, `account-commands-ios.log`, `account-commands-ios-xctest.log`). Includes commit failure, exact record binding/replay, hidden Premium quota, restart persistence and other-role ownership denial.
 - Full app verification of the added commands passed: exit 0, 33.682 seconds, 29 executed actions (`account-commands-app-build.log`). Real Telegram enrollment/cleanup, migration UI and account stream adapters remain pending; isolated core tests do not establish their correctness.
+- Added single-use PIN requests captured before dispatch; inactive locks reject work that has not started yet. Abandoned results cancel only their own preparation, without disturbing a newer ticket. Neutral cooldown exposes no per-role budget and remains durable across reboot. Mac 39 cases / hosted iOS 40 cases passed (`pin-request-green.log`, `pin-request-ios.log`, `pin-request-ios-xctest.log`); iOS elapsed 58.288 seconds.
+- Added an optional Dual PIN adapter to the actual standard PasscodeEntryController. It uses the coordinator instead of issuing a legacy PasscodeSession, forces six digits and leaves the cover/PIN input in preparation until the root adapter succeeds. It is not supplied by AppLock yet: no B root is enabled. Full app compile before final presentation/migration additions passed (49.535 seconds, `pin-adapter-app-build.log`). The PIN node now uses a fixed stock theme/wallpaper, including keyboard presentation data, to remove prior-account background clues; actual PIN visual/interaction verification remains pending.
+- Added `DualPINLegacyMigration` in PasscodeCore: main-process initial-only setup, verified legacy settings capability, A rewrap of the existing resource key, biometric-token cleanup and legacy-reference publication before access-vault commit. If access-file/cleanup fails after rewrap, B is not published and the known new A code still accesses the original legacy resources. Do not restore an unsecured challenge; UI must deliver the committed legacy reference and provide a clear retry path.
+- Migration's first build failed before tests due to an escaping closure signature; corrected to a synchronous nonescaping initialization callback. Hosted iOS migration tests then passed: 5 cases, 0 failures, exit 0, 52.284 seconds overall (`owner-migration-ios.log` failure, `owner-migration-ios-retry.log`, `owner-migration-ios-xctest.log`). Tests use real legacy credential crypto with isolated fake storage and encrypted access files; they do not prove App Group/Keychain sharing on a real device.
+- Initialization core regressions passed on Mac: 41 cases, 0 failures (`initialization-mac.log`), including failed owner preparation, existing-vault protection, invalid codes before legacy mutation and unavailable-key status errors. Final hosted core run passed 42 cases, 0 failures, exit 0, 57.435 seconds (`initialization-ios*`). Full app verification passed: exit 0, 341.703 seconds, 527 actions (`owner-migration-app-build.log`); adding the legacy-to-core dependency invalidated many cached downstream modules.
 
 ## Resume rules
 

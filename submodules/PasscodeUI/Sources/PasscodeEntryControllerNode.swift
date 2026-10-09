@@ -26,7 +26,7 @@ private let buttonFont = Font.regular(17.0)
 final class PasscodeEntryControllerNode: ASDisplayNode {
     private let accountManager: AccountManager<TelegramAccountManagerTypes>
     private var presentationData: PresentationData
-    private var theme: PresentationTheme
+    private let theme: PresentationTheme
     private var strings: PresentationStrings
     private var wallpaper: TelegramWallpaper
     private let passcodeType: PasscodeEntryFieldType
@@ -67,10 +67,12 @@ final class PasscodeEntryControllerNode: ASDisplayNode {
     
     init(accountManager: AccountManager<TelegramAccountManagerTypes>, presentationData: PresentationData, theme: PresentationTheme, strings: PresentationStrings, wallpaper: TelegramWallpaper, passcodeType: PasscodeEntryFieldType, biometricsType: LocalAuthBiometricAuthentication?, arguments: PasscodeEntryControllerPresentationArguments, modalPresentation: Bool) {
         self.accountManager = accountManager
-        self.presentationData = presentationData
-        self.theme = theme
+        let neutralTheme = makeDefaultPresentationTheme(reference: .dayClassic, serviceBackgroundColor: nil)
+        self.presentationData = presentationData.withUpdated(theme: neutralTheme).withUpdated(chatWallpaper: .builtin(WallpaperSettings()))
+        self.theme = neutralTheme
         self.strings = strings
-        self.wallpaper = wallpaper
+        // The PIN screen cannot reveal a previous account/mode's custom wallpaper.
+        self.wallpaper = .builtin(WallpaperSettings())
         self.passcodeType = passcodeType
         self.biometricsType = biometricsType
         self.arguments = arguments
@@ -104,7 +106,7 @@ final class PasscodeEntryControllerNode: ASDisplayNode {
         })
         
         self.backgroundColor = .clear
-        self.iconNode.unlockedColor = theme.rootController.navigationBar.primaryTextColor
+        self.iconNode.unlockedColor = self.theme.rootController.navigationBar.primaryTextColor
         
         self.keyboardNode.charactedEntered = { [weak self] character in
             if let strongSelf = self {
@@ -229,10 +231,9 @@ final class PasscodeEntryControllerNode: ASDisplayNode {
     }
     
     func updatePresentationData(_ presentationData: PresentationData) {
-        self.presentationData = presentationData
-        self.theme = presentationData.theme
+        self.presentationData = presentationData.withUpdated(theme: self.theme).withUpdated(chatWallpaper: .builtin(WallpaperSettings()))
         self.strings = presentationData.strings
-        self.wallpaper = presentationData.chatWallpaper
+        self.wallpaper = .builtin(WallpaperSettings())
         
         self.deleteButtonNode.setTitle(self.strings.Common_Delete, with: buttonFont, with: .white, for: .normal)
         if !self.arguments.displayAppLock {

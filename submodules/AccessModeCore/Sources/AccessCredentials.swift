@@ -139,18 +139,28 @@ public final class AccessCredentialStore {
 
     /// Stage-3 migration must authenticate the legacy owner before this initial-only operation.
     /// An existing, corrupt or unsupported vault cannot be replaced through this method.
-    public func initialize(configuration: AccessConfiguration, pinA: String, pinB: String) throws {
+    public func initialize(configuration: AccessConfiguration, pinA: String, pinB: String,
+                           prepareProtectedResources: () throws -> Void = {}) throws {
         try configuration.validate()
         guard Self.validPIN(pinA), Self.validPIN(pinB) else { throw AccessError.invalidPIN }
         guard pinA != pinB else { throw AccessError.identicalPINs }
         try file.transaction(allowInitialization: true) { state, key in
             guard state == nil else { throw AccessError.alreadyConfigured }
-            state = AccessVaultState(version: 1, configuration: configuration,
+            let initial = AccessVaultState(version: 1, configuration: configuration,
                 a: try PINCredential.create(mode: .a, pin: pinA, deviceKey: key, iterations: self.iterations),
                 b: try PINCredential.create(mode: .b, pin: pinB, deviceKey: key, iterations: self.iterations),
                 attemptsA: PINAttemptBudget(), attemptsB: PINAttemptBudget(), revocation: 1)
-            try state!.validate()
+            try initial.validate()
+            // Under the initial-only file lock, after validation/crypto and before
+            // publication. The owner adapter must preserve legacy resource keys.
+            try prepareProtectedResources()
+            state = initial
         }
+    }
+
+    public func isConfigured() throws -> Bool {
+        do { return try file.withReadState { state in try state.validate(); return true } }
+        catch AccessError.authenticationRequired { return false }
     }
 
     public func authenticate(pin: String) throws -> AuthenticatedModeGrant {
@@ -215,6 +225,33 @@ public final class AccessCredentialStore {
             state.revocation += 1
             state.pendingEnrollment = nil
             stored = state
+        }
+    }
+
+    func revoke(_ grant: AuthenticatedModeGrant) throws {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.require(grant, issuer: issuer)
+            guard state.revocation < UInt64.max else { throw AccessError.corrupt }
+            state.revocation += 1
+            state.pendingEnrollment = nil
+            stored = state
+        }
+    }
+
+    public func cooldownRemaining() throws -> Int {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.validate()
+            let now = try clock()
+            try now.validate()
+            let eligibleA = state.attemptsA.eligible(at: now)
+            let eligibleB = state.attemptsB.eligible(at: now)
+            stored = state
+            // No role-specific budget/label is exposed on the neutral lock screen.
+            guard !eligibleA, !eligibleB else { return 0 }
+            let remaining = min(state.attemptsA.deadline!, state.attemptsB.deadline!) - now.uptime
+            return Int(max(0, min(60, ceil(remaining))))
         }
     }
 

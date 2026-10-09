@@ -10,6 +10,7 @@ import AccountContext
 import LocalAuth
 import TelegramStringFormatting
 import PasscodeCore
+import AccessModeCore
 import LocalAuthentication
 import MonotonicTime
 
@@ -36,6 +37,11 @@ public enum PasscodeEntryControllerBiometricsMode {
     case enabled(Data?)
 }
 
+private enum PINVerification {
+    case legacy(PasscodeSession)
+    case mode(AccessTicket)
+}
+
 public final class PasscodeEntryController: ViewController {
     private var controllerNode: PasscodeEntryControllerNode {
         return self.displayNode as! PasscodeEntryControllerNode
@@ -53,6 +59,7 @@ public final class PasscodeEntryController: ViewController {
     private let challengeData: PostboxAccessChallengeData
     private let authenticationScope: PasscodeSession.Scope
     private let authenticationLifetime: PasscodeSession.Lifetime
+    private let modeAuthentication: ModePINEntryAuthentication?
     private let biometricReason: String
     private let authenticateBiometrics: ((LAContext) throws -> PasscodeSession)?
     private let biometrics: PasscodeEntryControllerBiometricsMode
@@ -65,6 +72,7 @@ public final class PasscodeEntryController: ViewController {
     private var authenticationContext: LAContext?
     private var checkingCode = false
     private var cooldownRequestId: UInt64 = 0
+    private var modePreparationTicket: AccessTicket?
     private let authenticationDismissal = PasscodeAuthenticationDismissal()
     private var removingController = false
     private var leavingNavigation = false
@@ -81,15 +89,17 @@ public final class PasscodeEntryController: ViewController {
     
     private var inBackgroundDisposable: Disposable?
     
-    public init(applicationBindings: TelegramApplicationBindings, accountManager: AccountManager<TelegramAccountManagerTypes>, appLockContext: AppLockContext, presentationData: PresentationData, presentationDataSignal: Signal<PresentationData, NoError>, statusBarHost: StatusBarHost?, challengeData: PostboxAccessChallengeData, biometrics: PasscodeEntryControllerBiometricsMode, arguments: PasscodeEntryControllerPresentationArguments, authenticationScope: PasscodeSession.Scope = .appUnlock, authenticationLifetime: PasscodeSession.Lifetime = .standard, biometricReason: String = "", authenticateBiometrics: ((LAContext) throws -> PasscodeSession)? = nil) {
+    public init(applicationBindings: TelegramApplicationBindings, accountManager: AccountManager<TelegramAccountManagerTypes>, appLockContext: AppLockContext, presentationData: PresentationData, presentationDataSignal: Signal<PresentationData, NoError>, statusBarHost: StatusBarHost?, challengeData: PostboxAccessChallengeData, biometrics: PasscodeEntryControllerBiometricsMode, arguments: PasscodeEntryControllerPresentationArguments, authenticationScope: PasscodeSession.Scope = .appUnlock, authenticationLifetime: PasscodeSession.Lifetime = .standard, biometricReason: String = "", authenticateBiometrics: ((LAContext) throws -> PasscodeSession)? = nil, modeAuthentication: ModePINEntryAuthentication? = nil) {
         self.applicationBindings = applicationBindings
         self.accountManager = accountManager
         self.appLockContext = appLockContext
         self.presentationData = presentationData
         self.presentationDataSignal = presentationDataSignal
-        self.challengeData = challengeData
+        precondition(modeAuthentication == nil || authenticationScope == .appUnlock)
+        self.challengeData = modeAuthentication == nil ? challengeData : .secured(id: "local-access", kind: .digits6)
         self.authenticationScope = authenticationScope
         self.authenticationLifetime = authenticationLifetime
+        self.modeAuthentication = modeAuthentication
         self.biometricReason = biometricReason
         // PIN entry is mandatory, including extension and protected-resource prompts.
         // Keep the parameters for upstream API compatibility.
@@ -116,6 +126,7 @@ public final class PasscodeEntryController: ViewController {
                 return
             }
             if strongSelf.authenticationLifecycle.updateApplicationInForeground(value) {
+                strongSelf.invalidatePendingPINInput()
                 strongSelf.skipNextBiometricsRequest = false
                 strongSelf.authenticationContext?.invalidate()
                 strongSelf.authenticationContext = nil
@@ -158,6 +169,9 @@ public final class PasscodeEntryController: ViewController {
         self.inBackgroundDisposable?.dispose()
         self.credentialLockDisposable.dispose()
         self.authenticationLifecycle.dismiss()
+        if let ticket = self.modePreparationTicket {
+            try? self.modeAuthentication?.coordinator.cancelPreparation(ticket)
+        }
         self.authenticationContext?.invalidate()
         let cancelled = self.arguments.cancel
         self.authenticationDismissal.finish(.failure(.cancelled), stopAuthentication: {}, removeController: { $0() }, completed: { _ in cancelled?() })
@@ -215,8 +229,14 @@ public final class PasscodeEntryController: ViewController {
         self.cooldownRequestId &+= 1
         let requestId = self.cooldownRequestId
         let generation = self.authenticationLifecycle.generation
+        let modeAuthentication = self.modeAuthentication
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try PasscodeCredentialStore.shared.cooldownRemaining() }
+            let result = Result { () -> Int in
+                if let modeAuthentication {
+                    return try modeAuthentication.coordinator.cooldownRemaining()
+                }
+                return try PasscodeCredentialStore.shared.cooldownRemaining()
+            }
             DispatchQueue.main.async {
                 guard let self, self.cooldownRequestId == requestId,
                       self.authenticationLifecycle.acceptsResult(generation: generation) else { return }
@@ -251,8 +271,24 @@ public final class PasscodeEntryController: ViewController {
         let challenge = self.challengeData
         let scope = self.authenticationScope
         let lifetime = self.authenticationLifetime
+        let modeAuthentication = self.modeAuthentication
+        let modeRequest: AccessPINRequest?
+        do {
+            // Capture before dispatch: an inactive lock can invalidate queued work
+            // even when the background worker has not begun credential verification.
+            modeRequest = try modeAuthentication?.coordinator.preparePINRequest()
+        } catch {
+            self.checkingCode = false
+            self.controllerNode.resetInput()
+            self.controllerNode.isUserInteractionEnabled = true
+            self.controllerNode.updateCredentialError(true)
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result: Result<PasscodeSession, Error> = Result {
+            let result: Result<PINVerification, Error> = Result {
+                if let modeAuthentication, let modeRequest {
+                    return .mode(try modeAuthentication.coordinator.beginUnlock(pin: code, request: modeRequest))
+                }
                 switch challenge {
                 case let .numericalPassword(value):
                     _ = try PasscodeCredentialStore.shared.migrateLegacy(code: value, kind: value.count == 6 ? .digits6 : .digits4)
@@ -261,17 +297,37 @@ public final class PasscodeEntryController: ViewController {
                 case .none, .secured: break
                 }
                 let reference = passcodeCredentialReference(from: challenge)
-                return try PasscodeCredentialStore.shared.verify(code, reference: reference, scope: scope, lifetime: lifetime)
+                return .legacy(try PasscodeCredentialStore.shared.verify(code, reference: reference, scope: scope, lifetime: lifetime))
             }
             DispatchQueue.main.async {
                 guard let self, self.authenticationLifecycle.acceptsResult(generation: generation) else {
-                    if case let .success(session) = result { session.invalidate() }
+                    switch result {
+                    case let .success(.legacy(session)): session.invalidate()
+                    case let .success(.mode(ticket)): try? modeAuthentication?.coordinator.cancelPreparation(ticket)
+                    case .failure: break
+                    }
                     return
                 }
                 self.checkingCode = false
                 self.controllerNode.isUserInteractionEnabled = true
                 switch result {
-                case let .success(session):
+                case let .success(.mode(ticket)):
+                    guard let modeAuthentication else { return }
+                    self.modePreparationTicket = ticket
+                    do {
+                        try modeAuthentication.coordinator.withPolicy(ticket, requireReady: false) { _ in }
+                        // Keep input blocked while the root adapter is preparing.
+                        self.checkingCode = true
+                        self.controllerNode.isUserInteractionEnabled = false
+                        try modeAuthentication.prepareRoot(ticket)
+                    } catch {
+                        try? modeAuthentication.coordinator.cancelPreparation(ticket)
+                        self.checkingCode = false
+                        self.controllerNode.isUserInteractionEnabled = true
+                        self.controllerNode.resetInput()
+                        self.controllerNode.updateCredentialError(true)
+                    }
+                case let .success(.legacy(session)):
                     if self.authenticated != nil {
                         self.finishAuthentication(.success(session))
                     } else {
@@ -287,6 +343,20 @@ public final class PasscodeEntryController: ViewController {
                         }).start()
                     }
                 case let .failure(error):
+                    if modeAuthentication != nil {
+                        switch error as? AccessError {
+                        case .invalidPIN:
+                            self.controllerNode.animateError()
+                            self.refreshCredentialCooldown()
+                        case .cooldown:
+                            self.controllerNode.resetInput()
+                            self.refreshCredentialCooldown()
+                        default:
+                            self.controllerNode.resetInput()
+                            self.controllerNode.updateCredentialError(true)
+                        }
+                        return
+                    }
                     switch error as? PasscodeError ?? .unavailable {
                     case .invalidCode:
                         self.controllerNode.animateError()
@@ -401,6 +471,7 @@ public final class PasscodeEntryController: ViewController {
         self.authenticationLifecycle.invalidatePendingResult()
         self.cooldownRequestId &+= 1
         self.checkingCode = false
+        try? self.modeAuthentication?.coordinator.lock()
         if self.isNodeLoaded {
             self.controllerNode.resetInput()
             self.controllerNode.isUserInteractionEnabled = self.authenticationDismissal.phase == .active
@@ -532,6 +603,10 @@ public final class PasscodeEntryController: ViewController {
 
     private func stopAuthentication() {
         self.authenticationLifecycle.dismiss()
+        if let ticket = self.modePreparationTicket {
+            try? self.modeAuthentication?.coordinator.cancelPreparation(ticket)
+            self.modePreparationTicket = nil
+        }
         self.biometricPresentationFallback = nil
         self.authenticationContext?.invalidate()
         self.authenticationContext = nil
