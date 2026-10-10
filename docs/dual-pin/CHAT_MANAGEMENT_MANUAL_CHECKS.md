@@ -25,14 +25,17 @@ does not establish native context-menu rendering or end-to-end chat filtering.
   Native B remains denied at this intermediate stage; do not weaken admission to
   exercise this manually before the filtering/external-surface gates pass.
 
-## Central management view (adapter route pending)
+## Central management view (native acceptance pending)
 
 - UIKit component verification: 44 hosted cases passed, including actual window
   layout, search, duplicate titles with distinct row IDs and clearing retained
   cell text before callbacks, on inactivity and on window removal. Its rendered
   attachment was visually inspected. These presentation IDs grant no authority.
-- The native wrapper compiles in the full application. It is still unexposed:
-  exact root-bound data loading and the A-only Settings route follow next.
+- The view and native wrapper passed a full application build. Exact
+  root-bound data loading and the A-only Privacy Settings route are added; their
+  full application compilation passed. 131 Mac/133 hosted Core tests cover the
+  root-bound load and stale/foreign/B/Share/inactive refusal. Configured native
+  acceptance remains pending.
 - Once connected, enter from both the shared and an A-exclusive account. The
   list must contain only the shared account's hidden chats. Equal titles,
   cloud/secret aliases and signed secret IDs must retain exact chat identity.
@@ -44,7 +47,8 @@ does not establish native context-menu rendering or end-to-end chat filtering.
 
 ## Remaining implementation
 
-The adjacent title marker, central management adapter/route and native
-account enrollment are still stage-3 work. Full B discovery/history filtering,
+The adjacent title marker and native account enrollment remain stage-3 work;
+central management routing has passed full compilation and needs native acceptance.
+Full B discovery/history filtering,
 message provenance, notification suppression and external surfaces remain later
 stages. This menu checkpoint does not complete any of those requirements.

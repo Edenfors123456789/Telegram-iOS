@@ -37,6 +37,7 @@ private final class PrivacyAndSecurityControllerArguments {
     let openBirthdayPrivacy: () -> Void
     let openSavedMusicPrivacy: () -> Void
     let openPasscode: () -> Void
+    let openHiddenChats: () -> Void
     let openTwoStepVerification: (TwoStepVerificationAccessConfiguration?) -> Void
     let openPasskeys: () -> Void
     let openActiveSessions: () -> Void
@@ -49,7 +50,7 @@ private final class PrivacyAndSecurityControllerArguments {
     let openMessagePrivacy: () -> Void
     let openGiftsPrivacy: () -> Void
     
-    init(account: Account, openBlockedUsers: @escaping () -> Void, openLastSeenPrivacy: @escaping () -> Void, openGroupsPrivacy: @escaping () -> Void, openVoiceCallPrivacy: @escaping () -> Void, openProfilePhotoPrivacy: @escaping () -> Void, openForwardPrivacy: @escaping () -> Void, openPhoneNumberPrivacy: @escaping () -> Void, openVoiceMessagePrivacy: @escaping () -> Void, openBioPrivacy: @escaping () -> Void, openBirthdayPrivacy: @escaping () -> Void, openSavedMusicPrivacy: @escaping () -> Void, openPasscode: @escaping () -> Void, openTwoStepVerification: @escaping (TwoStepVerificationAccessConfiguration?) -> Void, openPasskeys: @escaping () -> Void, openActiveSessions: @escaping () -> Void, toggleArchiveAndMuteNonContacts: @escaping (Bool) -> Void, setupAccountAutoremove: @escaping () -> Void, setupMessageAutoremove: @escaping () -> Void, openDataSettings: @escaping () -> Void, openBrowserSelection: @escaping () -> Void, openEmailSettings: @escaping (String?) -> Void, openMessagePrivacy: @escaping () -> Void, openGiftsPrivacy: @escaping () -> Void) {
+    init(account: Account, openBlockedUsers: @escaping () -> Void, openLastSeenPrivacy: @escaping () -> Void, openGroupsPrivacy: @escaping () -> Void, openVoiceCallPrivacy: @escaping () -> Void, openProfilePhotoPrivacy: @escaping () -> Void, openForwardPrivacy: @escaping () -> Void, openPhoneNumberPrivacy: @escaping () -> Void, openVoiceMessagePrivacy: @escaping () -> Void, openBioPrivacy: @escaping () -> Void, openBirthdayPrivacy: @escaping () -> Void, openSavedMusicPrivacy: @escaping () -> Void, openPasscode: @escaping () -> Void, openHiddenChats: @escaping () -> Void, openTwoStepVerification: @escaping (TwoStepVerificationAccessConfiguration?) -> Void, openPasskeys: @escaping () -> Void, openActiveSessions: @escaping () -> Void, toggleArchiveAndMuteNonContacts: @escaping (Bool) -> Void, setupAccountAutoremove: @escaping () -> Void, setupMessageAutoremove: @escaping () -> Void, openDataSettings: @escaping () -> Void, openBrowserSelection: @escaping () -> Void, openEmailSettings: @escaping (String?) -> Void, openMessagePrivacy: @escaping () -> Void, openGiftsPrivacy: @escaping () -> Void) {
         self.account = account
         self.openBlockedUsers = openBlockedUsers
         self.openLastSeenPrivacy = openLastSeenPrivacy
@@ -63,6 +64,7 @@ private final class PrivacyAndSecurityControllerArguments {
         self.openBirthdayPrivacy = openBirthdayPrivacy
         self.openSavedMusicPrivacy = openSavedMusicPrivacy
         self.openPasscode = openPasscode
+        self.openHiddenChats = openHiddenChats
         self.openTwoStepVerification = openTwoStepVerification
         self.openPasskeys = openPasskeys
         self.openActiveSessions = openActiveSessions
@@ -120,6 +122,7 @@ private enum PrivacyAndSecurityEntry: ItemListNodeEntry {
     case giftsAutoSavePrivacy(PresentationTheme, String, String)
     case selectivePrivacyInfo(PresentationTheme, String)
     case passcode(PresentationTheme, String, Bool, String)
+    case hiddenChats(PresentationTheme, String)
     case twoStepVerification(PresentationTheme, String, String, TwoStepVerificationAccessConfiguration?)
     case passkeys(PresentationTheme, String, String)
     case loginEmail(PresentationTheme, String, String?)
@@ -139,7 +142,7 @@ private enum PrivacyAndSecurityEntry: ItemListNodeEntry {
     
     var section: ItemListSectionId {
         switch self {
-        case .blockedPeers, .activeSessions, .passcode, .twoStepVerification, .passkeys, .messageAutoremoveTimeout, .messageAutoremoveInfo:
+        case .blockedPeers, .activeSessions, .passcode, .hiddenChats, .twoStepVerification, .passkeys, .messageAutoremoveTimeout, .messageAutoremoveInfo:
             return PrivacyAndSecuritySection.general.rawValue
         case .loginEmail, .loginEmailInfo:
             return PrivacyAndSecuritySection.loginEmail.rawValue
@@ -158,6 +161,8 @@ private enum PrivacyAndSecurityEntry: ItemListNodeEntry {
     
     var stableId: Int32 {
         switch self {
+            case .hiddenChats:
+                return 0
             case .blockedPeers:
                 return 1
             case .activeSessions:
@@ -229,6 +234,9 @@ private enum PrivacyAndSecurityEntry: ItemListNodeEntry {
     
     static func ==(lhs: PrivacyAndSecurityEntry, rhs: PrivacyAndSecurityEntry) -> Bool {
         switch lhs {
+            case let .hiddenChats(lhsTheme, lhsText):
+                if case let .hiddenChats(rhsTheme, rhsText) = rhs { return lhsTheme === rhsTheme && lhsText == rhsText }
+                return false
             case let .privacyHeader(lhsTheme, lhsText):
                 if case let .privacyHeader(rhsTheme, rhsText) = rhs, lhsTheme === rhsTheme, lhsText == rhsText {
                     return true
@@ -500,6 +508,10 @@ private enum PrivacyAndSecurityEntry: ItemListNodeEntry {
                 return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: PresentationResourcesSettings.faceId, title: text, label: value, sectionId: self.section, style: .blocks, action: {
                     arguments.openPasscode()
                 })
+            case let .hiddenChats(_, text):
+                return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: text, label: "", sectionId: self.section, style: .blocks, action: {
+                    arguments.openHiddenChats()
+                })
             case let .twoStepVerification(_, text, value, data):
                 return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: PresentationResourcesSettings.lockOrange, title: text, label: value, sectionId: self.section, style: .blocks, action: {
                     arguments.openTwoStepVerification(data)
@@ -655,6 +667,7 @@ private func privacyAndSecurityControllerEntries(
     twoStepAuthData: TwoStepVerificationAccessConfiguration?,
     hasPasskeys: Bool?,
     displayPasskeys: Bool,
+    showHiddenChatManagement: Bool,
     canAutoarchive: Bool,
     isPremiumDisabled: Bool,
     isPremium: Bool,
@@ -664,6 +677,7 @@ private func privacyAndSecurityControllerEntries(
     appConfiguration: AppConfiguration
 ) -> [PrivacyAndSecurityEntry] {
     var entries: [PrivacyAndSecurityEntry] = []
+    if showHiddenChatManagement { entries.append(.hiddenChats(presentationData.theme, "Скрытые чаты")) }
     
     entries.append(.blockedPeers(presentationData.theme, presentationData.strings.Settings_BlockedUsers, blockedPeerCount == nil ? "" : (blockedPeerCount == 0 ? presentationData.strings.PrivacySettings_BlockedPeersEmpty : "\(blockedPeerCount!)")))
     if activeWebsitesCount != 0 {
@@ -830,6 +844,15 @@ private func privacyAndSecurityControllerEntries(
 
 class PrivacyAndSecurityControllerImpl: ItemListController, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
     var authorizationCompletion: ((Any) -> Void)?
+    let hiddenChatManagementLoad = MetaDisposable()
+    var hiddenChatManagementLoadGeneration = UUID()
+    deinit { self.hiddenChatManagementLoad.dispose() }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        self.hiddenChatManagementLoadGeneration = UUID()
+        self.hiddenChatManagementLoad.set(nil)
+        super.viewWillDisappear(animated)
+    }
     
     @available(iOS 13.0, *)
     public func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
@@ -871,6 +894,7 @@ public func privacyAndSecurityController(
     }
     
     var pushControllerImpl: ((ViewController, Bool) -> Void)?
+    var openHiddenChatsImpl: (() -> Void)?
     var replaceTopControllerImpl: ((ViewController) -> Void)?
     var presentControllerImpl: ((ViewController) -> Void)?
     var presentInGlobalOverlayImpl: ((ViewController) -> Void)?
@@ -1275,6 +1299,8 @@ public func privacyAndSecurityController(
                 pushControllerImpl?(controller, true)
             }
         })
+    }, openHiddenChats: {
+        openHiddenChatsImpl?()
     }, openTwoStepVerification: { data in
         let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
         |> deliverOnMainQueue).start(next: { peer in
@@ -1603,6 +1629,7 @@ public func privacyAndSecurityController(
         context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)),
         loginEmail
     )
+    |> deliverOnMainQueue
     |> map { presentationData, state, privacySettings, noticeView, webBrowserData, recentPeers, blockedPeersState, activeWebsitesState, accessChallengeData, twoStepAuth, passkeys, appConfiguration, accountPeer, loginEmail -> (ItemListControllerState, (ItemListNodeState, Any)) in
         var canAutoarchive = false
         if let data = appConfiguration.data, let hasAutoarchive = data["autoarchive_setting_available"] as? Bool {
@@ -1637,7 +1664,7 @@ public func privacyAndSecurityController(
             defaultWebBrowser = presentationData.strings.WebBrowser_Telegram
         }
         
-        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: privacyAndSecurityControllerEntries(presentationData: presentationData, state: state, privacySettings: privacySettings, accessChallengeData: accessChallengeData.data, blockedPeerCount: blockedPeersState.totalCount, activeWebsitesCount: activeWebsitesState.sessions.count, hasTwoStepAuth: twoStepAuth.0, twoStepAuthData: twoStepAuth.1, hasPasskeys: passkeys.0, displayPasskeys: displayPasskeys, canAutoarchive: canAutoarchive, isPremiumDisabled: isPremiumDisabled, isPremium: isPremium, loginEmail: loginEmail, accountPeer: accountPeer, defaultWebBrowser: defaultWebBrowser, appConfiguration: appConfiguration), style: .blocks, ensureVisibleItemTag: focusOnItemTag, animateChanges: false)
+        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: privacyAndSecurityControllerEntries(presentationData: presentationData, state: state, privacySettings: privacySettings, accessChallengeData: accessChallengeData.data, blockedPeerCount: blockedPeersState.totalCount, activeWebsitesCount: activeWebsitesState.sessions.count, hasTwoStepAuth: twoStepAuth.0, twoStepAuthData: twoStepAuth.1, hasPasskeys: passkeys.0, displayPasskeys: displayPasskeys, showHiddenChatManagement: context.sharedContext.canManageHiddenChats(context: context), canAutoarchive: canAutoarchive, isPremiumDisabled: isPremiumDisabled, isPremium: isPremium, loginEmail: loginEmail, accountPeer: accountPeer, defaultWebBrowser: defaultWebBrowser, appConfiguration: appConfiguration), style: .blocks, ensureVisibleItemTag: focusOnItemTag, animateChanges: false)
         
         return (controllerState, (listState, arguments))
     }
@@ -1646,6 +1673,20 @@ public func privacyAndSecurityController(
     }
     
     let controller = PrivacyAndSecurityControllerImpl(context: context, state: signal)
+    openHiddenChatsImpl = { [weak controller] in
+        guard let controller, let navigation = controller.navigationController as? NavigationController,
+              navigation.topViewController === controller, controller.viewIfLoaded?.window != nil,
+              context.sharedContext.canManageHiddenChats(context: context) else { return }
+        let generation = UUID()
+        controller.hiddenChatManagementLoadGeneration = generation
+        controller.hiddenChatManagementLoad.set(context.sharedContext.makeHiddenChatManagementController(context: context).start(next: { [weak controller, weak navigation] management in
+            guard let controller, let navigation, let management,
+                  controller.hiddenChatManagementLoadGeneration == generation,
+                  navigation.topViewController === controller, controller.viewIfLoaded?.window != nil,
+                  context.sharedContext.canManageHiddenChats(context: context) else { return }
+            navigation.pushViewController(management, animated: true)
+        }))
+    }
     pushControllerImpl = { [weak controller] c, animated in
         (controller?.navigationController as? NavigationController)?.pushViewController(c, animated: animated)
     }

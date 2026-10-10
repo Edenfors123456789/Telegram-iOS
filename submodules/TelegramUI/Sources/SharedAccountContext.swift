@@ -1,5 +1,6 @@
 import Foundation
 import AccessModeCore
+import AccessModeUI
 import UIKit
 import AsyncDisplayKit
 import Postbox
@@ -229,6 +230,97 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         return self.initialModeSetupFactory?(context)
     }
     public var requiresInitialModeSetup: Bool { !self.modeAccountAccessRequired && self.initialModeSetupFactory != nil }
+
+    private func isCurrentChatManagementOrigin(context: AccountContext, driver: AccessRootPresentation, origin: AccessRootPreparation) -> Bool {
+        assert(Queue.mainQueue().isCurrent())
+        guard self.modeAccountAccessRequired, self.modeRootPresentation === driver,
+              self.pendingModeRoot == origin, origin.mode == .a, driver.hasActiveRoot,
+              UIApplication.shared.applicationState == .active,
+              origin.account.recordID == context.account.id.int64, let raw = self.activeAccountsValue,
+              raw.accounts.contains(where: { $0.0 == context.account.id && $0.1 === context }) else { return false }
+        return (try? driver.withActivePolicy { policy in
+            let projection = try policy.projectAccounts(raw.accounts.map { self.observedAccount($0.1.account) })
+            return policy.mode == .a && policy.selectedAccount == origin.account && projection.primary == origin.account
+        }) == true
+    }
+
+    public func canManageHiddenChats(context: AccountContext) -> Bool {
+        assert(Queue.mainQueue().isCurrent())
+        guard let driver = self.modeRootPresentation, let origin = self.pendingModeRoot,
+              self.isCurrentChatManagementOrigin(context: context, driver: driver, origin: origin) else { return false }
+        return (try? driver.makeHiddenChatManagementRequest()) != nil
+    }
+
+    public func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError> {
+        assert(Queue.mainQueue().isCurrent())
+        guard let driver = self.modeRootPresentation, let origin = self.pendingModeRoot,
+              self.isCurrentChatManagementOrigin(context: context, driver: driver, origin: origin),
+              let request = try? driver.makeHiddenChatManagementRequest() else { return .single(nil) }
+        let isCurrent: () -> Bool = { [weak self, weak context] in
+            guard let self, let context,
+                  self.isCurrentChatManagementOrigin(context: context, driver: driver, origin: origin) else { return false }
+            return (try? driver.completeHiddenChatManagementRequest(request)) != nil
+        }
+        // The opaque request already validates supported chats in Core. Check
+        // Postbox's narrower representation before its constrained constructors.
+        guard request.chats.allSatisfy({ $0.peerID <= 0x00ff_ffff_ffff_ffff }) else { return .single(nil) }
+        let peerIds = request.chats.map {
+            EnginePeer.Id(namespace: ._internalFromInt32Value($0.peerNamespace), id: ._internalFromInt64Value($0.peerID))
+        }
+        let load: Signal<[EngineRenderedPeer?], NoError>
+        if let sharedIdentity = request.chats.first?.account {
+            guard request.chats.allSatisfy({ $0.account == sharedIdentity }),
+                  let shared = self.activeAccountsValue?.accounts.first(where: {
+                      let observed = self.observedAccount($0.1.account)
+                      return observed.userNamespace == 0 && observed.recordID == sharedIdentity.recordID &&
+                          observed.environment == sharedIdentity.environment && observed.userID == sharedIdentity.userID
+                  })?.1 else { return .single(nil) }
+            load = shared.engine.data.get(EngineDataList(peerIds.map(TelegramEngine.EngineData.Item.Peer.RenderedPeer.init(id:))))
+        } else {
+            load = .single([])
+        }
+        let result = load
+        |> deliverOnMainQueue
+        |> take(1)
+        |> map { [weak self, weak context] peers -> ViewController? in
+            guard let self, let context, isCurrent(), peers.count == peerIds.count,
+                  let actions = try? driver.completeHiddenChatManagementRequest(request), actions.count == peerIds.count else { return nil }
+            let data = self.currentPresentationData.with { $0 }
+            var operations: [UUID: AccessChatVisibilityAction] = [:]
+            var items: [HiddenChatManagementView.Item] = []
+            for index in peerIds.indices {
+                let row = UUID()
+                operations[row] = actions[index]
+                let title: String
+                if let peer = peers[index], peer.peerId == peerIds[index], let namePeer = peer.chatMainPeer {
+                    let name = namePeer.displayTitle(strings: data.strings, displayOrder: data.nameDisplayOrder)
+                    title = request.chats[index].peerNamespace == 3 ? "Секретный чат: " + name : name
+                } else {
+                    title = "Недоступный чат"
+                }
+                items.append(.init(id: row, title: title))
+            }
+            return try? HiddenChatManagementController(context: context, items: items, isCurrent: isCurrent, select: { [weak self, weak context] row in
+                guard let self, let context, isCurrent(), let action = operations[row],
+                      self.isCurrentChatManagementOrigin(context: context, driver: driver, origin: origin) else { return }
+                do {
+                    let preparation = try driver.performChatVisibilityAction(action)
+                    try self.prepareModeAccountRoot(preparation)
+                } catch {
+                    if !driver.hasActiveRoot { try? driver.lock() }
+                }
+            })
+        }
+        return Signal { subscriber in
+            // A retained factory signal can be subscribed after its originating
+            // screen vanished. Refuse before starting the database request.
+            guard Thread.isMainThread, isCurrent() else {
+                subscriber.putNext(nil); subscriber.putCompletion()
+                return EmptyDisposable
+            }
+            return result.start(next: { subscriber.putNext($0) }, completed: { subscriber.putCompletion() })
+        }
+    }
 
     public func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction? {
         assert(Queue.mainQueue().isCurrent())

@@ -26,6 +26,86 @@ private final class RootUI {
 }
 
 final class RootPresentationTests: XCTestCase {
+    private func management(_ controller: AccessRootPresentation, file: StaticString = #filePath, line: UInt = #line) -> AccessHiddenChatManagementRequest? {
+        do { return try controller.makeHiddenChatManagementRequest() }
+        catch { XCTFail("Current A management request refused: \(error)", file: file, line: line); return nil }
+    }
+
+    func testHiddenManagementReturnsExactSharedChatsFromAnAdditionalAAccount() throws {
+        let f = try VaultFixture(initialize: false)
+        let shared = f.config.selectedA
+        let extra = AccountIdentity(installation: f.config.installation, environment: .production, recordID: -12, userID: 12)
+        let hidden = ChatIdentity(account: shared, peerNamespace: 3, peerID: -42)
+        let config = try AccessConfiguration(installation: f.config.installation, accounts: [
+            AccountMembership(identity: shared, ownership: .shared), AccountMembership(identity: extra, ownership: .a)
+        ], hiddenChats: [hidden], selectedA: extra, selectedB: shared)
+        try f.store.initialize(configuration: config, pinA: "123456", pinB: "654321")
+        let coordinator = AccessModeCoordinator(store: f.store), ui = RootUI(), controller = try ui.controller(coordinator)
+        let a = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(a, preparedAccount: extra)
+        guard let request = management(controller) else { return }
+        XCTAssertEqual(request.chats, [hidden])
+        let actions = try controller.completeHiddenChatManagementRequest(request)
+        XCTAssertEqual(actions.count, 1); XCTAssertEqual(actions.first?.isHidden, true)
+        let preparation = try controller.performChatVisibilityAction(XCTUnwrap(actions.first))
+        XCTAssertTrue(ui.covered)
+        try controller.complete(preparation, preparedAccount: extra)
+        XCTAssertEqual(ui.root, extra)
+        guard let empty = management(controller) else { return }
+        XCTAssertTrue(empty.chats.isEmpty)
+        XCTAssertTrue(try controller.completeHiddenChatManagementRequest(empty).isEmpty)
+        XCTAssertThrowsError(try controller.completeHiddenChatManagementRequest(request))
+        XCTAssertFalse(ui.covered)
+    }
+
+    func testOldAndForeignManagementLoadCannotResetTheFreshSameAccountRoot() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let a = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(a, preparedAccount: f.config.selectedA)
+        guard let old = management(controller) else { return }
+        try controller.lock()
+        let fresh = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(fresh, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try controller.completeHiddenChatManagementRequest(old))
+        XCTAssertFalse(ui.covered); XCTAssertEqual(ui.root, f.config.selectedA)
+        guard let foreign = management(controller) else { return }
+        let otherUI = RootUI(), other = try otherUI.controller(coordinator)
+        let current = try other.prepare(coordinator.beginUnlock(pin: "123456"))
+        try other.complete(current, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try other.completeHiddenChatManagementRequest(foreign))
+        XCTAssertFalse(otherUI.covered); XCTAssertEqual(otherUI.root, f.config.selectedA)
+    }
+
+    func testManagementRequestsDenyPreparingBAndShareRootsWithoutPublishingNames() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        XCTAssertThrowsError(try controller.makeHiddenChatManagementRequest())
+        let b = try controller.prepare(coordinator.beginUnlock(pin: "654321"))
+        XCTAssertThrowsError(try controller.makeHiddenChatManagementRequest())
+        try controller.complete(b, preparedAccount: f.config.selectedB)
+        XCTAssertThrowsError(try controller.makeHiddenChatManagementRequest())
+        XCTAssertFalse(ui.covered)
+        let shareCoordinator = AccessModeCoordinator(store: f.store, process: .shareExtension), shareUI = RootUI()
+        let share = try shareUI.controller(shareCoordinator)
+        let a = try share.prepare(shareCoordinator.beginUnlock(pin: "123456"))
+        try share.complete(a, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try share.makeHiddenChatManagementRequest())
+        XCTAssertFalse(shareUI.covered)
+    }
+
+    func testInactiveManagementCompletionCoversAndDeniesBeforeItsRowsCanBeDelivered() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let a = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(a, preparedAccount: f.config.selectedA)
+        guard let request = management(controller) else { return }
+        ui.active = false
+        XCTAssertThrowsError(try controller.completeHiddenChatManagementRequest(request))
+        XCTAssertTrue(ui.covered); XCTAssertNil(ui.root); XCTAssertEqual(coordinator.state, .locked)
+        XCTAssertThrowsError(try controller.makeHiddenChatManagementRequest())
+    }
+
     private func action(_ controller: AccessRootPresentation, _ chat: ChatIdentity, file: StaticString = #filePath, line: UInt = #line) -> AccessChatVisibilityAction? {
         do { return try controller.makeChatVisibilityAction(chat) }
         catch { XCTFail("Current A action refused: \(error)", file: file, line: line); return nil }

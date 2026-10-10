@@ -21,6 +21,12 @@ public struct AccessChatVisibilityAction {
     public let isHidden: Bool
 }
 
+/// A transient A-only load request bound to the exact ready root, never persisted.
+public struct AccessHiddenChatManagementRequest {
+    fileprivate let preparation: AccessRootPreparation
+    public let chats: [ChatIdentity]
+}
+
 /// Main-thread adapter boundary: cover and detach first, validate async root delivery,
 /// and publish/uncover only after matching account preparation. Native UI callbacks
 /// must synchronously perform their named operation; no queued cover installation.
@@ -178,6 +184,32 @@ public final class AccessRootPresentation {
             return policy.isMarkedHidden(chat)
         }
         return AccessChatVisibilityAction(preparation: current, chat: chat, isHidden: hidden)
+    }
+
+    public func makeHiddenChatManagementRequest() throws -> AccessHiddenChatManagementRequest {
+        precondition(Thread.isMainThread)
+        guard coordinator.permitsChatManagement else { throw AccessError.authenticationRequired }
+        guard let current = active else { throw AccessError.staleAuthorization }
+        guard isApplicationActive() else { try lock(); throw AccessError.invalidTransition }
+        let chats = try withActivePolicy { policy -> [ChatIdentity] in
+            guard policy.canManageHiddenChats else { throw AccessError.authenticationRequired }
+            return policy.hiddenChatsForManagement
+        }
+        return AccessHiddenChatManagementRequest(preparation: current, chats: chats)
+    }
+
+    public func completeHiddenChatManagementRequest(_ request: AccessHiddenChatManagementRequest) throws -> [AccessChatVisibilityAction] {
+        precondition(Thread.isMainThread)
+        // A delayed/foreign result must never reset a newer root, even on the
+        // same selected account. Check provenance before any lifecycle mutation.
+        guard matches(request.preparation, active) else { throw AccessError.staleAuthorization }
+        guard coordinator.permitsChatManagement else { throw AccessError.authenticationRequired }
+        guard isApplicationActive() else { try lock(); throw AccessError.invalidTransition }
+        return try withActivePolicy { policy in
+            guard policy.canManageHiddenChats, policy.hiddenChatsForManagement == request.chats,
+                  request.chats.allSatisfy({ policy.isMarkedHidden($0) }) else { throw AccessError.staleAuthorization }
+            return request.chats.map { AccessChatVisibilityAction(preparation: request.preparation, chat: $0, isHidden: true) }
+        }
     }
 
     public func performChatVisibilityAction(_ action: AccessChatVisibilityAction) throws -> AccessRootPreparation {

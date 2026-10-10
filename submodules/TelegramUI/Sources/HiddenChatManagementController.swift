@@ -34,6 +34,11 @@ final class HiddenChatManagementController: ViewController {
         self.displayNode = ASDisplayNode()
         self.displayNode.backgroundColor = self.management.backgroundColor
         self.displayNodeDidLoad()
+        guard self.isCurrent() else {
+            self.management.invalidate()
+            self.view.isHidden = true
+            return
+        }
         self.view.addSubview(self.management)
     }
 

@@ -1426,6 +1426,8 @@ public protocol SharedAccountContext: AnyObject {
     var requiresInitialModeSetup: Bool { get }
     func makeInitialModeSetup(context: AccountContext) -> ViewController?
     func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction?
+    func canManageHiddenChats(context: AccountContext) -> Bool
+    func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError>
     
     var currentPresentationData: Atomic<PresentationData> { get }
     var presentationData: Signal<PresentationData, NoError> { get }
@@ -1772,6 +1774,8 @@ public extension SharedAccountContext {
     var requiresInitialModeSetup: Bool { false }
     func makeInitialModeSetup(context: AccountContext) -> ViewController? { nil }
     func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction? { nil }
+    func canManageHiddenChats(context: AccountContext) -> Bool { false }
+    func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError> { .single(nil) }
 }
 
 public enum ChatSendMessageActionSheetControllerSendMode {
