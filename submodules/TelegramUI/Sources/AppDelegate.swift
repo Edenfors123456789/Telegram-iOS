@@ -271,6 +271,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private weak var modeSharedContext: SharedAccountContextImpl?
     private var modeRuntimeRetryInFlight = false
     private var modeRecoveryRun: UUID?
+    private var modeInitialSetupRun: UUID?
+    private var modeInitialSetupCancellation: Atomic<Bool>?
     private let modeManagementQueue = DispatchQueue(label: "org.negrfors.telegram.dualpin.management", qos: .userInitiated)
     private var accountManagerState: AccountManagerState?
     
@@ -741,7 +743,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 namespace: baseAppBundleId + ":" + group, keyProvider: key)
         }
         let modeBootstrap = AccessRuntimeBootstrap.inspect(makeModeStore)
-        if modeBootstrap.requiresModeAuthentication { self.modeStoreFactory = makeModeStore }
+        self.modeStoreFactory = makeModeStore
         if modeBootstrap.requiresModeAuthentication { PasscodeCredentialStore.shared.requireModePINManagement() }
 
         let deviceSpecificEncryptionParameters = BuildConfig.deviceSpecificEncryptionParameters(rootPath, baseAppBundleId: baseAppBundleId)
@@ -1183,8 +1185,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             if case let .configured(store) = modeBootstrap {
                 self.installModeRuntime(store: store, sharedContext: sharedContext, appLock: appLockContext)
             }
+            self.modeSharedContext = sharedContext
+            sharedContext.initialModeSetupFactory = { [weak self] context in
+                self?.makeInitialModeSetup(context: context)
+            }
             if modeBootstrap.requiresModeAuthentication {
-                self.modeSharedContext = sharedContext
                 self.retryModeRuntimeIfNeeded()
             }
             
@@ -2198,14 +2203,180 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         })
     }
 
+    /// Still unexposed by SettingsUI. Only the current ordinary owner root may
+    /// capture a complete pool and present this initial-only input controller.
+    private func makeInitialModeSetup(context: AccountContext) -> ViewController? {
+        assert(Thread.isMainThread)
+        guard let shared = self.modeSharedContext, let makeStore = self.modeStoreFactory,
+              self.modeCoordinator == nil, self.modeInitialSetupRun == nil,
+              !shared.hasModeAccountAccess, self.contextValue?.context === context,
+              self.mainWindow.viewController === self.contextValue?.rootController,
+              self.isActiveValue, !self.nativeSnapshotCover.isVisible,
+              self.nativeWindow != nil, self.accountManager != nil, self.appLockContextImpl != nil else { return nil }
+        let installation = UUID()
+        let pool: (configuration: AccessConfiguration, accounts: [AccountWithInfo])
+        let owner: PasscodeCredentialReference?
+        do {
+            pool = try shared.initialModeAccountPool(installation: installation, sharedRecord: context.account.id)
+            owner = try PasscodeCredentialStore.shared.protectionSettings().passcode
+        } catch { return nil }
+        let root = self.contextValue?.rootController
+        let isCurrent: () -> Bool = { [weak self, weak shared, weak context] in
+            guard let self, let shared, let context, self.isActiveValue,
+                  self.modeInitialSetupRun == nil, self.modeCoordinator == nil,
+                  self.modeSharedContext === shared, !shared.hasModeAccountAccess,
+                  self.contextValue?.context === context, self.mainWindow.viewController === root,
+                  !self.nativeSnapshotCover.isVisible else { return false }
+            do {
+                let fresh = try shared.initialModeAccountPool(installation: installation, sharedRecord: context.account.id)
+                let currentOwner = try PasscodeCredentialStore.shared.protectionSettings().passcode
+                return fresh.configuration == pool.configuration && fresh.accounts == pool.accounts &&
+                    currentOwner == owner
+            } catch { return false }
+        }
+        let data = context.sharedContext.currentPresentationData.with { $0 }
+        let choices = pool.accounts.map {
+            InitialPINSetupView.AccountChoice(recordID: $0.account.id.int64,
+                title: $0.peer.displayTitle(strings: data.strings, displayOrder: data.nameDisplayOrder))
+        }
+        return try? InitialPINSetupController(context: context, accountTitle: "Основной аккаунт",
+            accounts: choices, selectedRecord: context.account.id.int64, requiresCurrentPasscode: owner != nil,
+            currentUsesNumericKeyboard: owner?.kind != .alphanumeric, isCurrent: isCurrent,
+            submit: { [weak self, weak shared] selected, currentPIN, a, b in
+                guard let self, let shared, isCurrent(),
+                      let fresh = try? shared.initialModeAccountPool(installation: installation,
+                        sharedRecord: AccountRecordId(rawValue: selected)) else { return }
+                self.beginInitialModeSetup(shared: shared, makeStore: makeStore, configuration: fresh.configuration,
+                    expectedOwner: owner, currentPIN: currentPIN, pinA: a, pinB: b)
+            })
+    }
+
+    private func beginInitialModeSetup(shared: SharedAccountContextImpl, makeStore: @escaping () throws -> AccessCredentialStore,
+            configuration: AccessConfiguration, expectedOwner: PasscodeCredentialReference?,
+            currentPIN: String?, pinA: String, pinB: String) {
+        assert(Thread.isMainThread)
+        guard self.modeInitialSetupRun == nil, self.modeCoordinator == nil, self.isActiveValue,
+              self.modeSharedContext === shared, !shared.hasModeAccountAccess,
+              let appLock = self.appLockContextImpl, let accountManager = self.accountManager,
+              self.nativeWindow != nil else { return }
+        let run = UUID()
+        let cancelled = Atomic<Bool>(value: false)
+        self.modeInitialSetupRun = run
+        self.modeInitialSetupCancellation = cancelled
+        self.showModeNativeCover()
+        self.mainWindow.setAccessPresentationGuard { [weak self, weak appLock, weak shared] controller in
+            if let controller, appLock?.isCurrentLockController(controller) == true { return true }
+            guard let self, let shared, self.isActiveValue, self.modeInitialSetupRun == nil,
+                  !shared.hasModeAccountAccess else { return false }
+            return true
+        }
+        appLock.lock()
+        let publication: InitialAccountPublicationTicket
+        do { publication = try shared.beginInitialModeAccountPreparation() }
+        catch {
+            self.modeInitialSetupRun = nil
+            self.modeInitialSetupCancellation = nil
+            shared.requireModeAccountAccess()
+            self.installModePresentationGuard(appLock: appLock)
+            self.revealNativeLockScreenIfSafe()
+            return
+        }
+        self.mainWindow.discardPresentedControllersForAccessTransition(keeping: { appLock.isCurrentLockController($0) })
+        self.mainWindow.viewController = nil
+        self.mainWindow.topLevelOverlayControllers = []
+        self.mainWindow.debugAction = nil
+        self.contextValue = nil
+        self.authContextValue = nil
+        shared.notificationController = nil
+        let expected = Set(configuration.accounts.map {
+            InitialAccountRecord(recordID: $0.identity.recordID, environment: $0.identity.environment)
+        })
+        let validateMetadata: (InitialDualPINAccountSnapshot<TelegramAccountManagerTypes>) -> Bool = { snapshot in
+            guard !cancelled.with({ $0 }), !snapshot.pendingAuthorization else { return false }
+            let records = snapshot.records.compactMap { record -> InitialAccountRecord? in
+                if record.attributes.contains(where: { if case .loggedOut = $0 { return true }; return false }) { return nil }
+                let testing = record.attributes.contains(where: {
+                    if case let .environment(value) = $0, case .test = value.environment { return true }
+                    return false
+                })
+                return InitialAccountRecord(recordID: record.id.int64, environment: testing ? .test : .production)
+            }
+            return records.count == expected.count && Set(records) == expected
+        }
+        self.modeManagementQueue.async { [weak self, weak shared, weak appLock] in
+            guard let self, let shared, let appLock else { return }
+            do {
+                let store = try makeStore()
+                let coordinator = AccessInitialSetupCoordinator(store: store)
+                let request = try DispatchQueue.main.sync { () throws -> AccessInitialSetupRequest in
+                    guard self.modeInitialSetupRun == run, self.modeCoordinator == nil, self.isActiveValue,
+                          !cancelled.with({ $0 }) else { throw AccessError.staleAuthorization }
+                    return try coordinator.prepare()
+                }
+                try coordinator.execute(request) {
+                    try validateInitialDualPINAccountState(accountManager: accountManager, validate: validateMetadata)
+                    guard try PasscodeCredentialStore.shared.protectionSettings().passcode == expectedOwner,
+                          !cancelled.with({ $0 }) else { throw PasscodeError.staleAuthorization }
+                    let owner: PasscodeSession?
+                    if let expectedOwner {
+                        guard let currentPIN else { throw PasscodeError.authenticationRequired }
+                        owner = try PasscodeCredentialStore.shared.verify(currentPIN, reference: expectedOwner, scope: .settings)
+                    } else {
+                        guard currentPIN == nil else { throw PasscodeError.authenticationRequired }
+                        owner = nil
+                    }
+                    defer { owner?.invalidate() }
+                    guard !cancelled.with({ $0 }) else { throw PasscodeError.cancelled }
+                    let receipt = try DualPINLegacyMigration().installForSetup(store: store, configuration: configuration,
+                        pinA: pinA, pinB: pinB, ownerSession: owner, didCommitLegacyReference: { reference in
+                            // A changed owner must be acknowledged regardless of
+                            // cancellation or a subsequently changed account pool.
+                            try commitDualPINLegacyReference(reference, accountManager: accountManager)
+                            try validateInitialDualPINAccountState(accountManager: accountManager, validate: validateMetadata)
+                        })
+                    guard !cancelled.with({ $0 }) else { throw PasscodeError.cancelled }
+                    return receipt
+                }
+            } catch {
+                // Do not infer absence from a thrown operation. It may have
+                // already committed the legacy owner or the access-state file.
+            }
+            let outcome = AccessRuntimeBootstrap.inspect(makeStore)
+            Queue.mainQueue().async { [weak self, weak shared, weak appLock] in
+                guard let self, let shared, let appLock, self.modeInitialSetupRun == run else { return }
+                self.modeInitialSetupRun = nil
+                self.modeInitialSetupCancellation = nil
+                switch outcome {
+                case let .configured(store):
+                    self.installModeRuntime(store: store, sharedContext: shared, appLock: appLock)
+                case .unavailable:
+                    PasscodeCredentialStore.shared.requireModePINManagement()
+                    shared.requireModeAccountAccess()
+                    self.installModePresentationGuard(appLock: appLock)
+                case .unconfigured:
+                    appLock.refreshLegacyOwnerAuthentication()
+                    do { try shared.restoreInitialModeAccountsIfUnconfigured(publication) }
+                    catch {
+                        shared.requireModeAccountAccess()
+                        self.installModePresentationGuard(appLock: appLock)
+                    }
+                }
+                appLock.refreshModePresentation()
+                self.revealNativeLockScreenIfSafe()
+                self.retryModeRuntimeIfNeeded()
+            }
+        }
+    }
+
     /// Protected-data/factory failures stay required. Retry may install an existing
     /// valid vault, but confirmed absence after an unavailable startup never clears
     /// mode requirements or exposes ordinary authorization as an automatic fallback.
     private func retryModeRuntimeIfNeeded() {
         assert(Thread.isMainThread)
         guard self.isActiveValue, self.modeCoordinator == nil, !self.modeRuntimeRetryInFlight,
+              self.modeInitialSetupRun == nil,
               let makeStore = self.modeStoreFactory, let shared = self.modeSharedContext,
-              let appLock = self.appLockContextImpl else { return }
+              shared.hasModeAccountAccess, let appLock = self.appLockContextImpl else { return }
         self.modeRuntimeRetryInFlight = true
         self.modeManagementQueue.async { [weak self, weak shared, weak appLock] in
             let result = AccessRuntimeBootstrap.inspect(makeStore)
@@ -2285,9 +2456,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private func revealNativeLockScreenIfSafe() {
         assert(Thread.isMainThread)
         guard self.isActiveValue, let ticket = self.nativeSnapshotTicket,
+              self.modeInitialSetupRun == nil,
               self.modeCoordinator == nil || self.modeCoordinator?.state == .locked else { return }
         let reveal: () -> Void = { [weak self] in
             guard let self, self.isActiveValue,
+                  self.modeInitialSetupRun == nil,
                   self.window?.rootViewController?.presentedViewController == nil,
                   self.modeCoordinator == nil || self.modeCoordinator?.state == .locked else { return }
             if self.nativeSnapshotCover.hide(ticket) { self.nativeSnapshotTicket = nil }
@@ -2305,6 +2478,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             self.nativeSnapshotTicket = self.nativeSnapshotCover.show(on: window)
             window.endEditing(true)
         }
+        _ = self.modeInitialSetupCancellation?.swap(true)
         self.appLockContextImpl?.lock()
         self.isActiveValue = false
         self.isActivePromise.set(false)

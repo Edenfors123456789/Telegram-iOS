@@ -391,6 +391,20 @@ public final class AppLockContextImpl: AppLockContext {
         self.lock()
     }
 
+    /// A failed initial Dual PIN commit may already have replaced the legacy PIN
+    /// reference/kind. Discard its old input controller before requesting the
+    /// freshly acknowledged owner code. This never clears mode requirements.
+    public func refreshLegacyOwnerAuthentication() {
+        assert(Thread.isMainThread)
+        guard !self.modeAuthenticationRequired else { self.lock(); return }
+        if let controller = self.passcodeController {
+            self.passcodeController = nil
+            controller.invalidatePendingPINInput()
+            controller.dismiss()
+        }
+        self.lock()
+    }
+
     /// Call after coordinator preparation/ready mutations, in the same main-thread
     /// turn. Preparation retains the cover and does not prompt for another PIN.
     public func refreshModePresentation() {

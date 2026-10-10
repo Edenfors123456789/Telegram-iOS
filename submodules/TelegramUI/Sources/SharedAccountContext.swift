@@ -209,17 +209,24 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
     }
     private var modeRootPresentation: AccessRootPresentation?
-    private var modeAccountAccessRequired = false
+    private let modeAccountPublication: AccessAccountPublicationGate
+    private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
     private var pendingModeRoot: AccessRootPreparation?
     private let modeAccountRootPromise = ValuePromise<ModeAccountRoot>(ModeAccountRoot(context: nil, preparation: nil), ignoreRepeated: true)
     var accountContextsForRoot: Signal<ModeAccountRoot, NoError> { self.modeAccountRootPromise.get() }
     var hasModeAccountAccess: Bool { self.modeAccountAccessRequired }
     var modePasscodeSettingsFactory: ((AccountContext) -> ViewController?)?
+    var initialModeSetupFactory: ((AccountContext) -> ViewController?)?
     public var requiresModePasscodeSettings: Bool { self.modeAccountAccessRequired }
     public func makeModePasscodeSettings(context: AccountContext) -> ViewController? {
         assert(Queue.mainQueue().isCurrent())
         guard self.modeAccountAccessRequired else { return nil }
         return self.modePasscodeSettingsFactory?(context)
+    }
+    public func makeInitialModeSetup(context: AccountContext) -> ViewController? {
+        assert(Queue.mainQueue().isCurrent())
+        guard !self.modeAccountAccessRequired else { return nil }
+        return self.initialModeSetupFactory?(context)
     }
     private let managedAccountDisposables = DisposableDict<AccountRecordId>()
     private let activeAccountsWithInfoPromise = Promise<(primary: AccountRecordId?, accounts: [AccountWithInfo])>()
@@ -371,7 +378,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         precondition(!testHasInstance)
         testHasInstance = true
         // Set before subscriptions/automatic authorization can process raw records.
-        self.modeAccountAccessRequired = modeAccountAccessRequired
+        self.modeAccountPublication = AccessAccountPublicationGate(modeRequired: modeAccountAccessRequired)
         
         self.appDelegate = appDelegate
         self.mainWindow = mainWindow
@@ -1914,7 +1921,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     func configureModeAccountAccess(_ driver: AccessRootPresentation) {
         assert(Queue.mainQueue().isCurrent())
         precondition(self.modeRootPresentation == nil)
-        self.modeAccountAccessRequired = true
+        self.modeAccountPublication.requireModePolicy()
         self.initialModeAccountInfos = nil
         self.modeRootPresentation = driver
         self.clearModeAccountPresentation()
@@ -1924,9 +1931,28 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     /// its driver. A failed factory cannot restore unrestricted raw streams.
     func requireModeAccountAccess() {
         assert(Queue.mainQueue().isCurrent())
-        self.modeAccountAccessRequired = true
+        self.modeAccountPublication.requireModePolicy()
         self.initialModeAccountInfos = nil
         self.clearModeAccountPresentation()
+    }
+
+    /// Cover and close native presentation before invoking this. Queued raw
+    /// emissions then observe the same gate as root/metadata delivery.
+    func beginInitialModeAccountPreparation() throws -> InitialAccountPublicationTicket {
+        assert(Queue.mainQueue().isCurrent())
+        let ticket = try self.modeAccountPublication.beginInitialPreparation()
+        self.initialModeAccountInfos = nil
+        self.clearModeAccountPresentation()
+        return ticket
+    }
+
+    /// Only a successful durable absence inspection permits this temporary gate
+    /// to reopen, behind a newly installed legacy owner PIN cover. Required mode
+    /// access, including an unknown outcome, cannot be cleared with this ticket.
+    func restoreInitialModeAccountsIfUnconfigured(_ ticket: InitialAccountPublicationTicket) throws {
+        assert(Queue.mainQueue().isCurrent())
+        try self.modeAccountPublication.restoreConfirmedUnconfigured(ticket)
+        self.publishAccountContexts()
     }
 
     func clearModeAccountPresentation() {
