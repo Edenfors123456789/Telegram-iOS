@@ -101,6 +101,14 @@ The initial unhosted iOS test returned `errSecNotAvailable` even for a plain Sec
 
 The presentation/legacy-management integration also passed a fresh full simulator app build (254.450 seconds, 715 actions), with retained IPA and isolated absent/corrupt/restored startup probes. The final UI suite has 13 passing cases; legacy migration/management has 6. These are stage-3 checkpoints. Native setup, cross-store PIN A journal, enrollment, management and complete B data filtering remain pending.
 
+## Initial setup commit and lifecycle
+
+`AccessCredentialStore.initialize` returns an opaque `AccessInitialSetupReceipt` only after the encrypted initial file commit. It contains no PIN or account/data authority. `finishInitialSetup` binds completion to the exact store instance, installation, configuration and credential identities and original revocation; completion revokes initial authority and requires fresh PIN entry. A stale, foreign or repeated receipt cannot recreate a missing vault or disturb a newer authenticated state.
+
+`AccessInitialSetupCoordinator` admits only main-app, single-use requests, rejects configured/corrupt state before invoking legacy-owner work, and checks cancellation/reentrancy before receipt completion. The native adapter must cover/detach before preparation and execute crypto/AccountManager work off-main. `DualPINLegacyMigration.installForSetup` supplies the receipt after owner verification, resource-key-preserving rewrap, durable reference acknowledgment and biometric cleanup. No native enablement UI is connected at this checkpoint.
+
+Verified: 100 Mac Core cases, 101 hosted iOS Core cases and 17 hosted legacy/actual-AccountManager cases, zero failures. The new integration case migrates a four-digit owner PIN to six digits while preserving the protected-resource key; B cannot obtain the A legacy resource session. Full application build evidence is recorded in `PLANS.md` when complete. Before native setup, the known missing-file/never-configured ambiguity also needs a durable Keychain presence witness; do not treat this checkpoint as complete startup recovery.
+
 ## Owner PIN A change journal
 
 `AccessCredentialStore.beginOwnerPINChange` requires a current A grant and current A PIN; the replacement must differ from B. Under the encrypted vault lock it prepares the new A proof and an authenticated resource-rewrap plan, then durably stages both before changing the legacy record. Preparation must not write that record. This promotes the vault state to schema 2 at the same `access-state.v1.enc` path; older schema-1 readers reject it, including after completion. Version 1 is still readable when no journal is present. Both roles, old grants, settings/enrollment mutations and PIN cooldown publication are denied while pending. Ordinary revocation preserves the journal.

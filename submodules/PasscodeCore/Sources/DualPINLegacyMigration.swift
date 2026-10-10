@@ -18,9 +18,25 @@ public final class DualPINLegacyMigration {
     public func install(store: AccessCredentialStore, configuration: AccessConfiguration,
                         pinA: String, pinB: String, ownerSession: PasscodeSession?,
                         didCommitLegacyReference: (PasscodeCredentialReference) throws -> Void) throws -> PasscodeCredentialReference {
+        try performInstall(store: store, configuration: configuration, pinA: pinA, pinB: pinB,
+            ownerSession: ownerSession, didCommitLegacyReference: didCommitLegacyReference).reference
+    }
+
+    /// Lifecycle setup consumes only a successfully committed receipt, never an
+    /// unlock/resource grant. The legacy reference is still acknowledged first.
+    public func installForSetup(store: AccessCredentialStore, configuration: AccessConfiguration,
+                               pinA: String, pinB: String, ownerSession: PasscodeSession?,
+                               didCommitLegacyReference: (PasscodeCredentialReference) throws -> Void) throws -> AccessInitialSetupReceipt {
+        try performInstall(store: store, configuration: configuration, pinA: pinA, pinB: pinB,
+            ownerSession: ownerSession, didCommitLegacyReference: didCommitLegacyReference).receipt
+    }
+
+    private func performInstall(store: AccessCredentialStore, configuration: AccessConfiguration,
+                                pinA: String, pinB: String, ownerSession: PasscodeSession?,
+                                didCommitLegacyReference: (PasscodeCredentialReference) throws -> Void) throws -> (reference: PasscodeCredentialReference, receipt: AccessInitialSetupReceipt) {
         guard environment.isMainApp else { throw PasscodeError.authenticationRequired }
         var reference: PasscodeCredentialReference?
-        try store.initialize(configuration: configuration, pinA: pinA, pinB: pinB, prepareProtectedResources: {
+        let receipt = try store.initialize(configuration: configuration, pinA: pinA, pinB: pinB, prepareProtectedResources: {
             if let ownerSession {
                 try ownerSession.require(scope: .settings, passcode: true)
                 try self.legacy.validate(ownerSession, scope: .settings)
@@ -36,7 +52,7 @@ public final class DualPINLegacyMigration {
             try self.legacy.disableBiometrics(session: result.session)
         })
         guard let reference else { throw PasscodeError.unavailable }
-        return reference
+        return (reference, receipt)
     }
 }
 #endif

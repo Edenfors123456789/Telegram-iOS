@@ -24,6 +24,15 @@ public struct AccessClockSnapshot {
 
 enum AccessGrantPurpose { case access, pinChange }
 
+/// Proof of this store instance's completed initial file commit. No data authority.
+public struct AccessInitialSetupReceipt {
+    let issuer: UUID
+    let installation: UUID
+    let configurationRevision: UInt64
+    let a: UUID
+    let b: UUID
+}
+
 public struct AuthenticatedModeGrant {
     public let mode: AccessMode
     let issuer: UUID
@@ -149,12 +158,13 @@ public final class AccessCredentialStore {
 
     /// Stage-3 migration must authenticate the legacy owner before this initial-only operation.
     /// An existing, corrupt or unsupported vault cannot be replaced through this method.
+    @discardableResult
     public func initialize(configuration: AccessConfiguration, pinA: String, pinB: String,
-                           prepareProtectedResources: () throws -> Void = {}) throws {
+                           prepareProtectedResources: () throws -> Void = {}) throws -> AccessInitialSetupReceipt {
         try configuration.validate()
         guard Self.validPIN(pinA), Self.validPIN(pinB) else { throw AccessError.invalidPIN }
         guard pinA != pinB else { throw AccessError.identicalPINs }
-        try file.transaction(allowInitialization: true) { state, key in
+        return try file.transaction(allowInitialization: true) { state, key in
             guard state == nil else { throw AccessError.alreadyConfigured }
             let initial = AccessVaultState(version: 1, configuration: configuration,
                 a: try PINCredential.create(mode: .a, pin: pinA, deviceKey: key, iterations: self.iterations),
@@ -165,6 +175,23 @@ public final class AccessCredentialStore {
             // publication. The owner adapter must preserve legacy resource keys.
             try prepareProtectedResources()
             state = initial
+            return AccessInitialSetupReceipt(issuer: issuer, installation: configuration.installation,
+                configurationRevision: configuration.revision, a: initial.a.id, b: initial.b.id)
+        }
+    }
+
+    public func finishInitialSetup(_ receipt: AccessInitialSetupReceipt) throws {
+        guard receipt.issuer == issuer else { throw AccessError.staleAuthorization }
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.validate()
+            guard state.version == 1, state.configuration.installation == receipt.installation,
+                  state.configuration.revision == receipt.configurationRevision,
+                  state.a.id == receipt.a, state.b.id == receipt.b,
+                  state.revocation == 1, state.pendingEnrollment == nil,
+                  state.pendingOwnerPINChange == nil else { throw AccessError.staleAuthorization }
+            state.revocation += 1
+            stored = state
         }
     }
 

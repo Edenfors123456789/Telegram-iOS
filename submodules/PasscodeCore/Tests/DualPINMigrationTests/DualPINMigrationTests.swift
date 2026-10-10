@@ -236,6 +236,45 @@ final class DualPINReferenceCommitTests: XCTestCase {
         return manager
     }
 
+    func testInitialSetupAcknowledgesRealMetadataAndPreservesOwnerResourcesBeforeFreshPIN() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let before = try f.resourceKey(code: "1234")
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        defer { owner.invalidate() }
+        let trusted = Atomic<PasscodeCredentialReference?>(value: nil)
+        let manager = self.manager(f, reference: trusted)
+        let coordinator = AccessInitialSetupCoordinator(store: f.vault)
+        let request = try coordinator.prepare()
+        let done = expectation(description: "Initial owner/resource/reference commit")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try coordinator.execute(request) {
+                    try f.migration.installForSetup(store: f.vault, configuration: f.config,
+                        pinA: "123456", pinB: "654321", ownerSession: owner, didCommitLegacyReference: { reference in
+                            _ = trusted.swap(reference)
+                            try commitDualPINLegacyReference(reference, accountManager: manager)
+                        })
+                }
+            } catch { XCTFail("Initial setup failed: \(error)") }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(coordinator.state, .finished)
+        XCTAssertEqual(try f.resourceKey(code: "123456"), before)
+        XCTAssertThrowsError(try f.legacy.verify("654321", scope: .resource(namespace: "owner-test")))
+        XCTAssertEqual(try f.vault.authenticate(pin: "123456").mode, .a)
+        XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
+        let reference = try XCTUnwrap(try f.legacy.managedReference() ?? nil)
+        let read = expectation(description: "Initial six-digit reference acknowledged")
+        let disposable = manager.transaction { $0.getAccessChallengeData() }.start(next: { data in
+            XCTAssertEqual(data, accessChallengeData(reference: reference))
+            read.fulfill()
+        })
+        wait(for: [read], timeout: 5)
+        disposable.dispose()
+    }
+
     func testMainCallerAndSilentlyRejectedReferenceAreDenied() throws {
         let f = try MigrationFixture()
         let reference = PasscodeCredentialReference(id: UUID().uuidString, kind: .digits6)
