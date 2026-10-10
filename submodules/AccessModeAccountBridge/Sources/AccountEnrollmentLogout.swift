@@ -23,29 +23,6 @@ extension AccountEnrollmentLogoutTransport {
     var isOriginalSessionCurrent: Bool { false }
 }
 
-private final class TelegramEnrollmentLogoutTransport: AccountEnrollmentLogoutTransport {
-    let recordID: Int64
-    let environment: AccessModeCore.AccountEnvironment
-    let network: Network
-    let stopServiceTasks: () -> Void
-    init(recordID: Int64, environment: AccessModeCore.AccountEnvironment, network: Network, stopServiceTasks: @escaping () -> Void) {
-        self.recordID = recordID; self.environment = environment
-        self.network = network; self.stopServiceTasks = stopServiceTasks
-    }
-    func logout() -> Signal<AccountEnrollmentLogoutReply, NoError> {
-        return Signal { subscriber in
-            self.stopServiceTasks()
-            return (self.network.request(Api.functions.auth.logOut(), automaticFloodWait: false)
-            |> map { _ -> AccountEnrollmentLogoutReply in .loggedOut }
-            |> `catch` { _ -> Signal<AccountEnrollmentLogoutReply, NoError> in
-                // Errors cannot prove our original key was revoked if a fresh
-                // key was created after storage loss. Retain ownership instead.
-                return .single(.unavailable)
-            }).start(next: { subscriber.putNext($0) }, completed: { subscriber.putCompletion() })
-        }
-    }
-}
-
 /// Ephemeral server-result authority, never an unlock or account-display grant.
 public struct AccountEnrollmentSessionRevocation {
     fileprivate let accountManager: AccountManager<TelegramAccountManagerTypes>
@@ -61,24 +38,23 @@ public enum AccountEnrollmentLogoutResult {
 extension AccountEnrollmentBridge {
     public static func revokeProvisionalSession(account: AccountResult, accountManager: AccountManager<TelegramAccountManagerTypes>,
         coordinator: AccessModeCoordinator, cleanup: AccountEnrollmentCleanupTicket) -> Signal<AccountEnrollmentLogoutResult, NoError> {
-        let transport: TelegramEnrollmentLogoutTransport
-        let basePath: String
-        switch account {
-        case .upgrading: return .single(.unavailable)
-        case let .authorized(value):
-            basePath = value.basePath
-            transport = TelegramEnrollmentLogoutTransport(recordID: value.id.int64, environment: value.testingEnvironment ? .test : .production,
-                network: value.network, stopServiceTasks: { value.shouldBeServiceTaskMaster.set(.single(.never)) })
-        case let .unauthorized(value):
-            basePath = value.basePath
-            transport = TelegramEnrollmentLogoutTransport(recordID: value.id.int64, environment: value.testingEnvironment ? .test : .production,
-                network: value.network, stopServiceTasks: { value.shouldBeServiceTaskMaster.set(.single(.never)) })
-        }
-        let metadata = URL(fileURLWithPath: accountManager.basePath).standardizedFileURL
-        let expected = metadata.deletingLastPathComponent().appendingPathComponent(accountRecordIdPathName(AccountRecordId(rawValue: transport.recordID))).standardizedFileURL
-        guard metadata.lastPathComponent == "accounts-metadata", URL(fileURLWithPath: basePath).standardizedFileURL == expected else {
+        guard let source = NativeEnrollmentSessionKeySource(account: account),
+              source.recordID == cleanup.provisionalRecordID, source.environment == cleanup.environment,
+              matchesNativeRoot(basePath: source.basePath, recordID: source.recordID, accountManager: accountManager) else {
             return .single(.unavailable)
         }
+        let stopServiceTasks: () -> Void
+        switch account {
+        case .upgrading: return .single(.unavailable)
+        case let .authorized(value): stopServiceTasks = { value.shouldBeServiceTaskMaster.set(.single(.never)) }
+        case let .unauthorized(value): stopServiceTasks = { value.shouldBeServiceTaskMaster.set(.single(.never)) }
+        }
+        let transport = ScopedEnrollmentLogoutTransport(source: source, accountManager: accountManager,
+            coordinator: coordinator, cleanup: cleanup, engineKind: { source.network.engineKind }, stopServiceTasks: stopServiceTasks,
+            request: { scope in
+                source.network.request(Api.functions.auth.logOut(), automaticFloodWait: false, authKeyScope: scope)
+                |> map { _ in () }
+            })
         return revokeSession(transport: transport, accountManager: accountManager, coordinator: coordinator, cleanup: cleanup)
     }
 

@@ -109,9 +109,9 @@ preserves version 4 and the bindings. Only a current main-app cleanup ticket can
 read them after lock/reopen; this grants no account data or unlock.
 
 This storage boundary accepts a digest from the native adapter described below.
-Extraction and read-only restart reconciliation are implemented; verification of
-the key actually used by a logout RPC remains pending. The Core component alone
-does not establish original-session provenance or server logout.
+Extraction, read-only restart reconciliation and protected request preparation
+are implemented. The Core component alone does not establish original-session
+provenance or server logout; actual server/device acceptance remains pending.
 
 A new-schema bound enrollment requires its matching cleanup ledger. Missing,
 aliased, inconsistent or downgraded ownership is corrupt and refuses access;
@@ -157,10 +157,19 @@ tasks without automatic flood waiting. Empty responses, timeout, cancellation
 and stale result ownership cannot mint its non-Codable ephemeral proof. No
 metadata record deletion or ledger acknowledgment occurs at this boundary.
 
-All transports now default to refusing original-session evidence. The public
-native transport remains closed until request-level permanent/PFS-key provenance
-is implemented; even a successful response cannot bypass this prerequisite.
-Internal tests simulate a current original session and classify the exact
+Transports default to refusing original-session evidence. The native adapter
+now uses `ScopedEnrollmentLogoutTransport`: it captures the original main
+datacenter/digest once, requires all persisted datacenter keys plus the current
+root/owner/environment and MtProtoKit engine, then passes that immutable scope
+to `Network.request`. A changed main key/datacenter needs an explicit new
+adapter; a retained request cannot silently rebase. Task stopping is followed
+by another fresh validation. The actual MTProto preparation boundary separately
+checks the selected permanent key or recorded PFS provenance on every retry.
+
+The native adapter accepts only a successful scoped `auth.LoggedOut`. All its
+RPC errors remain unconfirmed, including documented inactive-key errors: a
+temporary-key error cannot prove the permanent session is inactive. Internal
+fake transports simulate a current original session and classify the exact
 documented inactive authorization errors, with a separate original-binding
 requirement for those errors. They are not real server evidence. A newly
 generated unregistered key after database/key loss does not prove the previous
@@ -190,8 +199,8 @@ A key change detected at write completion locks access and retains the saved
 original. No auth record or server session is deleted by this operation.
 
 This Bool reports durable evidence only. It grants no authorization, unlock or
-logout proof. Native caller/root integration, datacenter-migration handling
-and request-level PFS provenance remain pending. The
+logout proof. Native caller/root integration and enrollment datacenter-migration
+handling remain pending; request-level PFS provenance is implemented. The
 future caller must repeat ownership and key validation at actual submission;
 an earlier successful binding cannot authorize a later request on its own.
 
@@ -205,13 +214,14 @@ MTContext reads occur outside the Core vault lock to avoid lock inversion.
 
 The [Telegram PFS specification](https://core.telegram.org/api/pfs) binds each
 temporary key to a permanent key. A current context snapshot does not establish
-which cached key a delayed request actually uses. The next transport boundary
-must check the selected key at every preparation, including retries, and retain
+which cached key a delayed request actually uses. The transport boundary
+checks the selected key at every preparation, including retries, and retains
 successful temporary-key binding provenance. The verified MtProtoKit component
 now does this; [protected transport](PROTECTED_SESSION_TRANSPORT.md) records its
 boundary. Higher-level request options now also pass isolated checks and full
-application compilation. The native account adapter remains pending, so the
-public native logout transport is still closed.
+application compilation. The native account adapter now forwards the protected
+scope. Its owning job and configured authorization routes remain unconnected;
+no server/local completion or physical-device behavior is inferred.
 
 Before exposing authorization:
 
@@ -312,6 +322,18 @@ session was authorized or revoked by these tests. The official
 on 2026-10-10: the method returns `auth.LoggedOut`. Our future native job must
 keep ownership/retry evidence on a network failure; a generic upstream cleanup
 completion that swallowed that failure is insufficient.
+
+Native scoped transport red ran 63 hosted cases with 26 expected failures,
+zero unexpected errors, exit 1; green passed all 63 with exit 0. Expanded public
+adapter checks passed 65 cases, zero failures, exit 0, 68.510 seconds overall /
+21.986 test seconds. They use real AccountManager/Core and the actual scoped
+transport, with fake key/RPC sources and no live account or network. Full own
+app compilation passed exit 0, 45.392 Bazel seconds, 51 actions; source hashes
+match. Artifact under `build-input/dual-pin-stage0/native-protected-logout-20261010/`:
+`app-builds/20261010T091607Z/Telegram.ipa`, 609,653,849 bytes, SHA-256
+`bbf0e7f5d38247b828f1f432bee633d3707bd60afc77de03846bbe0a67ff2cd0`.
+Durable server-confirmation persistence, exact local completion and the owning
+native job remain required before exposing configured enrollment.
 
 Hosted metadata command (run serially with other Bazel/build invocations):
 

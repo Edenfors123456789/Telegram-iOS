@@ -1,8 +1,9 @@
 # Protected original-session requests
 
 This stage-3 component preserves a request's original permanent-key identity
-through MTProto preparation. Native authorization and cleanup remain closed
-until the higher-level request and account adapters are connected and verified.
+through MTProto preparation. Request options and the native logout account
+adapter are connected; the owning cleanup job and authorization routes remain
+unconnected pending verification of their completion/admission boundaries.
 
 ## Implemented MTProto boundary
 
@@ -51,14 +52,35 @@ the previous service. Both the Rust request service and session refuse protected
 requests before queueing or FFI submission, including moved requests; ordinary
 requests retain their previous behavior.
 
-Connect the exact owned provisional-account adapter after this higher-level
-checkpoint is verified. A fingerprint observation alone grants no RPC, unlock,
-display or cleanup-completion authority. Native RPC errors remain unconfirmed;
-missing original evidence retains quarantine. Retain the provisional directory
-until exact cleanup completion: generic asynchronous directory cleanup must not
-erase the key evidence after auth metadata detachment or from a stale snapshot.
+The owned provisional-account adapter captures an immutable original-main
+scope, validates all saved datacenter fingerprints and the exact native
+root/environment/claim, requires MtProtoKit and revalidates after task stopping.
+Its real `auth.logOut` request forwards that scope without automatic flood waits.
+Only successful scoped `auth.LoggedOut` may mint the ephemeral result after a
+fresh metadata/owner/key check. Native RPC errors remain unconfirmed; missing
+original evidence retains quarantine. Fingerprint observations and the result
+grant no unlock/display or permission to acknowledge cleanup.
+
+Native background folder cleanup now retains configured/provisional ownership
+and checks fresh raw metadata inside a synchronous deletion transaction. It
+starts denied before runtime configuration and denies Share. Error-swallowing
+legacy session cleanup/temporary pruning remains quarantined in the Dual PIN
+caller, preserving keys for the future exact-owner completion job. Directory
+removal alone never proves a server session was revoked.
 
 ## Verification
+
+Native scoped transport: 63-case red had 26 expected failed assertions, zero
+unexpected errors; 63-case green passed. Expanded public adapter verification
+passed 65 hosted cases, zero failures, exit 0, 68.510 seconds overall / 21.986
+test seconds. All source hashes matched the full own-bundle app build, exit 0,
+45.392 Bazel seconds, 51 actions. Artifact in
+`build-input/dual-pin-stage0/native-protected-logout-20261010/app-builds/20261010T091607Z/Telegram.ipa`,
+609,653,849 bytes, SHA-256
+`bbf0e7f5d38247b828f1f432bee633d3707bd60afc77de03846bbe0a67ff2cd0`.
+These use fake keys/RPC sources; no real server logout, launch or iPhone
+acceptance is established. The first native fixture compile failure executed
+no tests and is retained separately.
 
 Existing MtProtoKit baseline: 98 cases, zero failures, exit 0, 49.994 seconds
 overall / 40.179 test seconds. Actual protected-request red: 108 cases, 87
