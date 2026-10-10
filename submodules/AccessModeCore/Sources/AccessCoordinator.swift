@@ -251,6 +251,15 @@ public final class AccessModeCoordinator {
         return try store.withEnrollmentCleanup(ticket, body)
     }
 
+    /// Background deletion permission only, never an unlock or cleanup proof.
+    /// Caller must separately validate fresh native metadata and the exact path.
+    /// Body must be synchronous, without vault reentry or queued network work.
+    public func withUnownedAccountDirectory<T>(recordID: Int64, _ body: () throws -> T) throws -> T? {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        return try store.withUnownedAccountDirectory(recordID: recordID, body)
+    }
+
     public func completeEnrollment(_ permit: AccountEnrollmentPermit, confirmedAccount: AccountIdentity,
                                    isPremium: Bool, ticket: AccessTicket) throws -> (decision: AccountEnrollmentDecision, ticket: AccessTicket) {
         mutex.lock(); defer { mutex.unlock() }

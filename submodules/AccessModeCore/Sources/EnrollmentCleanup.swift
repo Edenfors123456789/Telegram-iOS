@@ -30,6 +30,17 @@ struct PendingEnrollmentCleanup: Codable {
 }
 
 extension AccessCredentialStore {
+    func withUnownedAccountDirectory<T>(recordID: Int64, _ body: () throws -> T) throws -> T? {
+        try file.withReadState { state in
+            try state.validate()
+            guard !state.configuration.accounts.contains(where: { $0.identity.recordID == recordID }),
+                  state.pendingEnrollmentCleanup?.provisionalRecordID != recordID else { return nil }
+            // Keep ownership publication excluded until the filesystem action
+            // returns. No snapshot or later queued callback can grant deletion.
+            return try body()
+        }
+    }
+
     private func requireEnrollmentCleanup(_ ticket: AccountEnrollmentCleanupTicket, state: AccessVaultState) throws {
         try state.validate()
         guard ticket.issuer == issuer, let cleanup = state.pendingEnrollmentCleanup,

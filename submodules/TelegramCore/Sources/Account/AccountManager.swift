@@ -391,25 +391,38 @@ public func logoutFromAccount(id: AccountRecordId, accountManager: AccountManage
     }
 }
 
-public func managedCleanupAccounts(networkArguments: NetworkInitializationArguments, accountManager: AccountManager<TelegramAccountManagerTypes>, rootPath: String, auxiliaryMethods: AccountAuxiliaryMethods, encryptionParameters: ValueBoxEncryptionParameters) -> Signal<Void, NoError> {
+public func managedCleanupAccounts(networkArguments: NetworkInitializationArguments, accountManager: AccountManager<TelegramAccountManagerTypes>, rootPath: String, auxiliaryMethods: AccountAuxiliaryMethods, encryptionParameters: ValueBoxEncryptionParameters, preserveSessionEvidence: Bool = false, directoryDeletionGuard: @escaping AccountDirectoryDeletionGuard = { _, body in body() }) -> Signal<Void, NoError> {
+    return managedAccountCleanup(accountManager: accountManager, rootPath: rootPath,
+        preserveSessionEvidence: preserveSessionEvidence, directoryDeletionGuard: directoryDeletionGuard, cleanup: { id, attributes in
+            cleanupAccount(networkArguments: networkArguments, accountManager: accountManager, id: id,
+                encryptionParameters: encryptionParameters, attributes: attributes, rootPath: rootPath, auxiliaryMethods: auxiliaryMethods)
+        })
+}
+
+/// Isolated metadata/filesystem boundary; the legacy RPC handler remains lazy.
+func managedAccountCleanup(accountManager: AccountManager<TelegramAccountManagerTypes>, rootPath: String,
+    preserveSessionEvidence: Bool, directoryDeletionGuard: @escaping AccountDirectoryDeletionGuard,
+    cleanup: @escaping (AccountRecordId, [TelegramAccountManagerTypes.Attribute]) -> Signal<Void, NoError>) -> Signal<Void, NoError> {
     let currentTemporarySessionId = accountManager.temporarySessionId
     return Signal { subscriber in
         let loggedOutAccounts = Atomic<[AccountRecordId: MetaDisposable]>(value: [:])
-        let _ = (accountManager.transaction { transaction -> Void in
-            for record in transaction.getRecords() {
-                if let temporarySessionId = record.temporarySessionId, temporarySessionId != currentTemporarySessionId {
-                    transaction.updateRecord(record.id, { _ in
-                        return nil
-                    })
+        if !preserveSessionEvidence {
+            let _ = (accountManager.transaction { transaction -> Void in
+                for record in transaction.getRecords() {
+                    if let temporarySessionId = record.temporarySessionId, temporarySessionId != currentTemporarySessionId {
+                        transaction.updateRecord(record.id, { _ in
+                            return nil
+                        })
+                    }
                 }
-            }
-        }).start()
+            }).start()
+        }
         let disposable = accountManager.accountRecords().start(next: { view in
             var disposeList: [(AccountRecordId, MetaDisposable)] = []
             var beginList: [(AccountRecordId, [TelegramAccountManagerTypes.Attribute], MetaDisposable)] = []
             let _ = loggedOutAccounts.modify { disposables in
                 var validIds: [AccountRecordId: [TelegramAccountManagerTypes.Attribute]] = [:]
-                outer: for record in view.records {
+                outer: for record in view.records where !preserveSessionEvidence {
                     for attribute in record.attributes {
                         if case .loggedOut = attribute {
                             validIds[record.id] = record.attributes
@@ -445,7 +458,7 @@ public func managedCleanupAccounts(networkArguments: NetworkInitializationArgume
             }
             for (id, attributes, disposable) in beginList {
                 Logger.shared.log("managedCleanupAccounts", "cleanup \(id), current is \(String(describing: view.currentRecord?.id))")
-                disposable.set(cleanupAccount(networkArguments: networkArguments, accountManager: accountManager, id: id, encryptionParameters: encryptionParameters, attributes: attributes, rootPath: rootPath, auxiliaryMethods: auxiliaryMethods).start())
+                disposable.set(cleanup(id, attributes).start())
             }
             
             var validPaths = Set<String>()
@@ -464,7 +477,8 @@ public func managedCleanupAccounts(networkArguments: NetworkInitializationArgume
                     for url in files {
                         if url.lastPathComponent.hasPrefix("account-") {
                             if !validPaths.contains(url.lastPathComponent) {
-                                try? FileManager.default.removeItem(at: url)
+                                let _ = removeUnreferencedAccountDirectory(accountManager: accountManager, rootPath: rootPath,
+                                    directoryName: url.lastPathComponent, deletionGuard: directoryDeletionGuard).start()
                             }
                         }
                     }

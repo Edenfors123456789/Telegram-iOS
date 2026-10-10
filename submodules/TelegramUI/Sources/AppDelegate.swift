@@ -2136,7 +2136,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     self.nativeSnapshotTicket = nil
                 })
             self.modeRootPresentation = driver
-            sharedContext.configureModeAccountAccess(driver)
+            sharedContext.configureModeAccountAccess(driver, coordinator: coordinator)
             sharedContext.modePasscodeSettingsFactory = { [weak self] context in
                 self?.makeModePasscodeSettings(context: context)
             }

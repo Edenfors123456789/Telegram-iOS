@@ -1,6 +1,7 @@
 import Foundation
 import AccessModeCore
 import AccessModeUI
+import AccessModeAccountBridge
 import UIKit
 import AsyncDisplayKit
 import Postbox
@@ -210,6 +211,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
     }
     private var modeRootPresentation: AccessRootPresentation?
+    private let accountDirectoryCleanupGate = AccountDirectoryCleanupGate()
     private let modeAccountPublication: AccessAccountPublicationGate
     private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
     private var pendingModeRoot: AccessRootPreparation?
@@ -1290,7 +1292,15 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             return true
         })
         
-        let _ = managedCleanupAccounts(networkArguments: networkArguments, accountManager: self.accountManager, rootPath: rootPath, auxiliaryMethods: makeTelegramAccountAuxiliaryMethods(uploadInBackground: appDelegate?.uploadInBackround), encryptionParameters: encryptionParameters).start()
+        let directoryCleanupGate = self.accountDirectoryCleanupGate
+        let cleanupIsMainApp = applicationBindings.isMainApp
+        // The legacy handler swallows logout failures and then erases metadata.
+        // Preserve raw records/keys for the exact owned cleanup job instead.
+        let _ = managedCleanupAccounts(networkArguments: networkArguments, accountManager: self.accountManager, rootPath: rootPath, auxiliaryMethods: makeTelegramAccountAuxiliaryMethods(uploadInBackground: appDelegate?.uploadInBackround), encryptionParameters: encryptionParameters,
+            preserveSessionEvidence: true, directoryDeletionGuard: { id, body in
+                guard cleanupIsMainApp else { return false }
+                return directoryCleanupGate.perform(recordID: id.int64, body)
+            }).start()
         
         self.updateNotificationTokensRegistration()
         
@@ -2067,12 +2077,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
     }
 
-    func configureModeAccountAccess(_ driver: AccessRootPresentation) {
+    func configureModeAccountAccess(_ driver: AccessRootPresentation, coordinator: AccessModeCoordinator) {
         assert(Queue.mainQueue().isCurrent())
         precondition(self.modeRootPresentation == nil)
         self.modeAccountPublication.requireModePolicy()
         self.initialModeAccountInfos = nil
         self.modeRootPresentation = driver
+        if self.applicationBindings.isMainApp { self.accountDirectoryCleanupGate.configure(coordinator) }
         self.clearModeAccountPresentation()
     }
 

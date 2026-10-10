@@ -36,6 +36,55 @@ network/async work inside it. A network cleanup job needs a fresh validation at
 submission and again when its result is consumed, and must preserve pending
 ownership on failure. The gate alone does not revoke a Telegram session.
 
+## Account-directory retention
+
+`withUnownedAccountDirectory` denies every configured membership and the exact
+active or claimed provisional record, including while locked or after reopening
+the vault. Missing/corrupt/unavailable state and Share cannot run its callback.
+For an unowned ID, the validated interprocess read lock covers the synchronous
+filesystem action, preventing concurrent enrollment from acquiring that ID
+before the action returns. This gate neither rewrites state nor grants access.
+
+`removeUnreferencedAccountDirectory` runs inside a fresh AccountManager
+transaction. It retains every raw authorized/temporary record and current auth;
+the view snapshot used for candidate discovery cannot grant deletion. Only the
+canonical decimal UInt64 account-directory name under the actual metadata root
+is accepted. Foreign roots, symbolic links, non-directories and unavailable path
+metadata refuse. The caller's durable gate must execute the removal synchronously
+inside that transaction; a previously returned Boolean cannot authorize later
+work. Removal means only local orphan cleanup, never server-session revocation
+or permission to acknowledge the provisional ledger.
+
+`AccountDirectoryCleanupGate` begins denied before native runtime configuration.
+Its coordinator snapshot is followed by a fresh durable read for each operation.
+A failed/corrupt startup has no permissive fallback.
+
+The background-cleanup adapter has a session-evidence retention option: do not
+prune old temporary records or start legacy `.loggedOut` handlers. The upstream
+handler swallows RPC errors before deleting metadata and cannot provide our
+required original-session proof. The Dual PIN caller must retain those records
+for the owned cleanup job. Ordinary upstream callers retain their existing
+legacy behavior; all candidate folder deletion uses the fresh transaction.
+The native SharedAccountContext supplies retention and the default-denied gate
+from startup. Only the successfully constructed main-app mode runtime configures
+that gate. Share always denies. The owned server/local completion job remains
+pending; retained logout/temporary records are intentional quarantine meanwhile.
+
+Directory-retention verification: five Core red cases had 25 expected failed
+assertions; focused green, full 161-case Mac and 163-case hosted iOS checks
+passed. Five native directory regressions produced 17 expected failures across
+52 cases, then all 52 passed. Three actual background regressions expanded the
+suite to 55: red had three expected failures, green passed with exit 0,
+162.607 seconds overall / 14.714 test seconds. Initial fixture failures/relaunches
+and the failed-test runner's post-test wait are recorded separately in PLANS.
+
+The connected native sources passed the full own-bundle app build, exit 0,
+343.662 Bazel seconds, 635 actions; saved source digests match. Retained artifact:
+`build-input/dual-pin-stage0/account-directory-retention-20261010/app-builds/20261010T085519Z/Telegram.ipa`,
+609,644,729 bytes, SHA-256
+`6f9acf658be0203466169dcf84894f8e9c48045158a32fbed0b211d126ea7f8b`.
+No actual session logout or physical-device behavior was exercised.
+
 ## Storage version and failures
 
 First provisional binding upgrades the vault payload to version 3. Existing
