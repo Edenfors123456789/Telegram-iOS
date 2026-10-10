@@ -69,3 +69,25 @@ ios_unit_test(
         "//visibility:public",
     ],
 )
+
+# Isolated boundary checks can pass independently of recorded upstream parser
+# compatibility failures in the broader TelegramCoreTests bundle.
+swift_library(
+    name = "NetworkAuthKeyScopeTestsLib",
+    testonly = True,
+    srcs = ["Tests/NetworkAuthKeyScopeTests.swift"],
+    deps = [
+        ":TelegramCore",
+        "//submodules/MtProtoKit:MtProtoKit",
+        "//submodules/TelegramApi:TelegramApi",
+        "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+    ],
+)
+
+ios_unit_test(
+    name = "NetworkAuthKeyScopeTests",
+    minimum_os_version = "15.0",
+    runner = ":TelegramCoreTestRunner",
+    deps = [":NetworkAuthKeyScopeTestsLib"],
+    visibility = ["//visibility:public"],
+)

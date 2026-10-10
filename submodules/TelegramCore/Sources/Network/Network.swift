@@ -1303,42 +1303,8 @@ public final class Network: NSObject {
         }
     }
     
-    public func request<T>(_ data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: NetworkRequestDependencyTag? = nil, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil) -> Signal<T, MTRpcError> {
-        let requestService = self.requestService
-        return Signal { [requestService] subscriber in
-            let request = NetworkEngineRequest(
-                payload: data.1.makeData(),
-                metadata: WrappedRequestMetadata(metadata: WrappedFunctionDescription(data.0), tag: tag),
-                shortMetadata: WrappedRequestShortMetadata(shortMetadata: WrappedShortFunctionDescription(data.0)),
-                parse: { response in
-                    if let result = data.2.parse(Buffer(data: response)) {
-                        return BoxedMessage(result)
-                    }
-                    return nil
-                },
-                options: NetworkEngineRequestOptions(),
-                shouldContinueAfterError: networkRequestErrorPolicy(automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, failOnServerErrors: false),
-                dependsOn: networkRequestDependency(tag: tag),
-                acknowledged: nil,
-                progress: nil,
-                completed: { result in
-                    switch result {
-                    case let .success(response):
-                        if let result = (response.result as! BoxedMessage).body as? T {
-                            subscriber.putNext(result)
-                            subscriber.putCompletion()
-                        }
-                        else {
-                            subscriber.putError(MTRpcError(errorCode: 500, errorDescription: "TL_VERIFICATION_ERROR"))
-                        }
-                    case let .failure(failure):
-                        subscriber.putError(failure.error)
-                    }
-                }
-            )
-            
-            return requestService.add(request)
-        }
+    public func request<T>(_ data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: NetworkRequestDependencyTag? = nil, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil, authKeyScope: NetworkRequestAuthKeyScope? = nil) -> Signal<T, MTRpcError> {
+        return networkRequestSignal(data, requestService: self.requestService, tag: tag, automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, authKeyScope: authKeyScope)
     }
     
     func updateNetworkSpeedLimitedEventNotifyInterval(value: Double) {
@@ -1360,6 +1326,47 @@ public final class Network: NSObject {
         self.networkSpeedLimitedEventState.with { state in
             return state.markNotifyTimestamp()
         }
+    }
+}
+
+func networkRequestSignal<T>(_ data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), requestService: NetworkEngineRequestService, tag: NetworkRequestDependencyTag? = nil, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil, authKeyScope: NetworkRequestAuthKeyScope? = nil) -> Signal<T, MTRpcError> {
+    return Signal { [requestService] subscriber in
+        if let scope = authKeyScope, scope.datacenterId <= 0 || scope.permanentKeyDigest.count != 32 {
+            subscriber.putError(MTRpcError(errorCode: 403, errorDescription: "AUTHORIZATION_SCOPE_CHANGED"))
+            return EmptyDisposable
+        }
+        let request = NetworkEngineRequest(
+            payload: data.1.makeData(),
+            metadata: WrappedRequestMetadata(metadata: WrappedFunctionDescription(data.0), tag: tag),
+            shortMetadata: WrappedRequestShortMetadata(shortMetadata: WrappedShortFunctionDescription(data.0)),
+            parse: { response in
+                if let result = data.2.parse(Buffer(data: response)) {
+                    return BoxedMessage(result)
+                }
+                return nil
+            },
+            options: NetworkEngineRequestOptions(authKeyScope: authKeyScope),
+            shouldContinueAfterError: networkRequestErrorPolicy(automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, failOnServerErrors: false),
+            dependsOn: networkRequestDependency(tag: tag),
+            acknowledged: nil,
+            progress: nil,
+            completed: { result in
+                switch result {
+                case let .success(response):
+                    if let result = (response.result as! BoxedMessage).body as? T {
+                        subscriber.putNext(result)
+                        subscriber.putCompletion()
+                    }
+                    else {
+                        subscriber.putError(MTRpcError(errorCode: 500, errorDescription: "TL_VERIFICATION_ERROR"))
+                    }
+                case let .failure(failure):
+                    subscriber.putError(failure.error)
+                }
+            }
+        )
+
+        return requestService.add(request)
     }
 }
 

@@ -52,6 +52,7 @@ final class RustRequestService: NetworkEngineRequestService {
     }
 
     func add(_ request: NetworkEngineRequest) -> Disposable {
+        guard !request.failIfAuthKeyScopeUnsupported(engineKind: .rust) else { return EmptyDisposable }
         guard let session = self.session else {
             return EmptyDisposable
         }
@@ -340,6 +341,7 @@ final class RustNetworkSession: NetworkEngineSession {
     }
 
     func add(_ request: NetworkEngineRequest) -> Disposable {
+        guard !request.failIfAuthKeyScopeUnsupported(engineKind: .rust) else { return EmptyDisposable }
         let flags = rustEngineRequestFlags(wantsQuickAck: request.acknowledged != nil, wantsProgress: request.progress != nil, needsTimeoutTimer: request.options.needsTimeoutTimer, withoutUpdates: self.withoutUpdates)
         let localId = self.runtime.nextRequestId()
         let pending = RustPendingRequest(request: request, localId: localId, flags: flags, expectedResponseSize: rustEngineExpectedResponseSize(request.options.expectedResponseSize))

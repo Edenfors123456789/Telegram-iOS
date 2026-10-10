@@ -40,14 +40,23 @@ ties authorization to an auth key, and [auth.logOut](https://core.telegram.org/m
 returns `auth.LoggedOut`. A current MTContext snapshot cannot establish which
 cached key a delayed request actually uses.
 
-## Pending integration
+## Higher-level integration
 
-Carry the immutable scope through TelegramCore request options and into
-MtProtoKit, retain it when requests move between engine services, and explicitly
-refuse it on engines that do not implement this boundary. Then connect the exact
-owned provisional-account adapter. A fingerprint observation alone grants no
-RPC, unlock, display or cleanup-completion authority. Native RPC errors remain
-unconfirmed; missing original evidence retains quarantine.
+TelegramCore now carries immutable `NetworkRequestAuthKeyScope` through the
+lazy `Network.request` signal, engine options and actual MTRequest conversion.
+Malformed scopes refuse before reaching the service. Failed Objective-C
+scope/request construction also refuses, rather than dropping the constraint.
+Pending moves retain the original request/options and ignore late replies from
+the previous service. Both the Rust request service and session refuse protected
+requests before queueing or FFI submission, including moved requests; ordinary
+requests retain their previous behavior.
+
+Connect the exact owned provisional-account adapter after this higher-level
+checkpoint is verified. A fingerprint observation alone grants no RPC, unlock,
+display or cleanup-completion authority. Native RPC errors remain unconfirmed;
+missing original evidence retains quarantine. Retain the provisional directory
+until exact cleanup completion: generic asynchronous directory cleanup must not
+erase the key evidence after auth metadata detachment or from a stale snapshot.
 
 ## Verification
 
@@ -83,3 +92,26 @@ executed 166 cases with five failed assertions in two API constructor-compatibil
 tests. All 164 other cases passed. These exact pre-change failures are retained
 in `telegramcore-baseline*`; that suite is not reported as passing or attributed
 to this transport change.
+
+Scope propagation red executed six isolated TelegramCore cases with 18 expected
+assertion failures. Actual Rust service/moved-request red executed three cases
+with seven expected failures. Both had zero unexpected XCTest errors. Fresh
+green passed six and three cases respectively, exit 0 (15.671 / 9.281 seconds
+overall). Actual conversion/move logic and local service refusal are exercised;
+the Rust fixtures create no FFI session or socket. Their ordinary-request cases
+verify existing unprotected completion/missing-session behavior.
+
+The broader post-change TelegramCore run executed 172 cases with the exact same
+five failed assertions as the 166-case pre-change baseline, zero unexpected
+errors, exit 1, 10.927 seconds overall / 3.407 test seconds. The exact assertion
+comparison is retained as `network-session-scope-20261010/parser-failure-comparison.json`.
+This is a baseline comparison, not a passing broad suite. Initial fixture and
+Swift/Objective-C interoperability compile failures executed no tests and remain
+in the logs. Scope integration full application compilation passed exit 0,
+311.985 seconds, 629 actions. Retained artifact under
+`build-input/dual-pin-stage0/network-session-scope-20261010/app-builds/20261010T075834Z/Telegram.ipa`,
+609,603,001 bytes, SHA-256
+`1df71c0b66d19bafb1dd20dcf71cb07be6e289382974a1d164b8ee90a190685c`.
+Source digests match the verified inputs. Dependent account bridge checks also
+passed 47 cases, zero failures, exit 0, 64.013 seconds overall / 13.482 test
+seconds. Native cleanup admission and directory protection remain pending.

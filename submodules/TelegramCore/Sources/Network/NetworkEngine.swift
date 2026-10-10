@@ -8,6 +8,18 @@ public enum NetworkEngineKind: String, Codable, Equatable {
     case rust
 }
 
+/// Exact original permanent-key identity for a protected API request.
+/// Invalid values remain protected and must refuse submission.
+public struct NetworkRequestAuthKeyScope: Equatable {
+    public let datacenterId: Int32
+    public let permanentKeyDigest: Data
+
+    public init(datacenterId: Int32, permanentKeyDigest: Data) {
+        self.datacenterId = datacenterId
+        self.permanentKeyDigest = permanentKeyDigest
+    }
+}
+
 /// Per-request transport options.
 public struct NetworkEngineRequestOptions: Equatable {
     /// When a request with `expectedResponseSize >= 512 KB` is cancelled while it is in flight,
@@ -16,10 +28,12 @@ public struct NetworkEngineRequestOptions: Equatable {
     /// When set, a pending request that sees no transport activity for 5 seconds triggers a
     /// secure transport reset and a new transport transaction.
     public var needsTimeoutTimer: Bool
+    public let authKeyScope: NetworkRequestAuthKeyScope?
     
-    public init(expectedResponseSize: Int32 = 0, needsTimeoutTimer: Bool = false) {
+    public init(expectedResponseSize: Int32 = 0, needsTimeoutTimer: Bool = false, authKeyScope: NetworkRequestAuthKeyScope? = nil) {
         self.expectedResponseSize = expectedResponseSize
         self.needsTimeoutTimer = needsTimeoutTimer
+        self.authKeyScope = authKeyScope
     }
 }
 
@@ -143,6 +157,16 @@ public final class NetworkEngineRequest {
             telemetry.completed(request: self, info: info, result: result)
         }
         self.completedImpl(result)
+    }
+
+    /// An engine must call this before accepting a protected request, including
+    /// moved requests. True means it completed locally without submitting.
+    public func failIfAuthKeyScopeUnsupported(engineKind: NetworkEngineKind) -> Bool {
+        guard self.options.authKeyScope != nil && engineKind != .mtProtoKit else { return false }
+        self.completed(.failure(NetworkEngineRequestFailure(
+            error: MTRpcError(errorCode: 403, errorDescription: "AUTHORIZATION_SCOPE_CHANGED"),
+            info: NetworkEngineResponseInfo(timestamp: 0, networkType: 0, duration: 0))))
+        return true
     }
     
     deinit {

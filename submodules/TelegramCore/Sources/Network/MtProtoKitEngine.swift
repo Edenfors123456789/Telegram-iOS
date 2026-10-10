@@ -200,7 +200,7 @@ private final class MtProtoKitPendingRequests {
     }
 }
 
-private final class MtProtoKitRequestService: NetworkEngineRequestService {
+final class MtProtoKitRequestService: NetworkEngineRequestService {
     private let requestService: MTRequestMessageService
     private let pendingRequests = MtProtoKitPendingRequests()
     
@@ -219,7 +219,21 @@ private final class MtProtoKitRequestService: NetworkEngineRequestService {
     }
     
     func add(_ request: NetworkEngineRequest) -> Disposable {
-        let mtRequest = MTRequest()
+        let mtRequest: MTRequest
+        if let value = request.options.authKeyScope {
+            guard let scope = MTRequestAuthKeyScope(datacenterId: value.datacenterId, permanentKeyDigest: value.permanentKeyDigest),
+                  let protected = MTRequest(authKeyScope: scope) else {
+                // Optional Objective-C construction must not downgrade a
+                // protected request to an unconstrained one.
+                request.completed(.failure(NetworkEngineRequestFailure(
+                    error: MTRpcError(errorCode: 403, errorDescription: "AUTHORIZATION_SCOPE_CHANGED"),
+                    info: NetworkEngineResponseInfo(timestamp: 0, networkType: 0, duration: 0))))
+                return EmptyDisposable
+            }
+            mtRequest = protected
+        } else {
+            mtRequest = MTRequest()
+        }
         let internalId: Any! = mtRequest.internalId
         let pendingRequests = self.pendingRequests
         let pending = pendingRequests.insert(request: request, internalId: internalId)
