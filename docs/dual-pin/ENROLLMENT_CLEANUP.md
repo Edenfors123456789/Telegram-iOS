@@ -137,6 +137,14 @@ separate keys and authorization transfer; it does not establish our tested
 all-datacenter logout guarantee. Final cleanup admission must resolve those
 boundaries before removing the local evidence.
 
+Acknowledgment now requires a receipt for every bound original key of the
+current claim; a missing one refuses with `invalidTransition` and writes
+nothing, so the ledger, the retained directory and the claim survive lock and
+reopen. An owner that never bound a key needs no receipt, because authorization
+may use only an already-bound original key; the native authorization route must
+keep that ordering. Four Core regressions (red: five failures, one a follow-on
+of the premature acknowledgment) then 171 Mac / 173 hosted Core cases passed.
+
 Fresh receipt checks passed six focused cases, then 167 Mac and 169 hosted iOS
 Core cases with zero failures. The real red had 36 expected failed assertions,
 zero unexpected errors. Exact commands/results are retained under

@@ -122,10 +122,15 @@ extension AccessCredentialStore {
 
     /// Native adapter acknowledges only after exact record/session cleanup and
     /// an authoritative absence check. This ticket grants no display authority.
+    /// Every bound original key needs its own receipt first. An owner that never
+    /// bound a key needs none: authorization may use only an already-bound key.
     func acknowledgeEnrollmentCleanup(_ ticket: AccountEnrollmentCleanupTicket) throws {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
             try requireEnrollmentCleanup(ticket, state: state)
+            let cleanup = state.pendingEnrollmentCleanup!
+            let revoked = (cleanup.revokedSessions ?? []).map(\.sessionKey)
+            guard (cleanup.sessionKeys ?? []).allSatisfy(revoked.contains) else { throw AccessError.invalidTransition }
             state.pendingEnrollmentCleanup = nil
             stored = state
         }

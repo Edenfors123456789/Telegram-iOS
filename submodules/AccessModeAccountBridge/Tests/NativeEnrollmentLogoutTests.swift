@@ -32,6 +32,15 @@ private struct OwnedLogoutFixture {
     let source: LogoutKeySource
 }
 
+/// Fixture owner removal: acknowledgment needs a receipt per bound key.
+/// Simulated only; no native session is revoked.
+private func removeOwner(_ o: OwnedLogoutFixture) throws {
+    for key in try o.coordinator.boundEnrollmentSessionKeys(o.owner) {
+        try o.coordinator.recordEnrollmentSessionRevocation(o.owner, sessionKey: key)
+    }
+    try o.coordinator.acknowledgeEnrollmentCleanup(o.owner)
+}
+
 final class NativeEnrollmentLogoutTests: XCTestCase {
     private func value<T>(_ signal: Signal<T, NoError>) throws -> T {
         let done = expectation(description: "native logout result"), result = Atomic<T?>(value: nil)
@@ -174,7 +183,7 @@ final class NativeEnrollmentLogoutTests: XCTestCase {
                 case 1: engine = .rust
                 default:
                     // Component fixture only; no native session was revoked.
-                    do { try o.coordinator.acknowledgeEnrollmentCleanup(o.owner) }
+                    do { try removeOwner(o) }
                     catch { XCTFail("fixture ownership removal refused: \(error)") }
                 }
             }, rpc: { _ in starts += 1; return .single(()) })
@@ -205,7 +214,7 @@ final class NativeEnrollmentLogoutTests: XCTestCase {
                     if variant == 0 { o.source.main = replacement }
                     else {
                         do {
-                            try o.coordinator.acknowledgeEnrollmentCleanup(o.owner)
+                            try removeOwner(o)
                             let permit = try o.coordinator.beginEnrollment(ticket: o.ticket)
                             try o.coordinator.bindEnrollment(permit, provisionalRecordID: newID, ticket: o.ticket)
                         } catch { XCTFail("component ownership replacement refused: \(error)") }
@@ -240,7 +249,7 @@ final class NativeEnrollmentLogoutTests: XCTestCase {
             if observations == 2 {
                 // The first sample precedes the saved-key lookup; replace its
                 // owner during the second sample, before final Core validation.
-                do { try o.coordinator.acknowledgeEnrollmentCleanup(o.owner) }
+                do { try removeOwner(o) }
                 catch { XCTFail("fixture owner replacement refused: \(error)") }
             }
         }
