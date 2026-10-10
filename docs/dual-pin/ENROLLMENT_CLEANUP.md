@@ -73,10 +73,14 @@ Before exposing authorization:
 3. On bind failure, cancel only that newly created matching auth record before
    transaction commit; do not replace or delete another flow's record.
 4. Pass only current-role phone metadata to AuthorizationUI. Guard authorization
-   promotion against stale/missing/different current auth IDs, and revalidate
-   before account publication. The upstream common promotion helper currently
-   calls generic removeAuth and has not yet received these guards. There are six
-   callers in `Authorization.swift` and another in `Account/Account.swift`.
+   promotion and revalidate before account publication. The common metadata
+   helper now refuses missing/stale/different current auth IDs, an already
+   existing record, and mismatched/ambiguous environment attributes before any
+   mutation. Its seven existing call references in `Authorization.swift` and
+   `Account/Account.swift` share that helper. This guard does not authenticate
+   the confirmed self, current root or role. Upstream callers still write their
+   own Postbox authorization state and may report completion independently;
+   native admission must separately refuse those stale results.
 5. On cancel, lock, failed completion or restart, claim exact cleanup before
    side effects; stop the owned pending flow, clean/revoke only its provisional
    session, verify absence, then acknowledge. Do not claim an active enrollment
@@ -93,9 +97,10 @@ admission, or full stage-3 acceptance.
 ## Fresh component verification
 
 Core cleanup/schema checks passed 144 Mac cases and 146 hosted iOS cases; the
-fresh legacy migration suite passed 29 hosted cases. Metadata creation passed
-nine hosted cases with zero failures, exit 0, 91.872 seconds overall / 3.500 test
-seconds. They use unique temporary fixture directories, no real account session
+fresh legacy migration suite passed 29 hosted cases. Metadata bridge passed
+16 hosted cases with zero failures, exit 0, 52.508 seconds overall / 4.010 test
+seconds, including nine creation/cancellation and seven common-promotion cases.
+They use unique temporary fixture directories, no real account session
 or network authorization. The independent-reader case verifies actual atomic
 AccountManager metadata and the reopened encrypted vault; the publication
 observer reads exact durable ownership before the raw auth record is emitted.
@@ -104,7 +109,10 @@ Replay and cancellation regressions were observed failing before the correction:
 seven-case replay red had three expected failures; nine-case cancellation red
 had seven expected failures and zero unexpected XCTest errors. That red runner
 timed out after the actual tests completed; both facts remain in the logs. Green
-finished successfully. Retained evidence is under ignored
+finished successfully. Common promotion red ran 14 cases with 21 expected
+failures; its expanded red ran 16 with 27 expected failures. Both had zero
+unexpected XCTest errors and later hit the upstream result-export `_values`
+KeyError. All 16 corrected cases then passed with exit 0. Retained evidence is under ignored
 `build-input/dual-pin-stage3/account-bridge-creation-*`.
 
 Hosted metadata command (run serially with other Bazel/build invocations):

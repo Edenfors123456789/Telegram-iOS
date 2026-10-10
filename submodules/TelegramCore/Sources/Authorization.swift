@@ -16,26 +16,8 @@ public enum AuthorizationCodeRequestError {
 }
 
 func switchToAuthorizedAccount(transaction: AccountManagerModifier<TelegramAccountManagerTypes>, account: UnauthorizedAccount, isSupportUser: Bool) {
-    let nextSortOrder = (transaction.getRecords().map({ record -> Int32 in
-        for attribute in record.attributes {
-            if case let .sortOrder(sortOrder) = attribute {
-                return sortOrder.order
-            }
-        }
-        return 0
-    }).max() ?? 0) + 1
-    transaction.updateRecord(account.id, { _ in
-        var attributes: [TelegramAccountManagerTypes.Attribute] = [
-            .environment(AccountEnvironmentAttribute(environment: account.testingEnvironment ? .test : .production)),
-            .sortOrder(AccountSortOrderAttribute(order: nextSortOrder))
-        ]
-        if isSupportUser {
-            attributes.append(.supportUserInfo(AccountSupportUserInfo()))
-        }
-        return AccountRecord(id: account.id, attributes: attributes, temporarySessionId: nil)
-    })
-    transaction.setCurrentId(account.id)
-    transaction.removeAuth()
+    switchAuthorizationRecord(transaction: transaction, id: account.id,
+        testingEnvironment: account.testingEnvironment, isSupportUser: isSupportUser)
 }
 
 private struct Regex {
