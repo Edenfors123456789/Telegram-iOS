@@ -4,6 +4,17 @@ Status: stage-2 foundation verified, with partial stage-3 PIN/AppLock/account/ro
 
 ## Authentication and configuration
 
+Peer identity preserves the exact account, namespace and signed ID. Upstream
+`Postbox/Sources/Peer.swift` restores namespace 3 through `Int32(bitPattern:)`, and
+`TelegramCore/Sources/State/UpdatesApiUtils.swift` converts the API encrypted-chat
+ID directly to Int64. Secret chat IDs therefore accept exact nonzero signed Int32
+values, including negative ones, without `abs` or packed-ID conversion. Cloud
+namespaces 0/1/2 retain positive IDs; secret overflow and unknown namespaces deny
+access. New signed-secret settings are readable by this validator; an older fork
+with the positive-only validator will refuse those settings and must not reset or
+fall back to raw accounts. Native routes and real secret-history adapters still
+need integration; this identity validation does not supply a message boundary.
+
 `AccessCredentialStore.initialize` is initial-only. Its synchronous `prepareProtectedResources` hook runs under the initial-only file lock after config/PIN validation and proof construction but before vault publication. Existing owner authentication and preserved legacy resource keys are mandatory in the product adapter. Missing/corrupt/unsupported existing state cannot be reset by initialization. `isConfigured` returns false only when both the vault and its committed-state witness are confirmed absent; invalid/unsupported state, a missing previously witnessed vault or unavailable Keychain throws. There is no biometric/recovery API. Use the fork's own bundle/App Group namespace and Keychain service, never another application's production store.
 
 Both six-digit ASCII PIN records are checked for each normal candidate. Verification failure commits the applicable independent budgets before returning; a valid B clears only B's budget. A reboot with a blocked budget starts another full 60-second delay. Grants leave the store only after the successful atomic commit; they are not Codable and have no public initializer. Changing a PIN requires its current code and invalidates prior grants.

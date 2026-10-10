@@ -36,7 +36,18 @@ public struct ChatIdentity: Codable, Hashable, Sendable {
         self.peerID = peerID
     }
 
-    var supported: Bool { (0 ... 3).contains(peerNamespace) && peerID > 0 }
+    var supported: Bool {
+        switch peerNamespace {
+        case 0 ... 2:
+            return peerID > 0
+        case 3:
+            // API encrypted-chat IDs and Postbox namespace 3 preserve a signed
+            // Int32. Do not turn a negative ID into another chat with abs(id).
+            return peerID != 0 && Int32(exactly: peerID) != nil
+        default:
+            return false
+        }
+    }
 }
 
 public struct AccountMembership: Codable, Equatable, Sendable {
