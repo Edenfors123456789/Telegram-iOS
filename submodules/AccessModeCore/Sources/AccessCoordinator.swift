@@ -232,6 +232,20 @@ public final class AccessModeCoordinator {
         return try store.boundEnrollmentSessionKeys(cleanup)
     }
 
+    /// Native adapter calls only after consuming its verified opaque RPC result.
+    public func recordEnrollmentSessionRevocation(_ cleanup: AccountEnrollmentCleanupTicket, sessionKey: AccountEnrollmentSessionKey) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        try store.recordEnrollmentSessionRevocation(cleanup, sessionKey: sessionKey)
+    }
+
+    /// Exact recorded keys only; an empty result never proves server cleanup.
+    public func confirmedEnrollmentSessionKeys(_ cleanup: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        return try store.confirmedEnrollmentSessionKeys(cleanup)
+    }
+
     public func claimEnrollmentCleanup() throws -> AccountEnrollmentCleanupTicket? {
         mutex.lock(); defer { mutex.unlock() }
         guard process == .mainApplication else { throw AccessError.authenticationRequired }

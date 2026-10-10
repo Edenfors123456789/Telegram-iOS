@@ -17,6 +17,7 @@ struct PendingEnrollmentCleanup: Codable {
     let environment: AccountEnvironment
     var claimID: UUID?
     var sessionKeys: [AccountEnrollmentSessionKey]? = nil
+    var revokedSessions: [EnrollmentSessionRevocationRecord]? = nil
 
     func validate(configuration: AccessConfiguration) throws {
         guard installation == configuration.installation,
@@ -25,6 +26,14 @@ struct PendingEnrollmentCleanup: Codable {
             guard !sessionKeys.isEmpty, sessionKeys.count <= 32,
                   sessionKeys.allSatisfy({ $0.isValid }),
                   Set(sessionKeys.map(\.datacenterID)).count == sessionKeys.count else { throw AccessError.corrupt }
+        }
+        if let revokedSessions {
+            guard let claimID, let sessionKeys, !revokedSessions.isEmpty,
+                  revokedSessions.count <= sessionKeys.count,
+                  Set(revokedSessions.map { $0.sessionKey.datacenterID }).count == revokedSessions.count,
+                  revokedSessions.allSatisfy({ $0.claimID == claimID && $0.sessionKey.isValid && sessionKeys.contains($0.sessionKey) }) else {
+                throw AccessError.corrupt
+            }
         }
     }
 }
@@ -62,6 +71,33 @@ extension AccessCredentialStore {
         try file.withReadState { state in
             try requireEnrollmentCleanup(ticket, state: state)
             return state.pendingEnrollmentCleanup!.sessionKeys ?? []
+        }
+    }
+
+    func recordEnrollmentSessionRevocation(_ ticket: AccountEnrollmentCleanupTicket, sessionKey: AccountEnrollmentSessionKey) throws {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try requireEnrollmentCleanup(ticket, state: state)
+            guard sessionKey.isValid, var cleanup = state.pendingEnrollmentCleanup,
+                  cleanup.sessionKeys?.contains(sessionKey) == true else { throw AccessError.staleAuthorization }
+            var receipts = cleanup.revokedSessions ?? []
+            if let existing = receipts.first(where: { $0.sessionKey.datacenterID == sessionKey.datacenterID }) {
+                guard existing.claimID == ticket.claimID, existing.sessionKey == sessionKey else { throw AccessError.staleAuthorization }
+            } else {
+                receipts.append(EnrollmentSessionRevocationRecord(claimID: ticket.claimID, sessionKey: sessionKey))
+            }
+            cleanup.revokedSessions = receipts
+            state.pendingEnrollmentCleanup = cleanup
+            state.version = max(state.version, 5)
+            try state.validate()
+            stored = state
+        }
+    }
+
+    func confirmedEnrollmentSessionKeys(_ ticket: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
+        try file.withReadState { state in
+            try requireEnrollmentCleanup(ticket, state: state)
+            return state.pendingEnrollmentCleanup!.revokedSessions?.map(\.sessionKey) ?? []
         }
     }
 

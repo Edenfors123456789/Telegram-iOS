@@ -114,7 +114,7 @@ struct AccessVaultState: Codable {
     var pendingOwnerPINChange: PendingOwnerPINChange? = nil
 
     func validate() throws {
-        guard (1 ... 4).contains(version) else { throw AccessError.unsupportedVersion }
+        guard (1 ... 5).contains(version) else { throw AccessError.unsupportedVersion }
         try configuration.validate()
         try a.validate(expectedMode: .a)
         try b.validate(expectedMode: .b)
@@ -135,6 +135,7 @@ struct AccessVaultState: Codable {
         if let pendingEnrollmentCleanup {
             guard version >= 3 else { throw AccessError.corrupt }
             if pendingEnrollmentCleanup.sessionKeys != nil, version < 4 { throw AccessError.corrupt }
+            if pendingEnrollmentCleanup.revokedSessions != nil, version < 5 { throw AccessError.corrupt }
             try pendingEnrollmentCleanup.validate(configuration: configuration)
         }
         if let pendingOwnerPINChange {
