@@ -122,7 +122,14 @@ owner-PIN journal recovery preserves the results and version. Failed pre-write
 key/filesystem operations preserve the prior bytes for exact retry.
 
 Only the native verified opaque-response consumer may call the record method.
-That consumer remains pending. A record proves only its recorded scoped result;
+`AccountEnrollmentBridge.revokeSession` is that consumer: after a confirmed
+scoped reply and a fresh detached-metadata check under the vault's read lock, it
+records the transport's exact original key (`revokedSessionKey`) and returns
+`.confirmed` only if that write succeeded. A transport with no key never sends
+the request; a key that is not bound to the cleanup, or any failed vault access
+after the reply, returns `.unavailable` with no receipt and keeps the ledger.
+The record is written outside the read lock, since recording takes the write
+lock. A record proves only its recorded scoped result;
 it neither invents results for other datacenters nor grants account access,
 local deletion or ledger acknowledgment. The official
 [datacenter documentation](https://core.telegram.org/api/datacenter) describes

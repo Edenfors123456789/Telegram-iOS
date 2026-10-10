@@ -50,6 +50,7 @@ final class FakeLogoutTransport: AccountEnrollmentLogoutTransport {
     var starts = 0
     var hasOriginalAuthorizationBinding = false
     var isOriginalSessionCurrent = true
+    var revokedSessionKey: AccountEnrollmentSessionKey? = try? AccountEnrollmentSessionKey(datacenterID: 2, digest: Data(repeating: 0x61, count: 32))
     var onStart: (() -> Void)?
     init(recordID: Int64, environment: AccessModeCore.AccountEnvironment, reply: Signal<AccountEnrollmentLogoutReply, NoError>) {
         self.recordID = recordID; self.environment = environment; self.reply = reply
@@ -113,7 +114,8 @@ final class AccountEnrollmentBridgeTests: XCTestCase {
         let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
         let a = try ready(coordinator)
         let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
-        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        guard case let .created(id, permit) = creation else { XCTFail("Current creation refused"); return }
+        try bindFakeSessionKey(coordinator, permit, a)
         let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
         XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
         let unbound = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.rpcError(code: 401, type: "AUTH_KEY_UNREGISTERED")))
@@ -156,7 +158,8 @@ final class AccountEnrollmentBridgeTests: XCTestCase {
         let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
         let a = try ready(coordinator)
         let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .test))
-        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        guard case let .created(id, permit) = creation else { XCTFail("Current creation refused"); return }
+        try bindFakeSessionKey(coordinator, permit, a)
         XCTAssertTrue(try value(f.manager.transaction { switchAuthorizationRecord(transaction: $0, id: id, testingEnvironment: true, isSupportUser: false) }))
         try coordinator.lock()
         let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
@@ -212,15 +215,43 @@ final class AccountEnrollmentBridgeTests: XCTestCase {
         XCTAssertEqual(try coordinator.withPolicy(a) { $0.mode }, .a)
     }
 
+    /// A confirmation needs a bound key to persist its receipt against.
+    private func bindFakeSessionKey(_ coordinator: AccessModeCoordinator, _ permit: AccountEnrollmentPermit, _ ticket: AccessTicket) throws {
+        let key = try XCTUnwrap(FakeLogoutTransport(recordID: 0, environment: .production, reply: .complete()).revokedSessionKey)
+        try coordinator.bindEnrollmentSessionKey(permit, sessionKey: key, ticket: ticket)
+    }
+
     private func logoutUnavailable(_ result: AccountEnrollmentLogoutResult, file: StaticString = #filePath, line: UInt = #line) {
         guard case .unavailable = result else { XCTFail("Unconfirmed logout produced proof", file: file, line: line); return }
+    }
+
+    func testConfirmationNeedsAKeyItCanRecordAReceiptFor() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, permit) = creation else { XCTFail("Current creation refused"); return }
+        try bindFakeSessionKey(coordinator, permit, a)
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        // No key never reaches the server; an unbound key's reply is not a proof.
+        let keyless = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.loggedOut))
+        keyless.revokedSessionKey = nil
+        logoutUnavailable(try value(AccountEnrollmentBridge.revokeSession(transport: keyless, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)))
+        XCTAssertEqual(keyless.starts, 0)
+        let unbound = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.loggedOut))
+        unbound.revokedSessionKey = try AccountEnrollmentSessionKey(datacenterID: 4, digest: Data(repeating: 0x62, count: 32))
+        logoutUnavailable(try value(AccountEnrollmentBridge.revokeSession(transport: unbound, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)))
+        XCTAssertEqual(unbound.starts, 1)
+        XCTAssertEqual(try coordinator.confirmedEnrollmentSessionKeys(cleanup), [])
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
     }
 
     func testRetainedLogoutSignalCannotIssueAnotherRPC() throws {
         let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
         let a = try ready(coordinator)
         let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
-        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        guard case let .created(id, permit) = creation else { XCTFail("Current creation refused"); return }
+        try bindFakeSessionKey(coordinator, permit, a)
         let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
         XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
         let transport = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.loggedOut))

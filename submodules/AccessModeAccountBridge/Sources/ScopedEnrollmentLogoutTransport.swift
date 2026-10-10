@@ -17,6 +17,7 @@ final class ScopedEnrollmentLogoutTransport: AccountEnrollmentLogoutTransport {
     private let consumed = Atomic<Bool>(value: false)
     var recordID: Int64 { source.recordID }
     var environment: AccessModeCore.AccountEnvironment { source.environment }
+    var revokedSessionKey: AccountEnrollmentSessionKey? { originalMain }
 
     init(source: AccountEnrollmentSessionKeySource, accountManager: AccountManager<TelegramAccountManagerTypes>,
         coordinator: AccessModeCoordinator, cleanup: AccountEnrollmentCleanupTicket,

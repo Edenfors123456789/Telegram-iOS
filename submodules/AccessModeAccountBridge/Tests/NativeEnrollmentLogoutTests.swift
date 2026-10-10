@@ -90,6 +90,45 @@ final class NativeEnrollmentLogoutTests: XCTestCase {
         XCTAssertEqual(starts, 1)
         XCTAssertEqual(try o.coordinator.claimEnrollmentCleanup()?.provisionalRecordID, o.id.int64)
         XCTAssertEqual(try o.coordinator.boundEnrollmentSessionKeys(o.owner), [try key()])
+        XCTAssertEqual(try o.coordinator.confirmedEnrollmentSessionKeys(o.owner), [try key()])
+    }
+
+    func testScopedSuccessRecordsOnlyTheRevokedOriginalKey() throws {
+        // One scoped auth.LoggedOut proves nothing about another datacenter's key.
+        let second = try key(2, 0x52), o = try owned(extra: second)
+        o.source.additional[2] = second
+        let adapter = transport(o)
+        guard case .confirmed = try value(AccountEnrollmentBridge.revokeSession(transport: adapter, accountManager: o.f.manager,
+            coordinator: o.coordinator, cleanup: o.owner)) else { XCTFail("valid scoped fake reply denied"); return }
+        XCTAssertEqual(try o.coordinator.confirmedEnrollmentSessionKeys(o.owner), [try key()])
+        XCTAssertEqual(try o.coordinator.boundEnrollmentSessionKeys(o.owner), [try key(), second])
+    }
+
+    func testConfirmationRequiresItsDurableReceipt() throws {
+        // Fail each later vault key load in turn: whichever step fails, a
+        // confirmation is returned exactly when its receipt was persisted.
+        var refusedAfterReply = false
+        for offset in 1 ... 6 {
+            let o = try owned(); var starts = 0
+            let adapter = transport(o, rpc: { _ in
+                starts += 1
+                o.f.keys.failOnLoad = o.f.keys.loads + offset
+                return .single(())
+            })
+            let result = try value(AccountEnrollmentBridge.revokeSession(transport: adapter, accountManager: o.f.manager,
+                coordinator: o.coordinator, cleanup: o.owner))
+            o.f.keys.failOnLoad = nil
+            XCTAssertEqual(starts, 1)
+            let receipts = try o.coordinator.confirmedEnrollmentSessionKeys(o.owner)
+            switch result {
+            case .confirmed: XCTAssertEqual(receipts, [try key()], "offset \(offset)")
+            case .unavailable:
+                refusedAfterReply = true
+                XCTAssertEqual(receipts, [], "offset \(offset)")
+            }
+            XCTAssertEqual(try o.coordinator.claimEnrollmentCleanup()?.provisionalRecordID, o.id.int64)
+        }
+        XCTAssertTrue(refusedAfterReply, "no failed post-reply vault access was exercised")
     }
 
     func testAllSavedDatacentersAreRequiredAndAChangedMainNeedsANewAdapter() throws {
@@ -152,6 +191,7 @@ final class NativeEnrollmentLogoutTests: XCTestCase {
             unavailable(try value(AccountEnrollmentBridge.revokeSession(transport: adapter, accountManager: o.f.manager, coordinator: o.coordinator, cleanup: o.owner)))
             XCTAssertEqual(starts, 1)
             XCTAssertEqual(try o.coordinator.claimEnrollmentCleanup()?.provisionalRecordID, o.id.int64)
+            XCTAssertEqual(try o.coordinator.confirmedEnrollmentSessionKeys(o.owner), [])
         }
     }
 
@@ -175,6 +215,7 @@ final class NativeEnrollmentLogoutTests: XCTestCase {
             unavailable(try value(AccountEnrollmentBridge.revokeSession(transport: adapter, accountManager: o.f.manager, coordinator: o.coordinator, cleanup: o.owner)))
             XCTAssertEqual(starts, 1)
             XCTAssertEqual(try o.coordinator.claimEnrollmentCleanup()?.provisionalRecordID, variant == 0 ? o.id.int64 : newID)
+            if variant == 0 { XCTAssertEqual(try o.coordinator.confirmedEnrollmentSessionKeys(o.owner), []) }
         }
     }
 

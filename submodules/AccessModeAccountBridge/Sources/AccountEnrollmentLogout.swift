@@ -15,6 +15,8 @@ protocol AccountEnrollmentLogoutTransport: AnyObject {
     var environment: AccessModeCore.AccountEnvironment { get }
     var hasOriginalAuthorizationBinding: Bool { get }
     var isOriginalSessionCurrent: Bool { get }
+    /// The exact original key a confirmed reply revokes; nil never confirms.
+    var revokedSessionKey: AccountEnrollmentSessionKey? { get }
     func logout() -> Signal<AccountEnrollmentLogoutReply, NoError>
 }
 
@@ -90,7 +92,8 @@ extension AccountEnrollmentBridge {
                 } catch { return false }
             }
             let request = ready |> mapToSignal { allowed -> Signal<AccountEnrollmentLogoutResult, NoError> in
-                guard allowed, !cancelled.with({ $0 }), transport.isOriginalSessionCurrent else { return .single(.unavailable) }
+                guard allowed, !cancelled.with({ $0 }), transport.isOriginalSessionCurrent,
+                      let sessionKey = transport.revokedSessionKey else { return .single(.unavailable) }
                 return transport.logout()
                 |> timeout(timeoutSeconds, queue: Queue.concurrentDefaultQueue(), alternate: .single(.unavailable))
                 |> take(1)
@@ -101,11 +104,14 @@ extension AccountEnrollmentBridge {
                     return accountManager.transaction { transaction -> AccountEnrollmentLogoutResult in
                         guard !cancelled.with({ $0 }), transport.isOriginalSessionCurrent else { return .unavailable }
                         do {
-                            return try coordinator.withEnrollmentCleanup(cleanup) {
-                                guard cleanupMetadataIsDetached(transaction: transaction, recordID: transport.recordID,
-                                    environment: transport.environment, cleanup: cleanup) else { return .unavailable }
-                                return .confirmed(AccountEnrollmentSessionRevocation(accountManager: accountManager, coordinator: coordinator, cleanup: cleanup))
-                            }
+                            guard try coordinator.withEnrollmentCleanup(cleanup, {
+                                cleanupMetadataIsDetached(transaction: transaction, recordID: transport.recordID,
+                                    environment: transport.environment, cleanup: cleanup)
+                            }) else { return .unavailable }
+                            // Outside the read lock: recording takes the vault's write lock.
+                            // A proof exists only once its durable receipt does.
+                            try coordinator.recordEnrollmentSessionRevocation(cleanup, sessionKey: sessionKey)
+                            return .confirmed(AccountEnrollmentSessionRevocation(accountManager: accountManager, coordinator: coordinator, cleanup: cleanup))
                         } catch { return .unavailable }
                     }
                 }
