@@ -164,6 +164,36 @@ never become a cleanup target. Old unexposed version-1/2 pending enrollment data
 does not create new cleanup authority; unknown raw records must be quarantined,
 never guessed or deleted.
 
+## Local completion
+
+`AccountEnrollmentBridge.completeProvisionalCleanup` runs after the scoped
+logouts. In one AccountManager transaction it reads the bound and confirmed
+keys (each read validates the owner) and returns `.awaitingRevocation`, changing
+nothing, while any bound key lacks a receipt. Otherwise, under the cleanup read
+gate, it requires detached metadata with the owned environment and removes the
+owned raw record if one was promoted, exactly as upstream logout does
+(`updateRecord { nil }`). Unrelated records and a newer current auth are kept.
+
+Acknowledgment happens only in a later transaction that sees the removal
+committed: it rechecks detachment and record absence under the read gate, then
+acknowledges outside it (Core rechecks every receipt under its write lock). A
+crash in between leaves an owned ledger with an absent record, which a retry
+completes; the reverse order could drop the ledger while the record survived.
+A resolved owner cannot complete again.
+
+The account directory is not deleted here. Acknowledgment releases it to the
+gated background cleanup (`withUnownedAccountDirectory` now admits the ID),
+which removes it on its next scan of the account records, at the latest on the
+next launch. Meanwhile the exclusive `mkdir` reservation keeps a new enrollment
+from adopting it. The native owning job must release its provisional account
+object (and so its open Postbox) before calling completion.
+
+Six regressions: the real red ran 76 hosted cases with 27 expected failures,
+zero unexpected errors, against a refusing stub; green passed all 76 with exit
+0. One case fails each vault key load in turn and requires that a failure
+between removal and acknowledgment was actually exercised and then retried.
+Evidence: `build-input/dual-pin-stage0/local-completion-20261010/`.
+
 ## Native integration still pending
 
 `AccessModeAccountBridge` now implements the metadata-creation boundary in an
