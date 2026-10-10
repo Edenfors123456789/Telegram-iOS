@@ -10,9 +10,29 @@ public struct InitialSetupAccount: Equatable, Sendable {
     }
 }
 
+/// Non-logged-out AccountManager metadata, independent of loaded peer results.
+/// The native caller must also report any current authorization record.
+public struct InitialAccountRecord: Hashable, Sendable {
+    public let recordID: Int64
+    public let environment: AccountEnvironment
+    public init(recordID: Int64, environment: AccountEnvironment) {
+        self.recordID = recordID; self.environment = environment
+    }
+}
+
 extension AccessConfiguration {
-    public static func initial(installation: UUID, accounts: [InitialSetupAccount],
-                               sharedAccount: ObservedAccount) throws -> AccessConfiguration {
+    public static func initial(installation: UUID, records: [InitialAccountRecord], hasPendingAuthorization: Bool,
+                               accounts: [InitialSetupAccount], sharedAccount: ObservedAccount) throws -> AccessConfiguration {
+        let loaded = accounts.map { InitialAccountRecord(recordID: $0.observed.recordID, environment: $0.observed.environment) }
+        guard !hasPendingAuthorization, !records.isEmpty, records.count == accounts.count,
+              Set(records.map(\.recordID)).count == records.count,
+              Set(loaded.map(\.recordID)).count == loaded.count,
+              Set(records) == Set(loaded) else { throw AccessError.invalidConfiguration }
+        return try buildInitial(installation: installation, accounts: accounts, sharedAccount: sharedAccount)
+    }
+
+    private static func buildInitial(installation: UUID, accounts: [InitialSetupAccount],
+                                     sharedAccount: ObservedAccount) throws -> AccessConfiguration {
         guard !accounts.isEmpty, accounts.contains(where: { $0.observed == sharedAccount }),
               accounts.allSatisfy({ $0.observed.userNamespace == 0 && $0.observed.userID > 0 }) else {
             throw AccessError.invalidConfiguration
