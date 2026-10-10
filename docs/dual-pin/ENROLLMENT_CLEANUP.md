@@ -123,6 +123,26 @@ Acknowledgment is valid only after the native adapter has proved exact cleanup
 and authoritative record absence. Component tests simulate this boundary with
 fixtures that have no actual Telegram session; they do not prove server logout.
 
+`bindOriginalSessionKey` reads the existing `.persistent` key from the supplied
+actual `UnauthorizedAccount.network.context`; it never asks the engine to create
+a key. Only a positive Int32 datacenter, a full 256-byte permanent key and the
+permanent lifetime marker are accepted. SHA-256 is the only value persisted in
+Core. A temporary key or absent/malformed key returns a neutral failure.
+
+Before persistence, the bridge checks the account directory beneath the supplied
+`accounts-metadata` root, the exact still-current raw auth ID, absence of a
+promoted record, unambiguous environment and the current Core permit/ticket.
+The request is single-use. Queued disposal prevents writes; disposal during
+persistence retains any committed binding while cancelling completion authority.
+A key change detected at write completion locks access and retains the saved
+original. No auth record or server session is deleted by this operation.
+
+This Bool reports durable evidence only. It grants no authorization, unlock or
+logout proof. Native caller/root integration, datacenter-migration handling,
+restart reconciliation and request-level PFS provenance remain pending. The
+future caller must repeat ownership and key validation at actual submission;
+an earlier successful binding cannot authorize a later request on its own.
+
 Before exposing authorization:
 
 1. Validate a current role/root and persist the enrollment origin.
@@ -157,10 +177,13 @@ admission, or full stage-3 acceptance.
 
 Fresh continuation checks passed 156 Mac cases and 158 hosted iOS Core cases,
 including the original-session-binding and version-4 recovery checks. The legacy
-migration suite passed 29 hosted cases. Metadata bridge passed 33 hosted cases
-with zero failures, exit 0, 54.137 seconds overall / 8.697 test
+migration suite passed 29 hosted cases. Expanded metadata/native-binding bridge
+passed 41 hosted cases with zero failures, exit 0, 60.556 seconds overall / 11.679 test
 seconds, including nine creation/cancellation, seven common-promotion and eight
 auth-detachment and nine scoped logout/response cases.
+Eight additional binding cases verify actual `MTDatacenterAuthInfo` parsing,
+an independent SHA-256 vector, durable publication/reopen, metadata/path refusal,
+stale/Share/replacement denial and queued/in-flight disposal or key change.
 They use unique temporary fixture directories, no real account session
 or network authorization. The independent-reader case verifies actual atomic
 AccountManager metadata and the reopened encrypted vault; the publication
@@ -177,6 +200,13 @@ exit 0, 275.189 seconds, 538 actions. Retained artifact:
 SHA-256 `591ed42ac7e28897f42898bc5a1a6102998b6717da74bef7f23e421c63273630`.
 This checkpoint adds no configured authorization route or native cleanup job;
 it does not establish a new simulator launch or physical-device/server behavior.
+
+Native-binding red ran 39 cases with eight expected failures and zero unexpected
+XCTest errors. Expanded 41-case green then passed. The unchanged verified bridge
+sources passed full app compilation, exit 0, 37.915 seconds, 52 actions; artifact
+`build-input/dual-pin-stage0/native-session-binding-20261010/app-builds/20261010T064641Z/Telegram.ipa`,
+SHA-256 `b976b0548245eaddfbe5c9386120a23e278fc8815dfcf8ecf26a0c556d7471e4`.
+Commands and retained test/build results are in that ignored stage-0 directory.
 
 Replay and cancellation regressions were observed failing before the correction:
 seven-case replay red had three expected failures; nine-case cancellation red

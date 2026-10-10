@@ -7,7 +7,7 @@ swift_library(
     module_name = "AccessModeAccountBridge",
     srcs = glob(["Sources/**/*.swift"]),
     copts = ["-warnings-as-errors"],
-    deps = ["//submodules/AccessModeCore", "//submodules/TelegramCore", "//submodules/TelegramApi", "//submodules/SSignalKit/SwiftSignalKit"],
+    deps = ["//submodules/AccessModeCore", "//submodules/TelegramCore", "//submodules/TelegramApi", "//submodules/SSignalKit/SwiftSignalKit", "//submodules/MtProtoKit"],
     visibility = ["//visibility:public"],
 )
 
@@ -16,7 +16,7 @@ swift_library(
     testonly = True,
     srcs = glob(["Tests/**/*.swift"]),
     copts = ["-warnings-as-errors"],
-    deps = [":AccessModeAccountBridge", "//submodules/AccessModeCore", "//submodules/TelegramCore", "//submodules/SSignalKit/SwiftSignalKit"],
+    deps = [":AccessModeAccountBridge", "//submodules/AccessModeCore", "//submodules/TelegramCore", "//submodules/SSignalKit/SwiftSignalKit", "//submodules/MtProtoKit"],
 )
 
 ios_test_runner(name = "AccessModeAccountBridgeTestRunner", device_type = "iPhone 17", os_version = "26.5")

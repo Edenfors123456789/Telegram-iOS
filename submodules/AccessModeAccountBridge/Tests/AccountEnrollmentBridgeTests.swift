@@ -5,7 +5,7 @@ import Foundation
 @testable import TelegramCore
 import SwiftSignalKit
 
-private final class BridgeDeviceKey: AccessDeviceKeyProvider {
+final class BridgeDeviceKey: AccessDeviceKeyProvider {
     var namespaces: Set<String> = []
     var loads = 0
     var failOnLoad: Int?
@@ -20,7 +20,7 @@ private final class BridgeDeviceKey: AccessDeviceKeyProvider {
     func recordCommittedState(namespace: String) throws { namespaces.insert(namespace) }
 }
 
-private final class BridgeFixture {
+final class BridgeFixture {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dual-pin-account-bridge-tests-\(UUID())")
     let keys = BridgeDeviceKey()
     let store: AccessCredentialStore
@@ -32,7 +32,7 @@ private final class BridgeFixture {
         let shared = AccountIdentity(installation: installation, environment: .production, recordID: 10, userID: 10)
         config = try AccessConfiguration(installation: installation, accounts: [.init(identity: shared, ownership: .shared)], selectedA: shared, selectedB: shared)
         _ = try store.initialize(configuration: config, pinA: "123456", pinB: "654321")
-        let path = directory.appendingPathComponent("account-manager").path
+        let path = directory.appendingPathComponent("accounts-metadata").path
         guard !FileManager.default.fileExists(atPath: path) else { throw AccessError.invalidConfiguration }
         // Upstream creates missing atomic metadata only with this flag. This is
         // solely our verified-new temporary UUID fixture, never existing data.
