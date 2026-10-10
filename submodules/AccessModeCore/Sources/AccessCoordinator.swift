@@ -217,6 +217,21 @@ public final class AccessModeCoordinator {
         catch { invalidate(); throw error }
     }
 
+    /// Persist before authorization can use this original persistent key.
+    public func bindEnrollmentSessionKey(_ permit: AccountEnrollmentPermit, sessionKey: AccountEnrollmentSessionKey, ticket: AccessTicket) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        do { try store.bindEnrollmentSessionKey(permit, sessionKey: sessionKey, grant: verified) }
+        catch { invalidate(); throw error }
+    }
+
+    public func boundEnrollmentSessionKeys(_ cleanup: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        return try store.boundEnrollmentSessionKeys(cleanup)
+    }
+
     public func claimEnrollmentCleanup() throws -> AccountEnrollmentCleanupTicket? {
         mutex.lock(); defer { mutex.unlock() }
         guard process == .mainApplication else { throw AccessError.authenticationRequired }

@@ -80,6 +80,28 @@ extension AccessCredentialStore {
         }
     }
 
+    func bindEnrollmentSessionKey(_ permit: AccountEnrollmentPermit, sessionKey: AccountEnrollmentSessionKey, grant: AuthenticatedModeGrant) throws {
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            try state.require(grant, issuer: issuer)
+            try requireEnrollment(permit, grant: grant, state: state)
+            guard sessionKey.isValid, let record = state.pendingEnrollment?.provisionalRecordID,
+                  var cleanup = state.pendingEnrollmentCleanup, cleanup.flowID == permit.flowID,
+                  cleanup.provisionalRecordID == record, cleanup.claimID == nil else { throw AccessError.staleAuthorization }
+            var keys = cleanup.sessionKeys ?? []
+            if let existing = keys.first(where: { $0.datacenterID == sessionKey.datacenterID }) {
+                guard existing == sessionKey else { throw AccessError.invalidConfiguration }
+            } else {
+                guard keys.count < 32 else { throw AccessError.invalidConfiguration }
+                keys.append(sessionKey)
+            }
+            cleanup.sessionKeys = keys
+            state.pendingEnrollmentCleanup = cleanup
+            state.version = max(state.version, 4)
+            stored = state
+        }
+    }
+
     /// The Telegram adapter supplies confirmed self identity, never a phone/name.
     /// Unavailable means it must revoke/remove ONLY its provisional session.
     func completeEnrollment(_ permit: AccountEnrollmentPermit, confirmedAccount: AccountIdentity,

@@ -16,10 +16,16 @@ struct PendingEnrollmentCleanup: Codable {
     let provisionalRecordID: Int64
     let environment: AccountEnvironment
     var claimID: UUID?
+    var sessionKeys: [AccountEnrollmentSessionKey]? = nil
 
     func validate(configuration: AccessConfiguration) throws {
         guard installation == configuration.installation,
               !configuration.accounts.contains(where: { $0.identity.recordID == provisionalRecordID }) else { throw AccessError.corrupt }
+        if let sessionKeys {
+            guard !sessionKeys.isEmpty, sessionKeys.count <= 32,
+                  sessionKeys.allSatisfy({ $0.isValid }),
+                  Set(sessionKeys.map(\.datacenterID)).count == sessionKeys.count else { throw AccessError.corrupt }
+        }
     }
 }
 
@@ -38,6 +44,13 @@ extension AccessCredentialStore {
         try file.withReadState { state in
             try requireEnrollmentCleanup(ticket, state: state)
             return try body()
+        }
+    }
+
+    func boundEnrollmentSessionKeys(_ ticket: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
+        try file.withReadState { state in
+            try requireEnrollmentCleanup(ticket, state: state)
+            return state.pendingEnrollmentCleanup!.sessionKeys ?? []
         }
     }
 

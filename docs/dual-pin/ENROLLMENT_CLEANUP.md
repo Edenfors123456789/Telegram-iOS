@@ -44,6 +44,26 @@ higher version, including after recovery. Earlier fork builds reject version 3
 instead of ignoring its cleanup ownership. The configuration and encrypted
 envelope versions are independent and remain unchanged.
 
+The Core component can additionally persist an original-session binding for
+each datacenter: a positive datacenter ID and a 32-byte SHA-256 digest, never
+the raw authorization key. Binding requires the current main-app enrollment
+permit, a ready access ticket and the already-bound exact provisional record.
+Repeated identical binding is idempotent; changing a datacenter's digest is
+denied. A durable cleanup claim cancels further binding.
+
+The first session binding upgrades the encrypted payload to version 4.
+Ordinary versions 1–3 remain readable; older cleanup records return no invented
+session fingerprints. Earlier fork readers reject version 4 rather than lose
+its ownership evidence. Duplicate datacenters, malformed digests, empty binding
+arrays and bindings in downgraded payloads refuse access. Owner-PIN recovery
+preserves version 4 and the bindings. Only a current main-app cleanup ticket can
+read them after lock/reopen; this grants no account data or unlock.
+
+This storage boundary accepts a digest from a trusted adapter. Native extraction
+of the actual persistent key, binding before authorization, reconciliation after
+restart and verifying which key a logout RPC used remain pending. The Core
+component alone does not establish original-session provenance or server logout.
+
 A new-schema bound enrollment requires its matching cleanup ledger. Missing,
 aliased, inconsistent or downgraded ownership is corrupt and refuses access;
 it cannot trigger fresh setup. Failed claim/ack writes preserve the exact prior
@@ -135,15 +155,28 @@ admission, or full stage-3 acceptance.
 
 ## Fresh component verification
 
-Core cleanup/schema checks passed 149 Mac cases and 151 hosted iOS cases; the
-fresh legacy migration suite passed 29 hosted cases. Metadata bridge passed
-33 hosted cases with zero failures, exit 0, 54.048 seconds overall / 8.691 test
+Fresh continuation checks passed 156 Mac cases and 158 hosted iOS Core cases,
+including the original-session-binding and version-4 recovery checks. The legacy
+migration suite passed 29 hosted cases. Metadata bridge passed 33 hosted cases
+with zero failures, exit 0, 54.137 seconds overall / 8.697 test
 seconds, including nine creation/cancellation, seven common-promotion and eight
 auth-detachment and nine scoped logout/response cases.
 They use unique temporary fixture directories, no real account session
 or network authorization. The independent-reader case verifies actual atomic
 AccountManager metadata and the reopened encrypted vault; the publication
 observer reads exact durable ownership before the raw auth record is emitted.
+
+Current commands, source/tool digests and copied XCTest results are retained in
+`build-input/dual-pin-stage0/chat-continuation-20261010/`. These component checks
+do not prove that the native Telegram transport has bound an actual key; its
+public RPC-error handling still retains unconfirmed ownership.
+
+The same Core sources passed a full own-bundle simulator application build,
+exit 0, 275.189 seconds, 538 actions. Retained artifact:
+`build-input/dual-pin-stage0/chat-continuation-20261010/app-builds/20261010T062600Z/Telegram.ipa`,
+SHA-256 `591ed42ac7e28897f42898bc5a1a6102998b6717da74bef7f23e421c63273630`.
+This checkpoint adds no configured authorization route or native cleanup job;
+it does not establish a new simulator launch or physical-device/server behavior.
 
 Replay and cancellation regressions were observed failing before the correction:
 seven-case replay red had three expected failures; nine-case cancellation red
