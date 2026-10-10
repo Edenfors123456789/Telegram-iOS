@@ -562,6 +562,19 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
         }
     }
 
+    /// Module-private initial migration path. Its caller has already checked the
+    /// absent Core vault/main process and verified the legacy owner. Generic
+    /// management stays latched off throughout publication and a failed retry.
+    func setInitialModeOwnerPasscode(_ code: String, session: PasscodeSession?) throws -> (reference: PasscodeCredentialReference, session: PasscodeSession) {
+        try self.serialized {
+            guard self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
+            if let session { try session.require(scope: .settings, passcode: true) }
+            let result = try self.updatePasscode(code, kind: .digits6, access: session, createSession: true, initialModeOwner: true)
+            guard let replacement = result.session else { throw PasscodeError.unavailable }
+            return (result.reference, replacement)
+        }
+    }
+
     private func requirePasscodeManagement(_ session: PasscodeSession) throws {
         switch session.scope {
         case .managePasscode, .settings:
@@ -650,8 +663,8 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
         }
     }
 
-    private func updatePasscode(_ code: String, kind: PasscodeKind, access: PasscodeSession?, createSession: Bool) throws -> (reference: PasscodeCredentialReference, session: PasscodeSession?) {
-        guard !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
+    private func updatePasscode(_ code: String, kind: PasscodeKind, access: PasscodeSession?, createSession: Bool, initialModeOwner: Bool = false) throws -> (reference: PasscodeCredentialReference, session: PasscodeSession?) {
+        guard initialModeOwner ? self.modePINManagementRequired : !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
         guard !Task.isCancelled else { throw PasscodeError.cancelled }
         if let access { try self.requirePasscodeManagement(access) }
         var record = try self.existingOrCreate()
@@ -693,20 +706,33 @@ public final class PasscodeCredentialStore: @unchecked Sendable {
     public func setProtectionEnabled(_ enabled: Bool, session: PasscodeSession) throws {
         try session.require(scope: .settings, passcode: true)
         try self.serialized {
-            var record = try self.validatedRecord(session)
-            guard record.kind != nil else {
-                throw PasscodeError.authenticationRequired
-            }
-            record.unprotectedKey = enabled ? nil : try session.withKey { $0 }
-            record.protectionEnabled = enabled
-            if !enabled, let account = record.biometricAccount {
-                record.biometricCleanup.append(account)
-                record.biometricAccount = nil
-            }
-            record.revision &+= 1
-            try self.commit(record, retaining: session)
-            try self.cleanupBiometrics(record: &record)
+            guard !self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
+            try self.updateProtectionEnabled(enabled, session: session)
         }
+    }
+
+    /// Initial migration can only enable protection while generic management is
+    /// denied. It cannot expose an unprotected key or authorize a mode unlock.
+    func enableInitialModeProtection(session: PasscodeSession) throws {
+        try session.require(scope: .settings, passcode: true)
+        try self.serialized {
+            guard self.modePINManagementRequired else { throw PasscodeError.authenticationRequired }
+            try self.updateProtectionEnabled(true, session: session)
+        }
+    }
+
+    private func updateProtectionEnabled(_ enabled: Bool, session: PasscodeSession) throws {
+        var record = try self.validatedRecord(session)
+        guard record.kind != nil else { throw PasscodeError.authenticationRequired }
+        record.unprotectedKey = enabled ? nil : try session.withKey { $0 }
+        record.protectionEnabled = enabled
+        if !enabled, let account = record.biometricAccount {
+            record.biometricCleanup.append(account)
+            record.biometricAccount = nil
+        }
+        record.revision &+= 1
+        try self.commit(record, retaining: session)
+        try self.cleanupBiometrics(record: &record)
     }
 
     public func disablePasscode(session: PasscodeSession) throws {

@@ -43,7 +43,11 @@ public final class DualPINLegacyMigration {
             } else {
                 guard try self.legacy.protectionSettings().passcode == nil else { throw PasscodeError.authenticationRequired }
             }
-            let result = try self.legacy.setPasscodeWithSettingsSession(pinA, kind: .digits6, session: ownerSession)
+            // Validate owner first, then deny every generic PIN/protection writer
+            // before rewrap. Keep the latch across partial failure: authenticated
+            // known-new-A retry uses these module-private initial-only methods.
+            self.legacy.requireModePINManagement()
+            let result = try self.legacy.setInitialModeOwnerPasscode(pinA, session: ownerSession)
             defer { result.session.invalidate() }
             reference = result.reference
             // This must reach AccountManager even if biometric cleanup or the access
@@ -53,7 +57,7 @@ public final class DualPINLegacyMigration {
             // Dual PIN must not publish while that key remains accessible through
             // the ordinary unprotected-resource-session path.
             if try !self.legacy.protectionSettings().enabled {
-                try self.legacy.setProtectionEnabled(true, session: result.session)
+                try self.legacy.enableInitialModeProtection(session: result.session)
             }
             try self.legacy.disableBiometrics(session: result.session)
         })

@@ -369,6 +369,108 @@ final class DualPINReferenceCommitTests: XCTestCase {
 }
 
 final class DualPINMigrationTests: XCTestCase {
+    func testGenericPINWriteDuringInitialReferencePublicationCannotDivergeFromCoreA() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let key = try f.resourceKey(code: "1234")
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        XCTAssertNoThrow(try f.install(owner: owner, publish: { reference in
+            let concurrent = try f.legacy.verify("123456", reference: reference, scope: .settings)
+            defer { concurrent.invalidate() }
+            let committed = f.storage.items["credential"]
+            XCTAssertThrowsError(try f.legacy.setPasscode("222222", kind: .digits6, session: concurrent))
+            XCTAssertEqual(f.storage.items["credential"], committed)
+        }))
+        XCTAssertEqual(try? f.resourceKey(code: "123456"), key)
+        XCTAssertEqual(try? f.vault.authenticate(pin: "123456").mode, .a)
+        XCTAssertEqual(try? f.vault.authenticate(pin: "654321").mode, .b)
+    }
+
+    func testConfiguredOwnerCannotExposeProtectedResourceKeyThroughGenericProtectionToggle() throws {
+        let f = try MigrationFixture()
+        _ = try f.install(owner: nil)
+        f.legacy.requireModePINManagement()
+        let key = try f.resourceKey(code: "123456")
+        let owner = try f.legacy.verify("123456", scope: .settings)
+        defer { owner.invalidate() }
+        let committed = f.storage.items["credential"]
+        XCTAssertThrowsError(try f.legacy.setProtectionEnabled(true, session: owner))
+        XCTAssertThrowsError(try f.legacy.setProtectionEnabled(false, session: owner))
+        XCTAssertEqual(f.storage.items["credential"], committed)
+        XCTAssertThrowsError(try f.legacy.unprotectedSession(namespace: "owner-test"))
+        XCTAssertEqual(try f.resourceKey(code: "123456"), key)
+        XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
+    }
+
+    func testFailedInitialPublicationKeepsGenericWritesDeniedAndKnownNewOwnerCanRetry() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let key = try f.resourceKey(code: "1234")
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        XCTAssertThrowsError(try f.install(owner: owner, publish: { _ in throw PasscodeError.unavailable }))
+        XCTAssertFalse(try f.vault.isConfigured())
+        let retry = try f.legacy.verify("123456", scope: .settings)
+        let committed = f.storage.items["credential"]
+        var cleaned = false
+        XCTAssertThrowsError(try f.legacy.resetCredential(removingProtectedData: { cleaned = true }))
+        XCTAssertFalse(cleaned); XCTAssertEqual(f.storage.items["credential"], committed)
+        // A destructive failure in the red implementation must not cascade into
+        // unrelated unexpected throws; the surviving credential is required first.
+        guard f.storage.items["credential"] == committed else { return }
+        XCTAssertThrowsError(try f.legacy.migrateLegacy(code: "123456", kind: .digits6))
+        XCTAssertNoThrow(try f.install(owner: retry))
+        XCTAssertEqual(try? f.resourceKey(code: "123456"), key)
+        XCTAssertEqual(try? f.vault.authenticate(pin: "654321").mode, .b)
+    }
+
+    func testInitialOwnerWriteFailurePreservesOldPINAndAllowsFreshAuthenticatedRetry() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let key = try f.resourceKey(code: "1234")
+        let original = f.storage.items["credential"]
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        f.storage.deniedWrite = "credential"
+        XCTAssertThrowsError(try f.install(owner: owner, publish: { _ in XCTFail("Failed owner write cannot publish a reference") }))
+        owner.invalidate()
+        XCTAssertEqual(f.storage.items["credential"], original)
+        XCTAssertFalse(try f.vault.isConfigured())
+        XCTAssertEqual(try f.resourceKey(code: "1234"), key)
+        let retry = try f.legacy.verify("1234", scope: .settings)
+        XCTAssertThrowsError(try f.legacy.setPasscode("222222", kind: .digits6, session: retry))
+        f.storage.deniedWrite = nil
+        XCTAssertNoThrow(try f.install(owner: retry))
+        XCTAssertEqual(try? f.resourceKey(code: "123456"), key)
+        XCTAssertEqual(try? f.vault.authenticate(pin: "654321").mode, .b)
+    }
+
+    func testRejectedOwnerScopeCannotLatchOffOrdinaryVerifiedOwnerManagement() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let wrong = try f.legacy.verify("1234", scope: .resource(namespace: "owner-test"))
+        defer { wrong.invalidate() }
+        XCTAssertThrowsError(try f.install(owner: wrong))
+        XCTAssertFalse(try f.vault.isConfigured())
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        XCTAssertNoThrow(try f.legacy.setPasscode("222222", kind: .digits6, session: owner))
+    }
+
+    func testPrivateInitialHelpersRequireLatchAndCurrentSettingsOwnerScope() throws {
+        let f = try MigrationFixture()
+        XCTAssertThrowsError(try f.legacy.setInitialModeOwnerPasscode("123456", session: nil))
+        XCTAssertNil(f.storage.items["credential"])
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let key = try f.resourceKey(code: "1234")
+        let resource = try f.legacy.verify("1234", scope: .resource(namespace: "owner-test"))
+        defer { resource.invalidate() }
+        f.legacy.requireModePINManagement()
+        let original = f.storage.items["credential"]
+        XCTAssertThrowsError(try f.legacy.setInitialModeOwnerPasscode("123456", session: resource))
+        XCTAssertThrowsError(try f.legacy.setInitialModeOwnerPasscode("123456", session: nil))
+        XCTAssertThrowsError(try f.legacy.enableInitialModeProtection(session: resource))
+        XCTAssertEqual(f.storage.items["credential"], original)
+        XCTAssertEqual(try f.resourceKey(code: "1234"), key)
+    }
+
     func testModeManagementRequirementRejectsLegacyOnlyChangesAndDestructiveReset() throws {
         let f = try MigrationFixture()
         let reference = try f.install(owner: nil)
