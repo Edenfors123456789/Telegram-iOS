@@ -6,6 +6,17 @@
 @class MTRequestErrorContext;
 @class MTRpcError;
 
+// A per-request constraint. Invalid values retain the constraint and must deny
+// submission; they must never turn a protected request into an ordinary one.
+@interface MTRequestAuthKeyScope : NSObject
+
+@property (nonatomic, readonly) int32_t datacenterId;
+@property (nonatomic, copy, readonly) NSData *permanentKeyDigest;
+
+- (instancetype)initWithDatacenterId:(int32_t)datacenterId permanentKeyDigest:(NSData *)permanentKeyDigest;
+
+@end
+
 @interface MTRequestResponseInfo : NSObject
 
 @property (nonatomic, readonly) int32_t networkType;
@@ -17,6 +28,9 @@
 @end
 
 @interface MTRequest : NSObject
+
+@property (nonatomic, strong, readonly) MTRequestAuthKeyScope *authKeyScope;
+- (instancetype)initWithAuthKeyScope:(MTRequestAuthKeyScope *)authKeyScope;
 
 @property (nonatomic, strong, readonly) id internalId;
 

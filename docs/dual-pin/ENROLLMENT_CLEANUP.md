@@ -158,7 +158,10 @@ The [Telegram PFS specification](https://core.telegram.org/api/pfs) binds each
 temporary key to a permanent key. A current context snapshot does not establish
 which cached key a delayed request actually uses. The next transport boundary
 must check the selected key at every preparation, including retries, and retain
-successful temporary-key binding provenance.
+successful temporary-key binding provenance. The verified MtProtoKit component
+now does this; [protected transport](PROTECTED_SESSION_TRANSPORT.md) records its
+boundary. Higher-level request options and the native account adapter remain
+pending, so the public native logout transport is still closed.
 
 Before exposing authorization:
 

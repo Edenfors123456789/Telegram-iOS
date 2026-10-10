@@ -1,6 +1,10 @@
 #import <MtProtoKit/MTDatacenterAuthInfo.h>
 #import <MtProtoKit/MTDatacenterSaltInfo.h>
 
+NSString *const MTBoundPermanentAuthKeyDigestAttribute = @"boundPermanentAuthKeySHA256";
+NSString *const MTBoundTemporaryAuthKeyDigestAttribute = @"boundTemporaryAuthKeySHA256";
+NSString *const MTBoundAuthKeyDatacenterAttribute = @"boundAuthKeyDatacenterId";
+
 @implementation MTDatacenterAuthKey
 
 - (instancetype)initWithAuthKey:(NSData *)authKey authKeyId:(int64_t)authKeyId validUntilTimestamp:(int32_t)validUntilTimestamp notBound:(bool)notBound {

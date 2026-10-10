@@ -1013,24 +1013,32 @@ static const NSUInteger MTMaxUnacknowledgedMessageCount = 64;
             bool anyTransactionHasHighPriorityMessages = false;
             
             NSMutableArray *messageServiceTransactions = [[NSMutableArray alloc] init];
+            // This cached AuthInfo supplied the exact local authKey above;
+            // looking up the context again could observe a different key.
+            MTDatacenterAuthInfo *selectedAuthInfo = nil;
+            if (!_useUnauthorizedMode && _validAuthInfo.selector == authInfoSelector && [_validAuthInfo.authInfo.authKey isEqualToData:authKey.authKey] && _validAuthInfo.authInfo.authKeyId == authKey.authKeyId) {
+                selectedAuthInfo = _validAuthInfo.authInfo;
+            }
             for (id<MTMessageService> messageService in _messageServices)
             {
-                if ([messageService respondsToSelector:@selector(mtProtoMessageTransaction:authInfoSelector:sessionInfo:scheme:)])
+                MTMessageTransaction *messageTransaction = nil;
+                if ([messageService respondsToSelector:@selector(mtProtoMessageTransaction:authInfoSelector:selectedAuthInfo:sessionInfo:scheme:)]) {
+                    messageTransaction = [messageService mtProtoMessageTransaction:self authInfoSelector:authInfoSelector selectedAuthInfo:selectedAuthInfo sessionInfo:transactionSessionInfo scheme:scheme];
+                } else if ([messageService respondsToSelector:@selector(mtProtoMessageTransaction:authInfoSelector:sessionInfo:scheme:)]) {
+                    messageTransaction = [messageService mtProtoMessageTransaction:self authInfoSelector:authInfoSelector sessionInfo:transactionSessionInfo scheme:scheme];
+                }
+                if (messageTransaction != nil)
                 {
-                    MTMessageTransaction *messageTransaction = [messageService mtProtoMessageTransaction:self authInfoSelector:authInfoSelector sessionInfo:transactionSessionInfo scheme:scheme];
-                    if (messageTransaction != nil)
+                    for (MTOutgoingMessage *message in messageTransaction.messagePayload)
                     {
-                        for (MTOutgoingMessage *message in messageTransaction.messagePayload)
+                        if (message.hasHighPriority)
                         {
-                            if (message.hasHighPriority)
-                            {
-                                anyTransactionHasHighPriorityMessages = true;
-                                break;
-                            }
+                            anyTransactionHasHighPriorityMessages = true;
+                            break;
                         }
-                        
-                        [messageServiceTransactions addObject:messageTransaction];
                     }
+
+                    [messageServiceTransactions addObject:messageTransaction];
                 }
             }
             

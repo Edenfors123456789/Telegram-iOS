@@ -5,6 +5,19 @@
 #import <os/lock.h>
 #import <libkern/OSAtomic.h>
 
+@implementation MTRequestAuthKeyScope
+
+- (instancetype)initWithDatacenterId:(int32_t)datacenterId permanentKeyDigest:(NSData *)permanentKeyDigest {
+    self = [super init];
+    if (self != nil) {
+        _datacenterId = datacenterId;
+        _permanentKeyDigest = [permanentKeyDigest copy];
+    }
+    return self;
+}
+
+@end
+
 @implementation MTRequestResponseInfo
 
 - (instancetype)initWithNetworkType:(int32_t)networkType timestamp:(double)timestamp duration:(double)duration {
@@ -66,10 +79,16 @@
 
 - (instancetype)init
 {
+    return [self initWithAuthKeyScope:nil];
+}
+
+- (instancetype)initWithAuthKeyScope:(MTRequestAuthKeyScope *)authKeyScope
+{
     self = [super init];
     if (self != nil)
     {
         _internalId = [[MTRequestInternalId alloc] init];
+        _authKeyScope = authKeyScope;
         _dependsOnPasswordEntry = true;
     }
     return self;

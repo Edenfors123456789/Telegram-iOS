@@ -18,6 +18,7 @@
 #import <MtProtoKit/MTRpcError.h>
 #import <MtProtoKit/MTTimer.h>
 #import <MtProtoKit/MTQueue.h>
+#import <MtProtoKit/MTEncryption.h>
 #import "MTBuffer.h"
 #import "MTInternalInterfaces.h"
 
@@ -200,7 +201,15 @@
         [bindMtProto stop];
         
         if (success) {
-            MTDatacenterAuthInfo *authInfo = [[MTDatacenterAuthInfo alloc] initWithAuthKey:authKey.authKey authKeyId:authKey.authKeyId validUntilTimestamp:authKey.validUntilTimestamp saltSet:@[[[MTDatacenterSaltInfo alloc] initWithSalt:serverSalt firstValidMessageId:timestamp lastValidMessageId:timestamp + (29.0 * 60.0) * 4294967296]] authKeyAttributes:nil];
+            NSDictionary *binding = nil;
+            if (persistentAuthInfo.authKey.length == 256 && persistentAuthInfo.validUntilTimestamp == INT32_MAX && authKey.authKey.length == 256 && authKey.validUntilTimestamp > 0 && authKey.validUntilTimestamp < INT32_MAX && strongSelf->_datacenterId > 0 && strongSelf->_datacenterId <= INT32_MAX) {
+                binding = @{
+                    MTBoundPermanentAuthKeyDigestAttribute: MTSha256(persistentAuthInfo.authKey),
+                    MTBoundTemporaryAuthKeyDigestAttribute: MTSha256(authKey.authKey),
+                    MTBoundAuthKeyDatacenterAttribute: @((int32_t)strongSelf->_datacenterId)
+                };
+            }
+            MTDatacenterAuthInfo *authInfo = [[MTDatacenterAuthInfo alloc] initWithAuthKey:authKey.authKey authKeyId:authKey.authKeyId validUntilTimestamp:authKey.validUntilTimestamp saltSet:@[[[MTDatacenterSaltInfo alloc] initWithSalt:serverSalt firstValidMessageId:timestamp lastValidMessageId:timestamp + (29.0 * 60.0) * 4294967296]] authKeyAttributes:binding];
             
             [strongSelf->_context updateAuthInfoForDatacenterWithId:strongSelf->_datacenterId authInfo:authInfo selector:strongSelf->_authKeyInfoSelector];
             

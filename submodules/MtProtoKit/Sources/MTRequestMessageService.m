@@ -18,6 +18,7 @@
 #import <MtProtoKit/MTApiEnvironment.h>
 #import <MtProtoKit/MTDatacenterAuthInfo.h>
 #import <MtProtoKit/MTSignal.h>
+#import <MtProtoKit/MTEncryption.h>
 #import "MTBuffer.h"
 
 #import "MTInternalMessageParser.h"
@@ -553,8 +554,40 @@
 
 - (MTMessageTransaction *)mtProtoMessageTransaction:(MTProto *)mtProto authInfoSelector:(MTDatacenterAuthInfoSelector)authInfoSelector sessionInfo:(MTSessionInfo *)sessionInfo scheme:(MTTransportScheme *)scheme
 {
+    // Legacy callers cannot prove which key was selected. Ordinary requests
+    // remain supported; a protected request must fail closed on this path.
+    return [self mtProtoMessageTransaction:mtProto authInfoSelector:authInfoSelector selectedAuthInfo:nil sessionInfo:sessionInfo scheme:scheme];
+}
+
+static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger datacenterId, MTDatacenterAuthInfoSelector selector, MTDatacenterAuthInfo *authInfo) {
+    if (scope == nil) {
+        return true;
+    }
+    if (scope.datacenterId <= 0 || datacenterId != scope.datacenterId || scope.permanentKeyDigest.length != 32 || authInfo.authKey.length != 256) {
+        return false;
+    }
+    if (selector == MTDatacenterAuthInfoSelectorPersistent) {
+        return authInfo.validUntilTimestamp == INT32_MAX && [MTSha256(authInfo.authKey) isEqualToData:scope.permanentKeyDigest];
+    }
+    if ((selector != MTDatacenterAuthInfoSelectorEphemeralMain && selector != MTDatacenterAuthInfoSelectorEphemeralMedia) || authInfo.validUntilTimestamp <= 0 || authInfo.validUntilTimestamp == INT32_MAX) {
+        return false;
+    }
+    NSDictionary *attributes = authInfo.authKeyAttributes;
+    if (![attributes isKindOfClass:[NSDictionary class]]) {
+        return false;
+    }
+    id permanent = attributes[MTBoundPermanentAuthKeyDigestAttribute];
+    id temporary = attributes[MTBoundTemporaryAuthKeyDigestAttribute];
+    id boundDatacenter = attributes[MTBoundAuthKeyDatacenterAttribute];
+    return [permanent isKindOfClass:[NSData class]] && [temporary isKindOfClass:[NSData class]] && [boundDatacenter isKindOfClass:[NSNumber class]]
+        && [permanent isEqual:scope.permanentKeyDigest] && [temporary isEqual:MTSha256(authInfo.authKey)] && [boundDatacenter isEqual:@(scope.datacenterId)];
+}
+
+- (MTMessageTransaction *)mtProtoMessageTransaction:(MTProto *)mtProto authInfoSelector:(MTDatacenterAuthInfoSelector)authInfoSelector selectedAuthInfo:(MTDatacenterAuthInfo *)selectedAuthInfo sessionInfo:(MTSessionInfo *)sessionInfo scheme:(MTTransportScheme *)scheme
+{
     NSMutableArray *messages = nil;
     NSMutableDictionary *requestInternalIdToMessageInternalId = nil;
+    NSMutableArray<MTRequest *> *deniedRequests = [[NSMutableArray alloc] init];
     
     bool requestsWillInitializeApi = _apiEnvironment != nil && ![_apiEnvironment.apiInitializationHash isEqualToString:[_context authInfoForDatacenterWithId:mtProto.datacenterId selector:authInfoSelector].authKeyAttributes[@"apiInitializationHash"]];
     
@@ -562,6 +595,10 @@
     
     for (MTRequest *request in _requests)
     {
+        if (!MTRequestMatchesAuthKeyScope(request.authKeyScope, mtProto.datacenterId, authInfoSelector, selectedAuthInfo)) {
+            [deniedRequests addObject:request];
+            continue;
+        }
         if (request.dependsOnPasswordEntry && [_context isPasswordInputRequiredForDatacenterWithId:mtProto.datacenterId])
             continue;
         
@@ -669,6 +706,24 @@
         }
     }
     
+    if (deniedRequests.count != 0) {
+        [_requests removeObjectsInArray:deniedRequests];
+        // Complete after returning this prepared transaction. A reentrant
+        // callback cannot mutate the enumeration or its outgoing payload.
+        dispatch_async(_queue.nativeQueue, ^{
+            [self updateRequestsTimer];
+            [self updateRequestsTimeoutTimerWithReset:false];
+            for (MTRequest *request in deniedRequests) {
+                if (request.completed != nil) {
+                    request.completed(nil, nil, [[MTRpcError alloc] initWithErrorCode:403 errorDescription:@"AUTHORIZATION_SCOPE_CHANGED"]);
+                }
+            }
+            if (self->_requests.count == 0 && [self->_delegate respondsToSelector:@selector(requestMessageServiceDidCompleteAllRequests:)]) {
+                [self->_delegate requestMessageServiceDidCompleteAllRequests:self];
+            }
+        });
+    }
+
     NSMutableDictionary *dropMessageIdToMessageInternalId = nil;
     for (MTDropResponseContext *dropContext in _dropReponseContexts)
     {

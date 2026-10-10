@@ -1,5 +1,11 @@
 #import <Foundation/Foundation.h>
 
+// Recorded only after a successful auth.bindTempAuthKey, binding the exact
+// temporary key bytes and datacenter to the permanent key used by that RPC.
+FOUNDATION_EXTERN NSString *const MTBoundPermanentAuthKeyDigestAttribute;
+FOUNDATION_EXTERN NSString *const MTBoundTemporaryAuthKeyDigestAttribute;
+FOUNDATION_EXTERN NSString *const MTBoundAuthKeyDatacenterAttribute;
+
 @interface MTDatacenterAuthKey: NSObject <NSCoding>
 
 @property (nonatomic, strong, readonly) NSData *authKey;
