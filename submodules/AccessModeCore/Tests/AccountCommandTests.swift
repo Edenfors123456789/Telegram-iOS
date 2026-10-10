@@ -12,6 +12,14 @@ final class AccountCommandTests: XCTestCase {
         AccountIdentity(installation: fixture.config.installation, environment: .production, recordID: record, userID: user)
     }
 
+    private func finishProvisionalCleanup(_ coordinator: AccessModeCoordinator, record: Int64) throws {
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(cleanup.provisionalRecordID, record)
+        // Component fixture has no raw AccountManager session. Native adapter
+        // must verify actual cleanup/absence before performing this acknowledgment.
+        try coordinator.acknowledgeEnrollmentCleanup(cleanup)
+    }
+
     func testHideRefreshesAuthorityWithoutPINAndRejectsOldUIResults() throws {
         let f = try VaultFixture()
         let coordinator = AccessModeCoordinator(store: f.store)
@@ -126,6 +134,7 @@ final class AccountCommandTests: XCTestCase {
         XCTAssertEqual(denied.decision, .unavailable)
         b = denied.ticket
         try coordinator.completePreparation(b)
+        try finishProvisionalCleanup(coordinator, record: 50)
         let collisionPermit = try coordinator.beginEnrollment(ticket: b)
         XCTAssertThrowsError(try coordinator.bindEnrollment(collisionPermit, provisionalRecordID: 20, ticket: b))
         let newB = try activated(coordinator, "654321")
@@ -158,6 +167,7 @@ final class AccountCommandTests: XCTestCase {
         // Retrying the same durable binding is harmless.
         try coordinator.bindEnrollment(permit, provisionalRecordID: 20, ticket: a)
         XCTAssertThrowsError(try coordinator.completeEnrollment(permit, confirmedAccount: identity(f, record: 21, user: 200), isPremium: false, ticket: a))
+        try finishProvisionalCleanup(coordinator, record: 20)
         a = try activated(coordinator, "123456")
         let own = try coordinator.beginEnrollment(ticket: a)
         try coordinator.bindEnrollment(own, provisionalRecordID: 22, ticket: a)
@@ -178,6 +188,7 @@ final class AccountCommandTests: XCTestCase {
         XCTAssertEqual(result.decision, .existingVisible(f.config.selectedA))
         a = result.ticket
         try coordinator.completePreparation(a)
+        try finishProvisionalCleanup(coordinator, record: 20)
         let permit = try coordinator.beginEnrollment(ticket: a)
         try coordinator.bindEnrollment(permit, provisionalRecordID: 30, ticket: a)
         let previousBytes = try Data(contentsOf: f.file)

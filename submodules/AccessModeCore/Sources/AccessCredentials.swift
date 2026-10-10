@@ -110,10 +110,11 @@ struct AccessVaultState: Codable {
     var attemptsB: PINAttemptBudget
     var revocation: UInt64
     var pendingEnrollment: PendingAccountEnrollment? = nil
+    var pendingEnrollmentCleanup: PendingEnrollmentCleanup? = nil
     var pendingOwnerPINChange: PendingOwnerPINChange? = nil
 
     func validate() throws {
-        guard version == 1 || version == 2 else { throw AccessError.unsupportedVersion }
+        guard (1 ... 3).contains(version) else { throw AccessError.unsupportedVersion }
         try configuration.validate()
         try a.validate(expectedMode: .a)
         try b.validate(expectedMode: .b)
@@ -123,9 +124,20 @@ struct AccessVaultState: Codable {
         if let pendingEnrollment {
             guard pendingEnrollment.revocation == revocation,
                   pendingEnrollment.configurationRevision == configuration.revision else { throw AccessError.corrupt }
+            if version >= 3, let record = pendingEnrollment.provisionalRecordID {
+                guard let cleanup = pendingEnrollmentCleanup, cleanup.claimID == nil,
+                      cleanup.flowID == pendingEnrollment.flowID, cleanup.mode == pendingEnrollment.mode,
+                      cleanup.provisionalRecordID == record else { throw AccessError.corrupt }
+            } else if pendingEnrollmentCleanup != nil {
+                throw AccessError.corrupt
+            }
+        }
+        if let pendingEnrollmentCleanup {
+            guard version >= 3 else { throw AccessError.corrupt }
+            try pendingEnrollmentCleanup.validate(configuration: configuration)
         }
         if let pendingOwnerPINChange {
-            guard version == 2, pendingEnrollment == nil else { throw AccessError.corrupt }
+            guard version >= 2, pendingEnrollment == nil else { throw AccessError.corrupt }
             try pendingOwnerPINChange.validate(state: self)
         }
     }
@@ -281,7 +293,7 @@ public final class AccessCredentialStore {
                 configurationRevision: state.configuration.revision, replacement: replacement, preparedResources: plan)
             // Older readers must reject this schema, including after finalization.
             // Keep the same file path: never interpret a new-schema vault as absent.
-            state.version = 2
+            state.version = max(state.version, 2)
             state.revocation += 1
             state.pendingEnrollment = nil
             state.pendingOwnerPINChange = pending

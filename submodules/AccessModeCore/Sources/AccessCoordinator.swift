@@ -209,12 +209,24 @@ public final class AccessModeCoordinator {
         catch { invalidate(); throw error }
     }
 
-    public func bindEnrollment(_ permit: AccountEnrollmentPermit, provisionalRecordID: Int64, ticket: AccessTicket) throws {
+    public func bindEnrollment(_ permit: AccountEnrollmentPermit, provisionalRecordID: Int64, environment: AccountEnvironment = .production, ticket: AccessTicket) throws {
         mutex.lock(); defer { mutex.unlock() }
         let verified = try requireLocal(ticket, requireReady: true)
         guard process == .mainApplication else { throw AccessError.authenticationRequired }
-        do { try store.bindEnrollment(permit, provisionalRecordID: provisionalRecordID, grant: verified) }
+        do { try store.bindEnrollment(permit, provisionalRecordID: provisionalRecordID, environment: environment, grant: verified) }
         catch { invalidate(); throw error }
+    }
+
+    public func claimEnrollmentCleanup() throws -> AccountEnrollmentCleanupTicket? {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        return try store.claimEnrollmentCleanup()
+    }
+
+    public func acknowledgeEnrollmentCleanup(_ ticket: AccountEnrollmentCleanupTicket) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        try store.acknowledgeEnrollmentCleanup(ticket)
     }
 
     public func completeEnrollment(_ permit: AccountEnrollmentPermit, confirmedAccount: AccountIdentity,

@@ -36,7 +36,7 @@ extension AccessCredentialStore {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
             try state.require(grant, issuer: issuer)
-            guard state.pendingEnrollment == nil else { throw AccessError.invalidTransition }
+            guard state.pendingEnrollment == nil, state.pendingEnrollmentCleanup == nil else { throw AccessError.invalidTransition }
             let flowID = UUID()
             state.pendingEnrollment = PendingAccountEnrollment(flowID: flowID, mode: grant.mode,
                 configurationRevision: state.configuration.revision, revocation: state.revocation)
@@ -57,7 +57,7 @@ extension AccessCredentialStore {
 
     /// Bind the freshly created raw auth record before exposing its authorization UI.
     /// A callback for another record cannot adopt it or clean up an existing account.
-    func bindEnrollment(_ permit: AccountEnrollmentPermit, provisionalRecordID: Int64, grant: AuthenticatedModeGrant) throws {
+    func bindEnrollment(_ permit: AccountEnrollmentPermit, provisionalRecordID: Int64, environment: AccountEnvironment = .production, grant: AuthenticatedModeGrant) throws {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
             try state.require(grant, issuer: issuer)
@@ -66,6 +66,15 @@ extension AccessCredentialStore {
                   state.pendingEnrollment!.provisionalRecordID == nil || state.pendingEnrollment!.provisionalRecordID == provisionalRecordID else {
                 throw AccessError.invalidConfiguration
             }
+            if let cleanup = state.pendingEnrollmentCleanup {
+                guard cleanup.flowID == permit.flowID, cleanup.provisionalRecordID == provisionalRecordID,
+                      cleanup.environment == environment, cleanup.claimID == nil else { throw AccessError.staleAuthorization }
+            } else {
+                state.pendingEnrollmentCleanup = PendingEnrollmentCleanup(flowID: permit.flowID, installation: state.configuration.installation,
+                    mode: grant.mode, provisionalRecordID: provisionalRecordID, environment: environment, claimID: nil)
+            }
+            // Earlier readers must not ignore durable cleanup ownership.
+            state.version = max(state.version, 3)
             state.pendingEnrollment!.provisionalRecordID = provisionalRecordID
             stored = state
         }
@@ -81,7 +90,9 @@ extension AccessCredentialStore {
             try requireEnrollment(permit, grant: grant, state: state)
             let config = state.configuration
             guard confirmedAccount.installation == config.installation, confirmedAccount.userID > 0,
-                  state.pendingEnrollment?.provisionalRecordID == confirmedAccount.recordID else { throw AccessError.invalidConfiguration }
+                  state.pendingEnrollment?.provisionalRecordID == confirmedAccount.recordID,
+                  let cleanup = state.pendingEnrollmentCleanup, cleanup.flowID == permit.flowID, cleanup.claimID == nil,
+                  cleanup.provisionalRecordID == confirmedAccount.recordID, cleanup.environment == confirmedAccount.environment else { throw AccessError.invalidConfiguration }
             var decision = AccessModePolicy(mode: grant.mode, configuration: config).enrollment(
                 environment: confirmedAccount.environment, userID: confirmedAccount.userID, isPremium: isPremium)
             if case let .new(ownership) = decision {
@@ -94,6 +105,7 @@ extension AccessCredentialStore {
                         hiddenChats: config.hiddenChats, hiddenChatGenerations: config.hiddenChatGenerations,
                         selectedA: grant.mode == .a ? confirmedAccount : config.selectedA,
                         selectedB: grant.mode == .b ? confirmedAccount : config.selectedB)
+                    state.pendingEnrollmentCleanup = nil
                 }
             }
             state.pendingEnrollment = nil
