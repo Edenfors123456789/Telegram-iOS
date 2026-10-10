@@ -5,6 +5,17 @@ final class TestDeviceKey: AccessDeviceKeyProvider {
     var key: Data? = Data(repeating: 0x57, count: 32)
     var denied = false
     var onLoad: (() throws -> Void)?
+    var committedNamespaces: Set<String> = []
+    var presenceDenied = false
+    var presenceWriteDenied = false
+    func hasCommittedState(namespace: String) throws -> Bool {
+        if denied || presenceDenied { throw AccessError.unavailable }
+        return committedNamespaces.contains(namespace)
+    }
+    func recordCommittedState(namespace: String) throws {
+        if denied || presenceDenied || presenceWriteDenied { throw AccessError.unavailable }
+        committedNamespaces.insert(namespace)
+    }
     func loadKey(allowCreation: Bool) throws -> Data {
         if denied { throw AccessError.unavailable }
         guard let key else { throw AccessError.missingKey }

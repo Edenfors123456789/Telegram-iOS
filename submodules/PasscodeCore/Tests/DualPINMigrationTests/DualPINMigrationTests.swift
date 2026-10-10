@@ -22,7 +22,10 @@ private final class MigrationStorage: PasscodeStorage {
 }
 
 private final class MigrationDeviceKey: AccessDeviceKeyProvider {
+    private var committedNamespaces: Set<String> = []
     func loadKey(allowCreation: Bool) throws -> Data { Data(repeating: 0x49, count: 32) }
+    func hasCommittedState(namespace: String) throws -> Bool { committedNamespaces.contains(namespace) }
+    func recordCommittedState(namespace: String) throws { committedNamespaces.insert(namespace) }
 }
 
 private final class MigrationFixture {

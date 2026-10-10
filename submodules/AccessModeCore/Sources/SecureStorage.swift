@@ -58,10 +58,14 @@ enum AccessCrypto {
     }
 }
 
-/// Supplies a device-local key. Implementations must never replace an existing key or
-/// generate a key when `allowCreation` is false (for example, after loss of Keychain state).
+/// Supplies a device-local key and irreversible, namespace-bound state-presence
+/// witnesses. Implementations must never replace keys/witnesses, synchronize them,
+/// treat unavailable protected storage as absence, or recreate missing prior state.
+/// Key generation is permitted only when `allowCreation` is true.
 public protocol AccessDeviceKeyProvider {
     func loadKey(allowCreation: Bool) throws -> Data
+    func hasCommittedState(namespace: String) throws -> Bool
+    func recordCommittedState(namespace: String) throws
 }
 
 public final class KeychainAccessDeviceKey: AccessDeviceKeyProvider {
@@ -109,6 +113,44 @@ public final class KeychainAccessDeviceKey: AccessDeviceKeyProvider {
         guard added == errSecSuccess else { throw AccessError.keychain(added) }
         return key
     }
+
+    private func presenceQuery(_ namespace: String) throws -> [String: Any] {
+        guard !namespace.isEmpty else { throw AccessError.invalidConfiguration }
+        let digest = SHA256.hash(data: Data(namespace.utf8)).map { String(format: "%02x", $0) }.joined()
+        var result = query
+        result[kSecAttrAccount as String] = "dual-pin-state-presence.v1." + digest
+        return result
+    }
+
+    private func presenceValue(_ namespace: String) -> Data {
+        Data(("telegram.dual-pin.state-presence.v1\0" + namespace).utf8)
+    }
+
+    public func hasCommittedState(namespace: String) throws -> Bool {
+        var read = try presenceQuery(namespace)
+        read[kSecReturnData as String] = true
+        read[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(read as CFDictionary, &item)
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess else { throw AccessError.keychain(status) }
+        guard let data = item as? Data, data == presenceValue(namespace) else { throw AccessError.corrupt }
+        return true
+    }
+
+    public func recordCommittedState(namespace: String) throws {
+        if try hasCommittedState(namespace: namespace) { return }
+        var create = try presenceQuery(namespace)
+        create.removeValue(forKey: kSecUseAuthenticationContext as String)
+        create[kSecValueData as String] = presenceValue(namespace)
+        create[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        let status = SecItemAdd(create as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            guard try hasCommittedState(namespace: namespace) else { throw AccessError.unavailable }
+        } else {
+            guard status == errSecSuccess else { throw AccessError.keychain(status) }
+        }
+    }
 }
 
 /// No delete/reset path: errors cannot silently discard existing access state.
@@ -154,6 +196,9 @@ final class EncryptedAccessFile<State: Codable> {
             let result = try body(&value, loaded.key)
             guard let value else { throw AccessError.invalidTransition }
             try write(value, key: loaded.key, revision: loaded.revision + 1)
+            // No initial receipt/grant/send publication until the second durable
+            // store remembers that this namespace may no longer be initialized.
+            if loaded.state == nil { try keyProvider.recordCommittedState(namespace: namespace) }
             return result
         }
     }
@@ -164,6 +209,7 @@ final class EncryptedAccessFile<State: Codable> {
         let fd = Darwin.open(stateURL.path, O_RDONLY | O_NOFOLLOW)
         if fd < 0 {
             guard errno == ENOENT else { throw AccessError.unavailable }
+            guard try !keyProvider.hasCommittedState(namespace: namespace) else { throw AccessError.unavailable }
             return (nil, allowInitialization ? try keyProvider.loadKey(allowCreation: true) : Data(), 0)
         }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -178,8 +224,13 @@ final class EncryptedAccessFile<State: Codable> {
         let key = try keyProvider.loadKey(allowCreation: false)
         var plain = try AccessCrypto.open(envelope.ciphertext, key: key, context: context(envelope.revision))
         defer { plain.resetBytes(in: 0 ..< plain.count) }
-        do { return (try JSONDecoder().decode(State.self, from: plain), key, envelope.revision) }
+        let state: State
+        do { state = try JSONDecoder().decode(State.self, from: plain) }
         catch { throw AccessError.corrupt }
+        // Existing pre-witness files migrate before any state is returned. This
+        // does not recreate the file or authorize a corrupt semantic state.
+        try keyProvider.recordCommittedState(namespace: namespace)
+        return (state, key, envelope.revision)
     }
 
     private func write(_ state: State, key: Data, revision: UInt64) throws {
