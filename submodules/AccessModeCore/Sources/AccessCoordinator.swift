@@ -47,6 +47,7 @@ public final class AccessModeCoordinator {
     }
 
     var permitsPINManagement: Bool { process == .mainApplication }
+    var permitsChatManagement: Bool { process == .mainApplication }
 
     public func lock() throws {
         mutex.lock(); defer { mutex.unlock() }

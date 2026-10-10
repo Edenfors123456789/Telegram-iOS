@@ -41,6 +41,17 @@ Configuration validates one shared primary, exact installation/environment/recor
 
 `coordinator.setHidden` and `selectAccount` replace authority only after the encrypted mutation commits. Their new ticket is preparing: attach the opaque cover first, discard the old query/navigation epoch, prepare the new revision/root, then complete preparation. Old tickets and cross-process old configuration grants are invalid. Hidden-management data is A-only; selection returns only the current role's account identity.
 
+`AccessChatVisibilityAction` is a non-Codable menu command bound to an exact ready
+root. Its hidden-status field is presentation only. Creation/execution require
+the main application and current A management policy; inactive execution locks
+before any configuration write. Old/foreign/replayed commands refuse before
+disturbing a newer root. The native shared-context bridge additionally binds the
+exact selected loaded account context and root preparation; the chat menu adds
+the local action only at final main-thread delivery. The successful command uses
+the existing covered mutation/fresh-root path. Six new cases passed within 127
+Mac / 129 hosted Core cases. Full native compilation and configured menu checks
+are recorded separately in `PLANS.md` and `CHAT_MANAGEMENT_MANUAL_CHECKS.md`.
+
 Enrollment is explicitly staged: `beginEnrollment` commits the role/flow origin before creating or exposing authorization UI; `bindEnrollment` durably binds its newly created provisional record; only `completeEnrollment` may adopt the confirmed self-user identity of that exact record. Grants, flow issuer, configuration/revocation and provisional record must all match. The permit is not Codable. An existing visible identity returns its permitted existing identity; an other-role collision returns only `unavailable`. The adapter must neutralize its own provisional session, never an existing raw account. Reusing a permit, another record, installation, issuer or revoked flow fails closed.
 
 Lock/configuration/PIN changes abandon pending authority. Unknown crash-created records remain quarantined rather than adopted into the next mode. This foundation does not implement provisional-session cleanup, restart recovery UI, live Premium refresh or Telegram's enrollment callbacks; those adapters remain stage-3 work. The dormant native account projection exists as described below. A hidden role's Premium membership cannot increase the other role's enrollment allowance.

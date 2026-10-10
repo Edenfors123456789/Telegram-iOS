@@ -1404,6 +1404,16 @@ public enum WalletWordsScreenMode: Equatable {
     case backupDisable(updateSecretPhrase: Bool)
 }
 
+/// Presentation only. The supplied operation must revalidate its access authority.
+public struct ChatVisibilityMenuAction {
+    public let isHidden: Bool
+    public let perform: () -> Void
+    public init(isHidden: Bool, perform: @escaping () -> Void) {
+        self.isHidden = isHidden
+        self.perform = perform
+    }
+}
+
 public protocol SharedAccountContext: AnyObject {
     var sharedContainerPath: String { get }
     var basePath: String { get }
@@ -1415,6 +1425,7 @@ public protocol SharedAccountContext: AnyObject {
     func makeModePasscodeSettings(context: AccountContext) -> ViewController?
     var requiresInitialModeSetup: Bool { get }
     func makeInitialModeSetup(context: AccountContext) -> ViewController?
+    func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction?
     
     var currentPresentationData: Atomic<PresentationData> { get }
     var presentationData: Signal<PresentationData, NoError> { get }
@@ -1760,6 +1771,7 @@ public extension SharedAccountContext {
     func makeModePasscodeSettings(context: AccountContext) -> ViewController? { nil }
     var requiresInitialModeSetup: Bool { false }
     func makeInitialModeSetup(context: AccountContext) -> ViewController? { nil }
+    func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction? { nil }
 }
 
 public enum ChatSendMessageActionSheetControllerSendMode {

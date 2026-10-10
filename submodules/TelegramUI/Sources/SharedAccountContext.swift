@@ -229,6 +229,38 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         return self.initialModeSetupFactory?(context)
     }
     public var requiresInitialModeSetup: Bool { !self.modeAccountAccessRequired && self.initialModeSetupFactory != nil }
+
+    public func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction? {
+        assert(Queue.mainQueue().isCurrent())
+        guard self.modeAccountAccessRequired, let driver = self.modeRootPresentation,
+              let origin = self.pendingModeRoot, origin.mode == .a, driver.hasActiveRoot,
+              origin.account.recordID == context.account.id.int64,
+              let raw = self.activeAccountsValue,
+              raw.accounts.contains(where: { $0.0 == context.account.id && $0.1 === context }) else { return nil }
+        let action: AccessChatVisibilityAction
+        do {
+            let identity = try driver.withActivePolicy { policy -> AccountIdentity in
+                let projection = try policy.projectAccounts(raw.accounts.map { self.observedAccount($0.1.account) })
+                guard projection.primary == origin.account, policy.selectedAccount == origin.account else { throw AccessError.staleAuthorization }
+                return origin.account
+            }
+            let chat = ChatIdentity(account: identity, peerNamespace: peerId.namespace._internalGetInt32Value(), peerID: peerId.id._internalGetInt64Value())
+            action = try driver.makeChatVisibilityAction(chat)
+        } catch { return nil }
+        return ChatVisibilityMenuAction(isHidden: action.isHidden, perform: { [weak self, weak context] in
+            guard let self, let context, self.modeAccountAccessRequired,
+                  self.modeRootPresentation === driver, self.pendingModeRoot == origin,
+                  self.activeAccountsValue?.accounts.contains(where: { $0.0 == context.account.id && $0.1 === context }) == true else { return }
+            do {
+                let preparation = try driver.performChatVisibilityAction(action)
+                try self.prepareModeAccountRoot(preparation)
+            } catch {
+                // A stale menu must preserve a newer permitted root. A failed
+                // transition already covers/detaches before persistence work.
+                if !driver.hasActiveRoot { try? driver.lock() }
+            }
+        })
+    }
     private let managedAccountDisposables = DisposableDict<AccountRecordId>()
     private let activeAccountsWithInfoPromise = Promise<(primary: AccountRecordId?, accounts: [AccountWithInfo])>()
     // Main-thread cache for initial setup only. A configured/unavailable mode

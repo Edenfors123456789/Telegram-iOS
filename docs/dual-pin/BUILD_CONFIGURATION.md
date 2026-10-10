@@ -22,6 +22,24 @@ python3 -u tools/dual-pin/build_development_simulator.py
 
 The runner verifies the pinned Bazel digest, scopes stable Xcode to its child, overrides only an isolated ignored generated configuration module, and retains logs/result metadata/fresh IPA under `build-input/dual-pin-development/<UTC timestamp>/`. It accepts no device configuration and never reads or rewrites Apple provisioning profiles/certificates. The upstream default build remains available through ordinary Make. Do not run build commands concurrently.
 
+For a diagnosed persistent-worker/compiler-plugin communication stall, an explicit
+one-shot Swift invocation is available:
+
+```sh
+python3 -u tools/dual-pin/build_development_simulator.py --swift-strategy local
+```
+
+The default remains `worker`. Local strategy preserves compiler option values,
+normalizing Make's literal copt quotes for the one-shot response-file path. It
+retains the same Xcode, cache, resource limits, simulator configuration and signing
+flags. Record `swift_strategy` and fresh build outcome in `result.json`; changing
+strategy alone does not establish a successful build.
+
+Verified local-strategy full application run `20261010T034434Z`: exit 0, 363.578
+seconds, 1,473 actions; artifact identity/platform and SHA-256 are recorded in
+`PLANS.md`. This resolves the observed compilation path, not a universal diagnosis
+of every Swift stall or any physical-device signing guarantee.
+
 Verified run `20261009T235135Z`: exit 0, 24.249 seconds, 122 actions; org.negrfors.telegram.dualpin 13.0/build 4, simulator SDK 27.0 / Xcode 27A266a. IPA 608,234,649 bytes, SHA-256 `7a304c8f8500d90d93ccb6269b5810c9e69d3ce0ba606a277a98e21e30fca182`. Zero embedded profiles; all six extension IDs use the chosen bundle prefix. Installation, ordinary onboarding, corrupt-vault denial and exact probe cleanup/restored onboarding passed on the isolated simulator. The active MobileBuildMCP profile is `tg-fork-dualpin`; `tg-fork-baseline` still selects the original fixture app.
 
 This proves simulator packaging for the fork identity, not physical signing, live Telegram authorization or complete Dual PIN behavior. Siri/Widget/notification extensions are still packaged at this stage; their final disabling/guarding is stage-5 work. Configured PIN/account/history flows and iPhone verification remain pending.

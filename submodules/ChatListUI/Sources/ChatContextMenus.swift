@@ -608,6 +608,20 @@ func chatContextMenuItems(context: AccountContext, peerId: EnginePeer.Id, promoI
             }
         }
     }
+    |> deliverOnMainQueue
+    |> map { items -> [ContextMenuItem] in
+        guard promoInfo == nil, !items.isEmpty,
+              let action = context.sharedContext.chatVisibilityMenuAction(context: context, peerId: peerId) else { return items }
+        var result = items
+        result.append(.separator)
+        result.append(.action(ContextMenuActionItem(text: action.isHidden ? "Показывать в режиме B" : "Скрыть в режиме B", icon: { theme in
+            generateTintedImage(image: UIImage(systemName: action.isHidden ? "eye" : "eye.slash"), color: theme.contextMenu.primaryColor)
+        }, action: { _, dismiss in
+            dismiss(.default)
+            action.perform()
+        })))
+        return result
+    }
 }
 
 public func chatForumTopicMenuItems(context: AccountContext, peerId: EnginePeer.Id, threadId: Int64, isPinned: Bool?, isClosed: Bool?, chatListController: ViewController?, joined: Bool, canSelect: Bool, customEdit: ((ContextController) -> Void)? = nil, customPinUnpin: ((ContextController) -> Void)? = nil, reorder: (() -> Void)? = nil, onDeleted: (() -> Void)? = nil) -> Signal<[ContextMenuItem], NoError> {

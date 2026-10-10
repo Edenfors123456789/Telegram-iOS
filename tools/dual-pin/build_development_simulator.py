@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--configuration", type=Path, default=root / "build-input/dual-pin/configuration.development.json")
     parser.add_argument("--developer-dir", default="/Applications/Xcode.app/Contents/Developer")
     parser.add_argument("--build-number", type=int, default=4)
+    parser.add_argument("--swift-strategy", choices=("worker", "local"), default="worker",
+                        help="Use local for a diagnosed persistent-worker compiler-plugin stall")
     args = parser.parse_args()
     if args.build_number < 1:
         parser.error("build number must be positive")
@@ -70,24 +72,30 @@ sys.path.insert(0, sys.argv[1])
 from Make import BazelCommandLine
 command = BazelCommandLine(bazel=sys.argv[2], override_bazel_version=False,
     override_xcode_version=True, bazel_user_root=None)
+if sys.argv[5] == 'local':
+    # Make passes literal quotes in Swift copts. Persistent-worker requests strip
+    # them; a one-shot response-file invocation does not. Preserve option values.
+    command.common_debug_args = [arg.replace('copt="', 'copt=', 1).removesuffix('"')
+        for arg in command.common_debug_args]
 command.set_lock(True)
 command.set_configuration('debug_sim_arm64')
 command.set_build_number(sys.argv[4])
 command.set_disable_provisioning_profiles()
 command.add_cache_dir('/tmp/tg-dual-pin-bazel-cache')
 command.common_args += ['--override_module=build_configuration=' + sys.argv[3],
-    '--jobs=3', '--local_resources=memory=8192', '--worker_max_instances=2']
+    '--jobs=3', '--local_resources=memory=8192', '--worker_max_instances=2',
+    '--strategy=SwiftCompile=' + sys.argv[5]]
 command.invoke_build()
 """
     log = run / "build.log"
     with log.open("x") as stream:
         log.chmod(0o600)
         result = subprocess.run([sys.executable, "-u", "-c", code,
-            str(root / "build-system/Make"), str(bazel), str(repository), str(args.build_number)],
+            str(root / "build-system/Make"), str(bazel), str(repository), str(args.build_number), args.swift_strategy],
             cwd=root, env=environment, stdout=stream, stderr=subprocess.STDOUT)
     metadata = {"exit_status": result.returncode, "log": str(log),
         "configuration": str(configuration), "simulator_only": True,
-        "device_signing_verified": False, "profiles_used": False}
+        "device_signing_verified": False, "profiles_used": False, "swift_strategy": args.swift_strategy}
     if result.returncode == 0:
         artifact = run / "Telegram.ipa"
         shutil.copy2(root / "bazel-bin/Telegram/Telegram.ipa", artifact)

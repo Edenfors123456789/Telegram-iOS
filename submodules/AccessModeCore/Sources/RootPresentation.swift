@@ -14,6 +14,13 @@ public struct AccessRootPreparation: Equatable {
     }
 }
 
+/// Non-Codable menu action bound to one ready root. Display status is not authority.
+public struct AccessChatVisibilityAction {
+    fileprivate let preparation: AccessRootPreparation
+    fileprivate let chat: ChatIdentity
+    public let isHidden: Bool
+}
+
 /// Main-thread adapter boundary: cover and detach first, validate async root delivery,
 /// and publish/uncover only after matching account preparation. Native UI callbacks
 /// must synchronously perform their named operation; no queued cover installation.
@@ -159,6 +166,31 @@ public final class AccessRootPresentation {
         } preflight: { policy in
             guard policy.canManageChatVisibility(chat) else { throw AccessError.authenticationRequired }
         }
+    }
+
+    public func makeChatVisibilityAction(_ chat: ChatIdentity) throws -> AccessChatVisibilityAction {
+        precondition(Thread.isMainThread)
+        guard coordinator.permitsChatManagement else { throw AccessError.authenticationRequired }
+        guard let current = active else { throw AccessError.staleAuthorization }
+        guard isApplicationActive() else { try lock(); throw AccessError.invalidTransition }
+        let hidden = try withActivePolicy { policy -> Bool in
+            guard policy.canManageChatVisibility(chat) else { throw AccessError.authenticationRequired }
+            return policy.isMarkedHidden(chat)
+        }
+        return AccessChatVisibilityAction(preparation: current, chat: chat, isHidden: hidden)
+    }
+
+    public func performChatVisibilityAction(_ action: AccessChatVisibilityAction) throws -> AccessRootPreparation {
+        precondition(Thread.isMainThread)
+        // Refuse old/foreign menus before any cover, mutation or current-root reset.
+        guard matches(action.preparation, active) else { throw AccessError.staleAuthorization }
+        guard coordinator.permitsChatManagement else { throw AccessError.authenticationRequired }
+        guard isApplicationActive() else { try lock(); throw AccessError.invalidTransition }
+        try withActivePolicy { policy in
+            guard policy.canManageChatVisibility(action.chat),
+                  policy.isMarkedHidden(action.chat) == action.isHidden else { throw AccessError.staleAuthorization }
+        }
+        return try setHidden(action.chat, hidden: !action.isHidden)
     }
 
     public func preparePINChange() throws -> AccessPINChangeRequest {

@@ -26,6 +26,115 @@ private final class RootUI {
 }
 
 final class RootPresentationTests: XCTestCase {
+    private func action(_ controller: AccessRootPresentation, _ chat: ChatIdentity, file: StaticString = #filePath, line: UInt = #line) -> AccessChatVisibilityAction? {
+        do { return try controller.makeChatVisibilityAction(chat) }
+        catch { XCTFail("Current A action refused: \(error)", file: file, line: line); return nil }
+    }
+
+    func testVisibilityMenuActionCoversBeforeMutationAndCannotReplay() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let initial = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(initial, preparedAccount: f.config.selectedA)
+        let chat = ChatIdentity(account: f.config.selectedA, peerNamespace: 3, peerID: -42)
+        guard let hide = action(controller, chat) else { return }
+        XCTAssertFalse(hide.isHidden); XCTAssertFalse(ui.covered)
+        var sawCoveredWrite = false
+        f.keys.onLoad = {
+            if !controller.hasActiveRoot { sawCoveredWrite = true; XCTAssertTrue(ui.covered); XCTAssertNil(ui.root) }
+        }
+        let changed: AccessRootPreparation
+        do { changed = try controller.performChatVisibilityAction(hide) }
+        catch { f.keys.onLoad = nil; XCTFail("Current action did not execute: \(error)"); return }
+        f.keys.onLoad = nil
+        XCTAssertTrue(sawCoveredWrite); XCTAssertTrue(ui.covered); XCTAssertNil(ui.root)
+        XCTAssertThrowsError(try controller.performChatVisibilityAction(hide))
+        try controller.complete(changed, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try controller.performChatVisibilityAction(hide)); XCTAssertFalse(ui.covered)
+        guard let show = action(controller, chat) else { return }
+        XCTAssertTrue(show.isHidden)
+        let shown = try controller.performChatVisibilityAction(show)
+        try controller.complete(shown, preparedAccount: f.config.selectedA)
+        XCTAssertFalse(try controller.withActivePolicy { $0.isMarkedHidden(chat) })
+    }
+
+    func testOldAVisibilityMenuCannotActAfterFreshAOnTheSameAccount() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let old = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(old, preparedAccount: f.config.selectedA)
+        let chat = ChatIdentity(account: f.config.selectedA, peerNamespace: 0, peerID: 42)
+        guard let stale = action(controller, chat) else { return }
+        try controller.lock()
+        let fresh = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(fresh, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try controller.performChatVisibilityAction(stale))
+        XCTAssertFalse(ui.covered); XCTAssertEqual(ui.root, f.config.selectedA)
+        XCTAssertFalse(try controller.withActivePolicy { $0.isMarkedHidden(chat) })
+        guard let current = action(controller, chat) else { return }
+        _ = try controller.performChatVisibilityAction(current)
+        XCTAssertTrue(ui.covered)
+    }
+
+    func testForeignVisibilityActionDoesNotDisturbANewerReadyRoot() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let firstUI = RootUI(), secondUI = RootUI()
+        let first = try firstUI.controller(coordinator)
+        let initial = try first.prepare(coordinator.beginUnlock(pin: "123456"))
+        try first.complete(initial, preparedAccount: f.config.selectedA)
+        let chat = ChatIdentity(account: f.config.selectedA, peerNamespace: 0, peerID: 42)
+        guard let foreign = action(first, chat) else { return }
+        let second = try secondUI.controller(coordinator)
+        let current = try second.prepare(coordinator.beginUnlock(pin: "123456"))
+        try second.complete(current, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try second.performChatVisibilityAction(foreign))
+        XCTAssertFalse(secondUI.covered); XCTAssertEqual(secondUI.root, f.config.selectedA)
+        XCTAssertFalse(try second.withActivePolicy { $0.isMarkedHidden(chat) })
+    }
+
+    func testVisibilityDescriptorDeniesBUnknownPeersAndInactiveRoot() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let chat = ChatIdentity(account: f.config.selectedA, peerNamespace: 0, peerID: 42)
+        let b = try controller.prepare(coordinator.beginUnlock(pin: "654321"))
+        XCTAssertThrowsError(try controller.makeChatVisibilityAction(chat))
+        try controller.complete(b, preparedAccount: f.config.selectedB)
+        XCTAssertThrowsError(try controller.makeChatVisibilityAction(chat)); XCTAssertFalse(ui.covered)
+        try controller.lock()
+        let a = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(a, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try controller.makeChatVisibilityAction(ChatIdentity(account: f.config.selectedA, peerNamespace: 7, peerID: 42)))
+        let unknown = AccountIdentity(installation: f.config.installation, environment: .production, recordID: 88, userID: 88)
+        XCTAssertThrowsError(try controller.makeChatVisibilityAction(ChatIdentity(account: unknown, peerNamespace: 0, peerID: 42)))
+        XCTAssertFalse(ui.covered)
+        ui.active = false
+        XCTAssertThrowsError(try controller.makeChatVisibilityAction(chat))
+        XCTAssertTrue(ui.covered); XCTAssertNil(ui.root); XCTAssertEqual(coordinator.state, .locked)
+    }
+
+    func testShareProcessCannotObtainAVisibilityMenuAction() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store, process: .shareExtension), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let a = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(a, preparedAccount: f.config.selectedA)
+        XCTAssertThrowsError(try controller.makeChatVisibilityAction(ChatIdentity(account: f.config.selectedA, peerNamespace: 0, peerID: 42)))
+        XCTAssertFalse(ui.covered); XCTAssertEqual(try controller.withActivePolicy { $0.mode }, .a)
+    }
+
+    func testInactiveVisibilityActionCannotCommitBeforeItsRootIsDenied() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store), ui = RootUI()
+        let controller = try ui.controller(coordinator)
+        let a = try controller.prepare(coordinator.beginUnlock(pin: "123456"))
+        try controller.complete(a, preparedAccount: f.config.selectedA)
+        let chat = ChatIdentity(account: f.config.selectedA, peerNamespace: 0, peerID: 42)
+        guard let menu = action(controller, chat) else { return }
+        ui.active = false
+        XCTAssertThrowsError(try controller.performChatVisibilityAction(menu))
+        XCTAssertTrue(ui.covered); XCTAssertNil(ui.root); XCTAssertEqual(coordinator.state, .locked)
+        let fresh = try f.store.authenticate(pin: "123456")
+        XCTAssertFalse(try f.store.configuration(grant: fresh).hiddenChats.contains(chat))
+    }
+
     func testReentrantNewRootDuringPINChangeCoverSurvivesOldPreparationFailure() throws {
         let f = try VaultFixture()
         let coordinator = AccessModeCoordinator(store: f.store)
