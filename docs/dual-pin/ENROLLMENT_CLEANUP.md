@@ -253,6 +253,32 @@ completion. Six regressions: the real red ran 83 hosted cases with 14
 expected failures against a refusing stub; green passed all 83. Evidence:
 `build-input/dual-pin-stage0/cleanup-job-20261010/`.
 
+## Startup recovery
+
+`recoverProvisionalCleanup` runs once per launch from
+`SharedAccountContext.configureModeAccountAccess`, main app only, right after
+the directory gate is configured and off the main queue. At that point this
+process cannot have started an enrollment, so a pending owner belongs to a dead
+flow and claiming it is not polling an active one. No owner: nothing happens.
+Otherwise it claims and runs the cleanup job once; `.retryLater` and
+`.unavailable` keep everything for the next launch. Only the result enum is
+logged.
+
+`nativeRevocation` opens the provisional account from its directory with
+`accountWithId(supplementary: true)` (its metadata is detached by then), and
+sends the scoped logout only when the account's current original main key is
+the key being revoked; for any other key nothing is sent, no receipt appears
+and the owner is kept. The account object lives only for that attempt. The
+native part compiles in the full app build; it has no offline test, because it
+needs a real `AccountResult`.
+
+Three recovery regressions (no owner, a dead flow completed and enrollment
+freed again, Share refused). The first red invocation crashed in the fixture,
+not the code: the no-owner case removed the temporary directory before
+AccountManager finished initializing (Postbox disk I/O assertion, XCTest
+relaunch); the fixture now waits, and the complete red ran 86 cases with six
+expected failures. Evidence: `build-input/dual-pin-stage0/startup-recovery-20261010/`.
+
 ## Native integration still pending
 
 `AccessModeAccountBridge` now implements the metadata-creation boundary in an

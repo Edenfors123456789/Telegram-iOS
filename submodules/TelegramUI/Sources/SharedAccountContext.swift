@@ -212,6 +212,9 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     }
     private var modeRootPresentation: AccessRootPresentation?
     private let accountDirectoryCleanupGate = AccountDirectoryCleanupGate()
+    /// Opens a detached provisional account's directory, for its owned cleanup only.
+    private var loadProvisionalCleanupAccount: ((AccountRecordId, Bool) -> Signal<AccountResult, NoError>)?
+    private let provisionalCleanupRecoveryDisposable = MetaDisposable()
     private let modeAccountPublication: AccessAccountPublicationGate
     private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
     private var pendingModeRoot: AccessRootPreparation?
@@ -1294,6 +1297,11 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         
         let directoryCleanupGate = self.accountDirectoryCleanupGate
         let cleanupIsMainApp = applicationBindings.isMainApp
+        let provisionalCleanupAccountManager = self.accountManager
+        let provisionalCleanupAuxiliaryMethods = makeTelegramAccountAuxiliaryMethods(uploadInBackground: appDelegate?.uploadInBackround)
+        self.loadProvisionalCleanupAccount = { id, testingEnvironment in
+            return accountWithId(accountManager: provisionalCleanupAccountManager, networkArguments: networkArguments, id: id, encryptionParameters: encryptionParameters, supplementary: true, isSupportUser: false, rootPath: rootPath, beginWithTestingEnvironment: testingEnvironment, backupData: nil, auxiliaryMethods: provisionalCleanupAuxiliaryMethods)
+        }
         // The legacy handler swallows logout failures and then erases metadata.
         // Preserve raw records/keys for the exact owned cleanup job instead.
         let _ = managedCleanupAccounts(networkArguments: networkArguments, accountManager: self.accountManager, rootPath: rootPath, auxiliaryMethods: makeTelegramAccountAuxiliaryMethods(uploadInBackground: appDelegate?.uploadInBackround), encryptionParameters: encryptionParameters,
@@ -2083,8 +2091,27 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.modeAccountPublication.requireModePolicy()
         self.initialModeAccountInfos = nil
         self.modeRootPresentation = driver
-        if self.applicationBindings.isMainApp { self.accountDirectoryCleanupGate.configure(coordinator) }
+        if self.applicationBindings.isMainApp {
+            self.accountDirectoryCleanupGate.configure(coordinator)
+            self.startProvisionalCleanupRecovery(coordinator)
+        }
         self.clearModeAccountPresentation()
+    }
+
+    /// Once per launch, before this process can start an enrollment: a pending
+    /// provisional owner belongs to a dead flow. Failure keeps it for the next
+    /// launch; nothing here retries or polls.
+    private func startProvisionalCleanupRecovery(_ coordinator: AccessModeCoordinator) {
+        guard let loadAccount = self.loadProvisionalCleanupAccount else { return }
+        let accountManager = self.accountManager
+        self.provisionalCleanupRecoveryDisposable.set((AccountEnrollmentBridge.recoverProvisionalCleanup(accountManager: accountManager, coordinator: coordinator, revocation: { owner in
+            return AccountEnrollmentBridge.nativeRevocation(accountManager: accountManager, coordinator: coordinator, cleanup: owner, loadAccount: {
+                return loadAccount(AccountRecordId(rawValue: owner.provisionalRecordID), owner.environment == .test)
+            })
+        })
+        |> runOn(Queue.concurrentDefaultQueue())).start(next: { result in
+            Logger.shared.log("AccessMode", "provisional cleanup recovery: \(result.map { "\($0)" } ?? "none")")
+        }))
     }
 
     /// Called also for an existing corrupt/unavailable vault, before constructing

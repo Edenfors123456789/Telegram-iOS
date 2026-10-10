@@ -107,6 +107,58 @@ final class AccountEnrollmentCleanupJobTests: XCTestCase {
         XCTAssertEqual(try o.coordinator.claimEnrollmentCleanup()?.provisionalRecordID, o.id.int64)
     }
 
+    private func unclaimed() throws -> (f: BridgeFixture, coordinator: AccessModeCoordinator, ticket: AccessTicket, id: AccountRecordId, key: AccountEnrollmentSessionKey) {
+        let f = try BridgeFixture(), c = AccessModeCoordinator(store: f.store)
+        let t = try c.beginUnlock(pin: "123456"); try c.completePreparation(t)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: c, ticket: t, environment: .production))
+        guard case let .created(id, permit) = creation else { throw AccessError.unavailable }
+        let k = try key(1, 0x51)
+        try c.bindEnrollmentSessionKey(permit, sessionKey: k, ticket: t)
+        try c.markEnrollmentAuthorizationAttempt(permit, sessionKey: k, ticket: t)
+        return (f, c, t, id, k)
+    }
+    private func recover(_ manager: AccountManager<TelegramAccountManagerTypes>, _ coordinator: AccessModeCoordinator,
+        _ calls: Atomic<[AccountEnrollmentSessionKey]>) throws -> AccountEnrollmentCleanupJobResult? {
+        try value(AccountEnrollmentBridge.recoverProvisionalCleanup(accountManager: manager, coordinator: coordinator, revocation: { owner in
+            return { key in
+                _ = calls.modify { $0 + [key] }
+                try? coordinator.recordEnrollmentSessionRevocation(owner, sessionKey: key)
+                return .single(())
+            }
+        }))
+    }
+
+    func testRecoveryWithoutALeftoverOwnerDoesNothing() throws {
+        let f = try BridgeFixture(), c = AccessModeCoordinator(store: f.store), calls = Atomic<[AccountEnrollmentSessionKey]>(value: [])
+        XCTAssertNil(try recover(f.manager, c, calls))
+        XCTAssertEqual(calls.with { $0 }, [])
+        // Nothing here touches AccountManager; let its initialization drain
+        // before the temporary directory is removed.
+        _ = try value(f.manager.transaction { _ in true })
+    }
+
+    func testRecoveryClaimsALeftoverFlowCompletesItAndFreesEnrollment() throws {
+        // The flow's process is gone; a fresh coordinator models the relaunch.
+        let o = try unclaimed(), calls = Atomic<[AccountEnrollmentSessionKey]>(value: [])
+        let relaunched = AccessModeCoordinator(store: try AccessCredentialStore(directory: o.f.directory.appendingPathComponent("vault"),
+            namespace: "test.account-bridge", keyProvider: o.f.keys, iterations: 600_000))
+        XCTAssertEqual(try recover(o.f.manager, relaunched, calls), .completed)
+        XCTAssertEqual(calls.with { $0 }, [o.key])
+        XCTAssertNil(try value(o.f.manager.transaction { $0.getCurrentAuth() }))
+        XCTAssertNil(try relaunched.claimEnrollmentCleanup())
+        let t = try relaunched.beginUnlock(pin: "123456"); try relaunched.completePreparation(t)
+        XCTAssertNoThrow(try relaunched.beginEnrollment(ticket: t), "a resolved owner no longer blocks enrollment")
+    }
+
+    func testShareCannotRecover() throws {
+        let o = try unclaimed(), calls = Atomic<[AccountEnrollmentSessionKey]>(value: [])
+        let share = AccessModeCoordinator(store: o.f.store, process: .shareExtension)
+        XCTAssertEqual(try recover(o.f.manager, share, calls), .unavailable)
+        XCTAssertEqual(calls.with { $0 }, [])
+        XCTAssertEqual(try value(o.f.manager.transaction { $0.getCurrentAuth()?.id }), o.id)
+        XCTAssertEqual(try o.coordinator.claimEnrollmentCleanup()?.provisionalRecordID, o.id.int64)
+    }
+
     func testAForeignOrShareCoordinatorRevokesNothing() throws {
         let o = try owned(), calls = Atomic<[AccountEnrollmentSessionKey]>(value: [])
         let foreign = try BridgeFixture()

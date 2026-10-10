@@ -57,4 +57,37 @@ extension AccountEnrollmentBridge {
             return revokeRemaining()
         }
     }
+
+    /// Startup only, before any enrollment of this process can exist: a pending
+    /// owner then belongs to a dead flow, so claiming it is not polling an
+    /// active one. Nil when there is no leftover owner.
+    public static func recoverProvisionalCleanup(accountManager: AccountManager<TelegramAccountManagerTypes>,
+        coordinator: AccessModeCoordinator,
+        revocation: @escaping (AccountEnrollmentCleanupTicket) -> (AccountEnrollmentSessionKey) -> Signal<Void, NoError>) -> Signal<AccountEnrollmentCleanupJobResult?, NoError> {
+        return deferred { () -> Signal<AccountEnrollmentCleanupJobResult?, NoError> in
+            let owner: AccountEnrollmentCleanupTicket?
+            do { owner = try coordinator.claimEnrollmentCleanup() } catch { return .single(.unavailable) }
+            guard let owner else { return .single(nil) }
+            return runProvisionalCleanup(accountManager: accountManager, coordinator: coordinator, cleanup: owner,
+                revoke: revocation(owner)) |> map(Optional.init)
+        }
+    }
+
+    /// The native revocation for one claimed owner. `loadAccount` opens the
+    /// provisional account (its directory, not its metadata, which is detached
+    /// by then). Only the account's current original main key has a scoped
+    /// transport; for any other key nothing is sent, no receipt appears and the
+    /// job keeps the owner. The account is released when the attempt ends.
+    public static func nativeRevocation(accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
+        cleanup: AccountEnrollmentCleanupTicket, loadAccount: @escaping () -> Signal<AccountResult, NoError>) -> (AccountEnrollmentSessionKey) -> Signal<Void, NoError> {
+        return { key in
+            return loadAccount()
+            |> take(1)
+            |> mapToSignal { account -> Signal<Void, NoError> in
+                guard NativeEnrollmentSessionKeySource(account: account)?.persistentFingerprint() == key else { return .complete() }
+                return revokeProvisionalSession(account: account, accountManager: accountManager, coordinator: coordinator, cleanup: cleanup)
+                |> map { _ -> Void in }
+            }
+        }
+    }
 }
