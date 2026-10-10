@@ -1428,6 +1428,8 @@ public protocol SharedAccountContext: AnyObject {
     func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction?
     func canManageHiddenChats(context: AccountContext) -> Bool
     func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError>
+    /// Immutable presentation snapshot for a fresh A root; carries no action authority.
+    func hiddenChatMarkerPeerIds(context: AccountContext) -> Set<EnginePeer.Id>
     
     var currentPresentationData: Atomic<PresentationData> { get }
     var presentationData: Signal<PresentationData, NoError> { get }
@@ -1776,6 +1778,7 @@ public extension SharedAccountContext {
     func chatVisibilityMenuAction(context: AccountContext, peerId: EnginePeer.Id) -> ChatVisibilityMenuAction? { nil }
     func canManageHiddenChats(context: AccountContext) -> Bool { false }
     func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError> { .single(nil) }
+    func hiddenChatMarkerPeerIds(context: AccountContext) -> Set<EnginePeer.Id> { [] }
 }
 
 public enum ChatSendMessageActionSheetControllerSendMode {

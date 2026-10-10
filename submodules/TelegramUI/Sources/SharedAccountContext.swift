@@ -251,6 +251,30 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         return (try? driver.makeHiddenChatManagementRequest()) != nil
     }
 
+    public func hiddenChatMarkerPeerIds(context: AccountContext) -> Set<EnginePeer.Id> {
+        // Chat-list layouts run off-main. Capture once on the native root's
+        // main-thread construction; never dispatch a layout back into authority.
+        guard Thread.isMainThread, self.applicationBindings.isMainApp,
+              self.modeAccountAccessRequired, UIApplication.shared.applicationState == .active,
+              let driver = self.modeRootPresentation, let origin = self.pendingModeRoot, origin.mode == .a,
+              origin.account.recordID == context.account.id.int64, let raw = self.activeAccountsValue,
+              raw.accounts.contains(where: { $0.0 == context.account.id && $0.1 === context }) else { return [] }
+        let collect: (AccessModePolicy) throws -> Set<EnginePeer.Id> = { policy in
+            let projection = try policy.projectAccounts(raw.accounts.map { self.observedAccount($0.1.account) })
+            guard policy.mode == .a, policy.selectedAccount == origin.account, projection.primary == origin.account else { throw AccessError.staleAuthorization }
+            return Set(policy.hiddenChatsForManagement.compactMap { chat -> EnginePeer.Id? in
+                guard chat.account == origin.account, policy.isMarkedHidden(chat),
+                      chat.peerID <= 0x00ff_ffff_ffff_ffff else { return nil }
+                return EnginePeer.Id(namespace: ._internalFromInt32Value(chat.peerNamespace), id: ._internalFromInt64Value(chat.peerID))
+            })
+        }
+        // The initial list is built while covered, before its root becomes ready.
+        // Later folder/archive lists use the same exact ready-root policy.
+        do {
+            return try driver.hasActiveRoot ? driver.withActivePolicy(collect) : driver.withPreparingPolicy(origin, collect)
+        } catch { return [] }
+    }
+
     public func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError> {
         assert(Queue.mainQueue().isCurrent())
         guard let driver = self.modeRootPresentation, let origin = self.pendingModeRoot,

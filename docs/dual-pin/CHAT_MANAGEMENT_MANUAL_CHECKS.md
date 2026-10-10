@@ -45,10 +45,22 @@ does not establish native context-menu rendering or end-to-end chat filtering.
 - Searching must never open a conversation. Selecting a row changes only the
   local visibility flag behind the cover; it must prepare a fresh permitted root.
 
+## Adjacent marker (native acceptance pending)
+
+- Check the existing local hidden-eye icon beside the shared chat title in A's
+  main list, archive and folders. Promotional/group-reference entries must not
+  inherit it; additional accounts need no per-chat flag.
+- Hide/unhide and verify that the covered replacement list immediately receives
+  the new snapshot. Check initial root preparation as well as later folder lists.
+- Recycle rows with a hidden and an ordinary peer; no old icon may remain on the
+  ordinary row. Test identical names, cloud/secret aliases and signed secret IDs.
+- Lock during asynchronous row preparation; no old row/marker may appear above
+  the cover or in a new role root. Native B remains denied until later gates pass.
+
 ## Remaining implementation
 
-The adjacent title marker and native account enrollment remain stage-3 work;
-central management routing has passed full compilation and needs native acceptance.
+Native account enrollment remains stage-3 work. The menu, central management
+route and adjacent title marker passed full compilation and need native acceptance.
 Full B discovery/history filtering,
 message provenance, notification suppression and external surfaces remain later
 stages. This menu checkpoint does not complete any of those requirements.

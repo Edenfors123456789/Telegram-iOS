@@ -389,7 +389,7 @@ public struct ChatListNodeState: Equatable {
     }
 }
 
-private func mappedInsertEntries(context: AccountContext, nodeInteraction: ChatListNodeInteraction, location: ChatListControllerLocation, isPremium: Bool, filterData: ChatListItemFilterData?, chatListFilters: [ChatListFilter]?, mode: ChatListNodeMode, isPeerEnabled: ((EnginePeer) -> Bool)?, entries: [ChatListNodeViewTransitionInsertEntry], presentationData: ChatListPresentationData) -> [ListViewInsertItem] {
+private func mappedInsertEntries(context: AccountContext, hiddenChatMarkers: Set<EnginePeer.Id>, nodeInteraction: ChatListNodeInteraction, location: ChatListControllerLocation, isPremium: Bool, filterData: ChatListItemFilterData?, chatListFilters: [ChatListFilter]?, mode: ChatListNodeMode, isPeerEnabled: ((EnginePeer) -> Bool)?, entries: [ChatListNodeViewTransitionInsertEntry], presentationData: ChatListPresentationData) -> [ListViewInsertItem] {
     return entries.map { entry -> ListViewInsertItem in
         switch entry.entry {
         case .HeaderEntry:
@@ -505,7 +505,8 @@ private func mappedInsertEntries(context: AccountContext, nodeInteraction: ChatL
                         header: nil,
                         enabledContextActions: .auto,
                         hiddenOffset: threadInfo?.isHidden == true && !revealed,
-                        interaction: nodeInteraction
+                        interaction: nodeInteraction,
+                        displayHiddenPeerIcon: promoInfo == nil && hiddenChatMarkers.contains(peer.peerId)
                     ), directionHint: entry.directionHint)
                 case let .peers(filter, isSelecting, _, _, filters, displayAutoremoveTimeout, displayPresence):
                     let itemPeer = peer.chatOrMonoforumMainPeer
@@ -806,7 +807,7 @@ private func mappedInsertEntries(context: AccountContext, nodeInteraction: ChatL
     }
 }
 
-private func mappedUpdateEntries(context: AccountContext, nodeInteraction: ChatListNodeInteraction, location: ChatListControllerLocation, isPremium: Bool, filterData: ChatListItemFilterData?, chatListFilters: [ChatListFilter]?, mode: ChatListNodeMode, isPeerEnabled: ((EnginePeer) -> Bool)?, entries: [ChatListNodeViewTransitionUpdateEntry], presentationData: ChatListPresentationData) -> [ListViewUpdateItem] {
+private func mappedUpdateEntries(context: AccountContext, hiddenChatMarkers: Set<EnginePeer.Id>, nodeInteraction: ChatListNodeInteraction, location: ChatListControllerLocation, isPremium: Bool, filterData: ChatListItemFilterData?, chatListFilters: [ChatListFilter]?, mode: ChatListNodeMode, isPeerEnabled: ((EnginePeer) -> Bool)?, entries: [ChatListNodeViewTransitionUpdateEntry], presentationData: ChatListPresentationData) -> [ListViewUpdateItem] {
     return entries.map { entry -> ListViewUpdateItem in
         switch entry.entry {
             case let .PeerEntry(peerEntry):
@@ -877,7 +878,8 @@ private func mappedUpdateEntries(context: AccountContext, nodeInteraction: ChatL
                             header: nil,
                             enabledContextActions: .auto,
                             hiddenOffset: threadInfo?.isHidden == true && !revealed,
-                            interaction: nodeInteraction
+                            interaction: nodeInteraction,
+                            displayHiddenPeerIcon: promoInfo == nil && hiddenChatMarkers.contains(peer.peerId)
                     ), directionHint: entry.directionHint)
                     case let .peers(filter, isSelecting, _, _, filters, displayAutoremoveTimeout, displayPresence):
                         let itemPeer = peer.chatOrMonoforumMainPeer
@@ -1175,6 +1177,7 @@ private func mappedUpdateEntries(context: AccountContext, nodeInteraction: ChatL
 
 private func mappedChatListNodeViewListTransition(
     context: AccountContext,
+    hiddenChatMarkers: Set<EnginePeer.Id>,
     nodeInteraction: ChatListNodeInteraction,
     location: ChatListControllerLocation,
     isPremium: Bool,
@@ -1185,7 +1188,7 @@ private func mappedChatListNodeViewListTransition(
     presentationData: ChatListPresentationData,
     transition: ChatListNodeViewTransition
 ) -> ChatListNodeListViewTransition {
-    return ChatListNodeListViewTransition(chatListView: transition.chatListView, deleteItems: transition.deleteItems, insertItems: mappedInsertEntries(context: context, nodeInteraction: nodeInteraction, location: location, isPremium: isPremium, filterData: filterData, chatListFilters: chatListFilters, mode: mode, isPeerEnabled: isPeerEnabled, entries: transition.insertEntries, presentationData: presentationData), updateItems: mappedUpdateEntries(context: context, nodeInteraction: nodeInteraction, location: location, isPremium: isPremium, filterData: filterData, chatListFilters: chatListFilters, mode: mode, isPeerEnabled: isPeerEnabled, entries: transition.updateEntries, presentationData: presentationData), options: transition.options, scrollToItem: transition.scrollToItem, stationaryItemRange: transition.stationaryItemRange, adjustScrollToFirstItem: transition.adjustScrollToFirstItem, animateCrossfade: transition.animateCrossfade)
+    return ChatListNodeListViewTransition(chatListView: transition.chatListView, deleteItems: transition.deleteItems, insertItems: mappedInsertEntries(context: context, hiddenChatMarkers: hiddenChatMarkers, nodeInteraction: nodeInteraction, location: location, isPremium: isPremium, filterData: filterData, chatListFilters: chatListFilters, mode: mode, isPeerEnabled: isPeerEnabled, entries: transition.insertEntries, presentationData: presentationData), updateItems: mappedUpdateEntries(context: context, hiddenChatMarkers: hiddenChatMarkers, nodeInteraction: nodeInteraction, location: location, isPremium: isPremium, filterData: filterData, chatListFilters: chatListFilters, mode: mode, isPeerEnabled: isPeerEnabled, entries: transition.updateEntries, presentationData: presentationData), options: transition.options, scrollToItem: transition.scrollToItem, stationaryItemRange: transition.stationaryItemRange, adjustScrollToFirstItem: transition.adjustScrollToFirstItem, animateCrossfade: transition.animateCrossfade)
 }
 
 private final class ChatListOpaqueTransactionState {
@@ -1406,6 +1409,7 @@ public final class ChatListNode: ListViewImpl {
     public var synchronousDrawingWhenNotAnimated: Bool = false
     
     public init(context: AccountContext, location: ChatListControllerLocation, chatListFilter: ChatListFilter? = nil, previewing: Bool, fillPreloadItems: Bool, mode: ChatListNodeMode, isPeerEnabled: ((EnginePeer) -> Bool)? = nil, theme: PresentationTheme, fontSize: PresentationFontSize, strings: PresentationStrings, dateTimeFormat: PresentationDateTimeFormat, nameSortOrder: PresentationPersonNameOrder, nameDisplayOrder: PresentationPersonNameOrder, animationCache: AnimationCache, animationRenderer: MultiAnimationRenderer, disableAnimations: Bool, isInlineMode: Bool, autoSetReady: Bool, isMainTab: Bool?) {
+        let hiddenChatMarkers = context.sharedContext.hiddenChatMarkerPeerIds(context: context)
         self.context = context
         self.location = location
         self.chatListFilter = chatListFilter
@@ -2679,7 +2683,7 @@ public final class ChatListNode: ListViewImpl {
             let presentationData = state.presentationData
             
             return preparedChatListNodeViewTransition(from: previousView, to: processedView, reason: reason, previewing: previewing, disableAnimations: disableAnimations, scrollPosition: updatedScrollPosition, searchMode: searchMode, forceAllUpdated: forceAllUpdated)
-            |> map({ mappedChatListNodeViewListTransition(context: context, nodeInteraction: nodeInteraction, location: location, isPremium: accountIsPremium, filterData: filterData, chatListFilters: chatListFilters, mode: mode, isPeerEnabled: isPeerEnabled, presentationData: presentationData, transition: $0) })
+            |> map({ mappedChatListNodeViewListTransition(context: context, hiddenChatMarkers: hiddenChatMarkers, nodeInteraction: nodeInteraction, location: location, isPremium: accountIsPremium, filterData: filterData, chatListFilters: chatListFilters, mode: mode, isPeerEnabled: isPeerEnabled, presentationData: presentationData, transition: $0) })
             |> runOn(prepareOnMainQueue ? Queue.mainQueue() : viewProcessingQueue)
         }
         
