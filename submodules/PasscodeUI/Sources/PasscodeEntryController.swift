@@ -60,6 +60,7 @@ public final class PasscodeEntryController: ViewController {
     private let authenticationScope: PasscodeSession.Scope
     private let authenticationLifetime: PasscodeSession.Lifetime
     private let modeAuthentication: ModePINEntryAuthentication?
+    private var modeManagementFailure = false
     private let biometricReason: String
     private let authenticateBiometrics: ((LAContext) throws -> PasscodeSession)?
     private let biometrics: PasscodeEntryControllerBiometricsMode
@@ -209,6 +210,7 @@ public final class PasscodeEntryController: ViewController {
         }
         self.displayNode = PasscodeEntryControllerNode(accountManager: self.accountManager, presentationData: self.presentationData, theme: self.presentationData.theme, strings: self.presentationData.strings, wallpaper: self.presentationData.chatWallpaper, passcodeType: passcodeType, biometricsType: biometricsType, arguments: self.arguments, modalPresentation: self.arguments.modalPresentation)
         self.displayNodeDidLoad()
+        self.controllerNode.updateModeManagementFailure(self.modeManagementFailure)
         
         self.refreshCredentialCooldown()
         self.controllerNode.checkPasscode = { [weak self] passcode in
@@ -263,6 +265,7 @@ public final class PasscodeEntryController: ViewController {
 
     private func verifyCode(_ code: String) {
         guard !self.checkingCode, self.authenticationLifecycle.canAuthenticate else { return }
+        self.setModeManagementFailure(false)
         self.checkingCode = true
         self.cooldownRequestId &+= 1
         self.controllerNode.updateCredentialError(false)
@@ -476,6 +479,13 @@ public final class PasscodeEntryController: ViewController {
             self.controllerNode.resetInput()
             self.controllerNode.isUserInteractionEnabled = self.authenticationDismissal.phase == .active
         }
+    }
+
+    /// Neutral status only: never supplies a PIN, role, session or unlock.
+    public func setModeManagementFailure(_ failed: Bool) {
+        assert(Thread.isMainThread)
+        self.modeManagementFailure = failed
+        if self.isNodeLoaded { self.controllerNode.updateModeManagementFailure(failed) }
     }
     
     public func requestBiometrics(force: Bool = false) {

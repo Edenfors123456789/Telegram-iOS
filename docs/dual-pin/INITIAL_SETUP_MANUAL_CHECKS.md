@@ -60,6 +60,28 @@ Use controlled fixture fault injection, never corruption of a real installation.
 - Repeat across process interruption, device reboot, offline/network change and
   protected-data unavailability. Do not infer these results from simulator launch.
 
+## Configured own-PIN changes and journal recovery
+
+These configured native checks are also pending; hosted presentation tests do not
+execute the real Telegram settings/lock route with an authorized account.
+
+- Change the current role's PIN using its own current PIN and a distinct confirmed
+  six-digit replacement. The form must clear and detach before the worker starts;
+  success returns to a fresh stock lock and never unlocks automatically.
+- Submit an incorrect current PIN or an unavailable credential store. Show only
+  the generic update error on the stock lock, with no role, account or PIN detail.
+  Credential verification errors and cooldown have priority over that status.
+- Background during a change or recovery. Keep its native cover until that exact
+  worker completes; canceled or old callbacks must not display a later error,
+  clear a newer failure or expose a root. Fresh input clears the neutral status.
+- Interrupt an A change after its encrypted journal is committed and before each
+  legacy/reference/final Core acknowledgment. Restart must recover idempotently
+  while covered, preserve the original resource key and grant no unlock.
+- A successful exact journal recovery may clear its own earlier update error.
+  A failed recovery must remain locked and retain durable retry information.
+- Check main-thread responsiveness and physical snapshot timing during delayed
+  credential/AccountManager I/O; component feedback tests do not prove these.
+
 ## Current acceptance limit
 
 B native root admission remains explicitly denied until history filtering and

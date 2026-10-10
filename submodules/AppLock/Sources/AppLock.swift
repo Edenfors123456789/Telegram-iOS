@@ -71,6 +71,7 @@ public final class AppLockContextImpl: AppLockContext {
 
     private var modeAuthentication: ModePINEntryAuthentication?
     private var modeAuthenticationRequired = false
+    private var modeManagementFailed = false
     private var modeRootIsReady: () -> Bool = { false }
     private var invalidateModeAccess: (() -> Void)?
     private var modeCoverHeld = true
@@ -225,6 +226,7 @@ public final class AppLockContextImpl: AppLockContext {
                             }
                         }
                         passcodeController.presentedOverCoveringView = true
+                        passcodeController.setModeManagementFailure(strongSelf.modeManagementFailed)
                         passcodeController.isOpaqueWhenInOverlay = true
                         strongSelf.passcodeController = passcodeController
                         if let rootViewController = strongSelf.rootController {
@@ -414,6 +416,13 @@ public final class AppLockContextImpl: AppLockContext {
         self.modePresentationUpdates.set(self.modePresentationRevision)
     }
 
+    public func reportModeManagementFailure(_ failed: Bool) {
+        assert(Thread.isMainThread)
+        guard self.modeAuthenticationRequired else { return }
+        self.modeManagementFailed = failed
+        self.passcodeController?.setModeManagementFailure(failed)
+    }
+
     public func beginModeRootPreparation() {
         assert(Thread.isMainThread)
         self.modeCoverHeld = true
@@ -475,6 +484,8 @@ public final class AppLockContextImpl: AppLockContext {
             DispatchQueue.main.sync { self.lock() }
             return
         }
+        self.modeManagementFailed = false
+        self.passcodeController?.setModeManagementFailure(false)
         self.modeRootPreparationInProgress = false
         self.modeCoverHeld = true
         self.installOpaqueCover()
@@ -501,6 +512,8 @@ public final class AppLockContextImpl: AppLockContext {
         // barrier. Only a freshly prepared, grant-validated root permits unlocking.
         if self.modeAuthenticationRequired && !self.modeRootIsReady() { return }
         self.modeCoverHeld = false
+        self.modeManagementFailed = false
+        self.passcodeController?.setModeManagementFailure(false)
         self.modeRootPreparationInProgress = false
         // The verified PIN callback and its state transition share one main-thread
         // turn: a queued unlock must not run after a later synchronous lock.

@@ -275,6 +275,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var modeInitialSetupCancellation: Atomic<Bool>?
     private var modeInitialSetupFailed = false
     private var modeInitialSetupOwnerPINCommitted = false
+    private let modePINManagementFeedback = PINManagementFeedback()
     private let modeManagementQueue = DispatchQueue(label: "org.negrfors.telegram.dualpin.management", qos: .userInitiated)
     private var accountManagerState: AccountManagerState?
     
@@ -2176,10 +2177,19 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         guard isCurrent() else { return nil }
         return OwnPINChangeController(context: context, isCurrent: isCurrent, submit: { [weak self, weak appLock] current, replacement in
             guard let self, isCurrent() else { return }
+            let feedback: PINManagementFeedbackTicket
+            do { feedback = try self.modePINManagementFeedback.begin() }
+            catch { return }
             let request: AccessPINChangeRequest
             do { request = try driver.preparePINChange() }
-            catch { appLock?.refreshModePresentation(); self.revealNativeLockScreenIfSafe(); return }
+            catch {
+                if self.modePINManagementFeedback.finish(feedback, failed: true) {
+                    appLock?.reportModeManagementFailure(self.modePINManagementFeedback.hasFailure)
+                }
+                appLock?.refreshModePresentation(); self.revealNativeLockScreenIfSafe(); return
+            }
             self.modeManagementQueue.async { [weak self, weak appLock] in
+                let failed: Bool
                 do {
                     try coordinator.executePINChange(request) { grant in
                         if grant.mode == .a {
@@ -2191,12 +2201,16 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                             try store.changePIN(grant: grant, currentPIN: current, newPIN: replacement)
                         }
                     }
+                    failed = false
                 } catch {
+                    failed = true
                     // Even failed changes leave the old form detached and access
                     // locked; pending owner changes retain their encrypted journal.
                 }
                 Queue.mainQueue().async { [weak self = self, weak appLock = appLock] in
-                    guard let self, self.modeCoordinator === coordinator else { return }
+                    guard let self, self.modePINManagementFeedback.finish(feedback, failed: failed) else { return }
+                    guard self.modeCoordinator === coordinator else { self.modePINManagementFeedback.invalidate(); return }
+                    appLock?.reportModeManagementFailure(self.modePINManagementFeedback.hasFailure)
                     self.resumeModeJournalIfNeeded()
                     appLock?.refreshModePresentation()
                     self.revealNativeLockScreenIfSafe()
@@ -2410,7 +2424,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     private func resumeModeJournalIfNeeded() {
         assert(Thread.isMainThread)
-        guard self.isActiveValue, self.modeRecoveryRun == nil,
+        guard self.isActiveValue, self.modeRecoveryRun == nil, !self.modePINManagementFeedback.isPending,
+              self.modeInitialSetupRun == nil,
               let store = self.modeCredentialStore, let coordinator = self.modeCoordinator,
               let appLock = self.appLockContextImpl, let accountManager = self.accountManager,
               coordinator.state == .locked else { return }
@@ -2420,18 +2435,22 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             request = prepared
         } catch { return }
         let run = UUID()
+        let feedbackRevision = self.modePINManagementFeedback.captureRevision()
         self.modeRecoveryRun = run
         self.showModeNativeCover()
         appLock.beginModeRootPreparation()
         appLock.refreshModePresentation()
         self.modeManagementQueue.async { [weak self, weak appLock] in
+            let recovered: Bool
             do {
                 try coordinator.executeJournalRecovery(request) {
                     _ = try DualPINLegacyJournal().recover(store: store, didCommitLegacyReference: { reference in
                         try commitDualPINLegacyReference(reference, accountManager: accountManager)
                     })
                 }
+                recovered = true
             } catch {
+                recovered = false
                 // The journal/requirements remain denied. Foreground or protected
                 // data availability may retry; never reset credentials on failure.
             }
@@ -2439,6 +2458,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 guard let self, self.modeRecoveryRun == run else { return }
                 self.modeRecoveryRun = nil
                 guard self.modeCoordinator === coordinator else { return }
+                if recovered { self.modePINManagementFeedback.clearRecoveredFailure(feedbackRevision) }
+                appLock?.reportModeManagementFailure(self.modePINManagementFeedback.hasFailure)
                 appLock?.refreshModePresentation()
                 self.revealNativeLockScreenIfSafe()
             }
@@ -2474,11 +2495,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private func revealNativeLockScreenIfSafe() {
         assert(Thread.isMainThread)
         guard self.isActiveValue, let ticket = self.nativeSnapshotTicket,
-              self.modeInitialSetupRun == nil,
+              self.modeInitialSetupRun == nil, self.modeRecoveryRun == nil, !self.modePINManagementFeedback.isPending,
               self.modeCoordinator == nil || self.modeCoordinator?.state == .locked else { return }
         let reveal: () -> Void = { [weak self] in
             guard let self, self.isActiveValue,
-                  self.modeInitialSetupRun == nil,
+                  self.modeInitialSetupRun == nil, self.modeRecoveryRun == nil, !self.modePINManagementFeedback.isPending,
                   self.window?.rootViewController?.presentedViewController == nil,
                   self.modeCoordinator == nil || self.modeCoordinator?.state == .locked else { return }
             if self.nativeSnapshotCover.hide(ticket) { self.nativeSnapshotTicket = nil }
@@ -2497,6 +2518,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             window.endEditing(true)
         }
         _ = self.modeInitialSetupCancellation?.swap(true)
+        self.modePINManagementFeedback.invalidate()
         self.appLockContextImpl?.lock()
         self.isActiveValue = false
         self.isActivePromise.set(false)

@@ -52,6 +52,7 @@ final class PasscodeEntryControllerNode: ASDisplayNode {
     
     private var invalidAttempts: AccessChallengeAttempts?
     private var hasCredentialError = false
+    private var hasModeManagementFailure = false
     private var timer: SwiftSignalKit.Timer?
     
     private let hapticFeedback = HapticFeedback()
@@ -370,12 +371,19 @@ final class PasscodeEntryControllerNode: ASDisplayNode {
         self.updateSubtitle()
     }
 
+    func updateModeManagementFailure(_ failed: Bool) {
+        self.hasModeManagementFailure = failed
+        self.updateSubtitle()
+    }
+
     private func updateSubtitle(animated: Bool = false) {
         let text: String
         if self.shouldWaitBeforeNextAttempt() {
             text = self.strings.PasscodeSettings_TryAgainIn1Minute
         } else if self.hasCredentialError {
             text = self.strings.PasscodeSettings_VerificationError
+        } else if self.hasModeManagementFailure {
+            text = self.strings.PasscodeSettings_UpdateError
         } else {
             text = ""
         }

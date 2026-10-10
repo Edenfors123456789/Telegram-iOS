@@ -133,6 +133,17 @@ The actual-AccountManager integration case migrates a four-digit owner PIN to si
 
 `PasscodeCore.DualPINLegacyJournal` is main-process only. The prepared plan contains the wrapped resource key and exact old/new credential fingerprints; it contains no plaintext PIN or unlocked resource key. AES-GCM binds it to the existing legacy device secret and App Group. It accepts an existing managed six-digit protected resource record; a missing, unprotected or unexpected legacy record is denied without reset/recreation. This intermediate backend prerequisite must be handled by native setup/settings integration before exposing PIN changes.
 
-Recovery applies the exact old record or recognizes the exact already-applied new wrapping, cleans biometric tokens and requires durable AccountManager-reference acknowledgment before committing the new Core A proof. Repeated application does not rewrap the key. File, legacy write, cleanup or publication failure retains the denied journal for retry. Completion produces no user session/grant and requires a fresh standard PIN entry. Core-only `changePIN` now permits B only; A cannot diverge from protected resources through that API. Calls must use a covered/detached root, current request generation and off-main work; native lifecycle/cancellation/request integration is still pending. Cross-store lock order is vault then legacy; reference publication is after releasing the legacy lock, must not reenter the vault, and must not block the main thread.
+Recovery applies the exact old record or recognizes the exact already-applied new wrapping, cleans biometric tokens and requires durable AccountManager-reference acknowledgment before committing the new Core A proof. Repeated application does not rewrap the key. File, legacy write, cleanup or publication failure retains the denied journal for retry. Completion produces no user session/grant and requires a fresh standard PIN entry. Core-only `changePIN` now permits B only; A cannot diverge from protected resources through that API. The native own-PIN settings route uses a covered/detached root, current opaque request and off-main work; configured-account native acceptance remains pending. Cross-store lock order is vault then legacy; reference publication is after releasing the legacy lock and must not reenter the vault.
+
+`PINManagementFeedback` tracks presentation only on the main thread. Exact operation
+tickets prevent foreign/replayed completion from removing pending coverage or
+showing an error. Inactivity clears feedback while retaining a pending worker's
+coverage until its matching completion. A revision-bound successful journal
+recovery may clear its own earlier failure, never a newer one. The stock lock uses
+the generic update error beneath credential error/cooldown priority, and clears it
+on fresh input/lock/unlock. No role, PIN, grant or unlock is carried by this status.
+The 37-case hosted UI suite passed; real configured settings, slow-I/O main-thread
+responsiveness and physical lifecycle/snapshot timing require the manual checks
+in `INITIAL_SETUP_MANUAL_CHECKS.md`.
 
 Verified component boundaries: 73 Mac Core cases, 74 hosted iOS Core cases and 13 hosted migration/journal cases, zero failures. Full simulator app build passed (321.521 seconds, 508 actions) with retained artifact metadata. Real legacy crypto/resource derivation runs against isolated fake Keychain storage; actual shared device Keychain, native authenticated settings/recovery and full mode transitions are not established by those tests.
