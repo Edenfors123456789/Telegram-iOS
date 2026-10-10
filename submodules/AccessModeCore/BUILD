@@ -50,7 +50,7 @@ swift_library(
 ios_application(
     name = "AccessModeCoreTestHost",
     testonly = True,
-    visibility = ["//submodules/AccessModeUI:__pkg__", "//submodules/PasscodeCore:__pkg__"],
+    visibility = ["//submodules/AccessModeUI:__pkg__", "//submodules/PasscodeCore:__pkg__", "//submodules/AccessModeAccountBridge:__pkg__"],
     bundle_id = "org.negrfors.telegram.dualpin.testsHost",
     families = ["iphone", "ipad"],
     entitlements = "TestsSupport/TestHost.entitlements",

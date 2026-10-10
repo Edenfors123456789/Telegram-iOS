@@ -41,7 +41,25 @@ never guessed or deleted.
 
 ## Native integration still pending
 
-The component has no connected AccountManager/session cleanup adapter yet.
+`AccessModeAccountBridge` now implements the metadata-creation boundary in an
+isolated module. It refuses an existing auth flow, validates the current Core
+ticket, allocates a new raw auth record, rejects any existing raw-record ID
+collision, and persists the exact environment binding inside the AccountManager
+transaction callback before metadata synchronization or record-view publication.
+Failure removes only the matching auth it just created, before publication.
+
+Each creation signal is single-use, including after cleanup or cancellation.
+AccountManager's own queued transaction returns `EmptyDisposable`; subscription
+disposal alone does not cancel its callback. The bridge checks a separate atomic
+cancellation flag before Core enrollment, after enrollment and after binding.
+Cancellation during binding rolls back the unpublished auth while retaining any
+durable cleanup ownership. A later cancellation, after the last check or after
+metadata commit, still requires native reconciliation of that exact owner; this
+is not an absolute guarantee that subscription disposal undoes a commit.
+
+The module does not expose authorization UI and is not connected to a native
+root/session cleanup adapter yet. A real caller must prove its originating root,
+actual AccountManager/context and confirmed self identity separately.
 Acknowledgment is valid only after the native adapter has proved exact cleanup
 and authoritative record absence. Component tests simulate this boundary with
 fixtures that have no actual Telegram session; they do not prove server logout.
@@ -57,12 +75,45 @@ Before exposing authorization:
 4. Pass only current-role phone metadata to AuthorizationUI. Guard authorization
    promotion against stale/missing/different current auth IDs, and revalidate
    before account publication. The upstream common promotion helper currently
-   calls generic removeAuth and has not yet received these guards.
+   calls generic removeAuth and has not yet received these guards. There are six
+   callers in `Authorization.swift` and another in `Account/Account.swift`.
 5. On cancel, lock, failed completion or restart, claim exact cleanup before
    side effects; stop the owned pending flow, clean/revoke only its provisional
    session, verify absence, then acknowledge. Do not claim an active enrollment
    as routine background polling. Failure keeps quarantine and retry evidence.
+   Upstream `Account/AccountManager.swift.cleanupAccount` catches a failed
+   `auth.logOut` and still removes metadata; its completion alone is therefore
+   not proof of successful server-session revocation. The owned adapter must
+   preserve this distinction rather than acknowledge cleanup on that signal.
 
 Native enrollment remains closed. This checkpoint does not establish safe
 authorization UI, server-session cleanup, notification suppression, B root
 admission, or full stage-3 acceptance.
+
+## Fresh component verification
+
+Core cleanup/schema checks passed 144 Mac cases and 146 hosted iOS cases; the
+fresh legacy migration suite passed 29 hosted cases. Metadata creation passed
+nine hosted cases with zero failures, exit 0, 91.872 seconds overall / 3.500 test
+seconds. They use unique temporary fixture directories, no real account session
+or network authorization. The independent-reader case verifies actual atomic
+AccountManager metadata and the reopened encrypted vault; the publication
+observer reads exact durable ownership before the raw auth record is emitted.
+
+Replay and cancellation regressions were observed failing before the correction:
+seven-case replay red had three expected failures; nine-case cancellation red
+had seven expected failures and zero unexpected XCTest errors. That red runner
+timed out after the actual tests completed; both facts remain in the logs. Green
+finished successfully. Retained evidence is under ignored
+`build-input/dual-pin-stage3/account-bridge-creation-*`.
+
+Hosted metadata command (run serially with other Bazel/build invocations):
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer python3 -u build-system/Make/Make.py \
+  --bazel '/Users/negrfors/Desktop/tg fork/build-input/dual-pin-stage0/bazel-resource-limited' \
+  --overrideXcodeVersion --cacheDir /tmp/tg-dual-pin-bazel-cache test \
+  --configurationPath build-system/appstore-configuration.json \
+  --codesigningInformationPath build-system/fake-codesigning \
+  --target //submodules/AccessModeAccountBridge:AccessModeAccountBridgeTests
+```

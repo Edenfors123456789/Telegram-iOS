@@ -574,6 +574,7 @@ swift_library(
         "//submodules/WalletContext",
         "//submodules/PasscodeCore",
         "//submodules/AccessModeCore",
+        "//submodules/AccessModeAccountBridge",
         "//submodules/MTProtoRustEngine:MTProtoRustEngine",
     ] + select({
         "@build_bazel_rules_apple//apple:ios_arm64": appcenter_targets,
