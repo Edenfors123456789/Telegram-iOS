@@ -11,7 +11,11 @@ final class EnrollmentCleanupCompletionTests: XCTestCase {
     private func owner(_ c: AccessModeCoordinator, record: Int64 = 20, keys: [AccountEnrollmentSessionKey]) throws -> AccountEnrollmentCleanupTicket {
         let t = try ready(c), permit = try c.beginEnrollment(ticket: t)
         try c.bindEnrollment(permit, provisionalRecordID: record, ticket: t)
-        for key in keys { try c.bindEnrollmentSessionKey(permit, sessionKey: key, ticket: t) }
+        for key in keys {
+            try c.bindEnrollmentSessionKey(permit, sessionKey: key, ticket: t)
+            // Each key was used for sign-in, so each needs a server logout.
+            try c.markEnrollmentAuthorizationAttempt(permit, sessionKey: key, ticket: t)
+        }
         return try XCTUnwrap(c.claimEnrollmentCleanup())
     }
     private func refused(_ body: @autoclosure () throws -> Void, file: StaticString = #filePath, line: UInt = #line) {

@@ -13,7 +13,7 @@ final class OwnerPINJournalTests: XCTestCase {
         try f.store.file.transaction { state, _ in state!.version = 1 }
         XCTAssertThrowsError(try f.store.isConfigured()) { XCTAssertEqual($0 as? AccessError, .corrupt) }
         XCTAssertThrowsError(try f.store.authenticate(pin: "123456"))
-        try f.store.file.transaction { state, _ in state!.version = 6 }
+        try f.store.file.transaction { state, _ in state!.version = 7 }
         XCTAssertThrowsError(try f.store.isConfigured()) { XCTAssertEqual($0 as? AccessError, .unsupportedVersion) }
         XCTAssertThrowsError(try f.store.initialize(configuration: f.config, pinA: "123456", pinB: "654321"))
     }

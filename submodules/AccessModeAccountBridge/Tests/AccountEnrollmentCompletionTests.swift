@@ -26,13 +26,16 @@ final class AccountEnrollmentCompletionTests: XCTestCase {
     private func key(_ dc: Int32, _ byte: UInt8) throws -> AccountEnrollmentSessionKey {
         try AccountEnrollmentSessionKey(datacenterID: dc, digest: Data(repeating: byte, count: 32))
     }
-    private func owned(keyCount: Int = 2, promote: Bool = true, detach: Bool = true) throws -> CompletionFixture {
+    private func owned(keyCount: Int = 2, promote: Bool = true, detach: Bool = true, attempted: Bool = true) throws -> CompletionFixture {
         let f = try BridgeFixture(), c = AccessModeCoordinator(store: f.store)
         let t = try c.beginUnlock(pin: "123456"); try c.completePreparation(t)
         let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: c, ticket: t, environment: .production))
         guard case let .created(id, permit) = creation else { throw AccessError.unavailable }
         let keys = try (0 ..< keyCount).map { try key(Int32($0 + 1), UInt8(0x51 + $0)) }
-        for key in keys { try c.bindEnrollmentSessionKey(permit, sessionKey: key, ticket: t) }
+        for key in keys {
+            try c.bindEnrollmentSessionKey(permit, sessionKey: key, ticket: t)
+            if attempted { try c.markEnrollmentAuthorizationAttempt(permit, sessionKey: key, ticket: t) }
+        }
         if promote {
             XCTAssertTrue(try value(f.manager.transaction { switchAuthorizationRecord(transaction: $0, id: id, testingEnvironment: false, isSupportUser: false) }))
         }
@@ -91,6 +94,15 @@ final class AccountEnrollmentCompletionTests: XCTestCase {
         let unbound = try owned(keyCount: 0, promote: false)
         XCTAssertEqual(try complete(unbound), .completed)
         XCTAssertNil(try unbound.coordinator.claimEnrollmentCleanup())
+    }
+
+    func testKeysNeverUsedForSignInNeedNoReceipt() throws {
+        // Cancelled before sign-in (or the key a datacenter migration left
+        // behind): the key was never sent an authorizing request.
+        let o = try owned(promote: false, attempted: false)
+        XCTAssertEqual(try o.coordinator.boundEnrollmentSessionKeys(o.owner).count, 2)
+        XCTAssertEqual(try complete(o), .completed)
+        XCTAssertNil(try o.coordinator.claimEnrollmentCleanup())
     }
 
     func testAttachedAuthOrAnAmbiguousRecordRefusesWithoutChanges() throws {

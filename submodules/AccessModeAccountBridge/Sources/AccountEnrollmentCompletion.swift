@@ -7,7 +7,8 @@ public enum AccountEnrollmentCleanupCompletion: Equatable {
     /// The owned raw record is absent and the ledger is acknowledged. The local
     /// directory is released to the gated background cleanup, not deleted here.
     case completed
-    /// A bound original key has no receipt yet; nothing was changed.
+    /// A key that an authorizing request may have used has no receipt yet;
+    /// nothing was changed.
     case awaitingRevocation
     case unavailable
 }
@@ -25,7 +26,7 @@ extension AccountEnrollmentBridge {
                 // Each read validates the owner. They stay outside the read gate
                 // below, which must not reenter the vault.
                 let confirmed = try coordinator.confirmedEnrollmentSessionKeys(cleanup)
-                guard try coordinator.boundEnrollmentSessionKeys(cleanup).allSatisfy(confirmed.contains) else { return .awaitingRevocation }
+                guard try coordinator.enrollmentSessionKeysRequiringRevocation(cleanup).allSatisfy(confirmed.contains) else { return .awaitingRevocation }
                 return try coordinator.withEnrollmentCleanup(cleanup) {
                     let id = AccountRecordId(rawValue: cleanup.provisionalRecordID)
                     guard cleanupMetadataIsDetached(transaction: transaction, recordID: id.int64,

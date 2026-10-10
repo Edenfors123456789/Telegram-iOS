@@ -164,12 +164,49 @@ never become a cleanup target. Old unexposed version-1/2 pending enrollment data
 does not create new cleanup authority; unknown raw records must be quarantined,
 never guessed or deleted.
 
+## Authorization attempts (write-ahead)
+
+A bound original key needs a server logout only if an authorizing request may
+have used it. A key that never carried one was never authorized: a flow
+cancelled before sign-in, or the old datacenter key a `PHONE_MIGRATE` leaves
+behind. Requiring a receipt for such a key would block cleanup for ever,
+because the server cannot be asked to confirm a logout of a session that never
+existed, and an outstanding provisional record blocks every new enrollment.
+
+So the ledger records which keys an authorizing request may have used
+(`authorizationAttempts`), and the native route must call
+`markEnrollmentAuthorizationAttempt` and see it succeed **before** sending any
+request that may authorize the key. If the mark fails, the request is not sent.
+Acknowledgment and local completion then require receipts only for marked keys
+(`enrollmentSessionKeysRequiringRevocation`).
+
+What counts as authorizing is decided fail-closed: only an explicit list of
+requests known not to authorize (`auth.sendCode`, `auth.resendCode`,
+`auth.cancelCode`, configuration/language lookups) may be sent unmarked;
+everything else is marked first. `auth.exportLoginToken` must be marked: with
+QR login the server authorizes the key when another device scans the code,
+with no further request from this one.
+
+Marking needs the open flow's permit, ticket and an already-bound key; it is
+refused after the cleanup claim (the flow is over, so nothing may be sent), and
+a refusal invalidates the flow's ticket like a refused binding. A repeated mark
+is validated without a write. Tracking starts with a ledger's first bound key
+and upgrades the payload to version 6; a ledger that already held keys without
+tracking (versions 4–5) keeps requiring every bound key, because it cannot tell
+which ones signed in. Marks must be bound keys of unique datacenters and need
+version 6; anything else is corrupt.
+
+Verification: six Core regressions, real red 13 failures; then 177 Mac / 179
+hosted Core and 77 bridge cases passed (one bridge case completes a flow whose
+two keys were never marked). Evidence:
+`build-input/dual-pin-stage0/authorization-attempts-20261010/`.
+
 ## Local completion
 
 `AccountEnrollmentBridge.completeProvisionalCleanup` runs after the scoped
-logouts. In one AccountManager transaction it reads the bound and confirmed
+logouts. In one AccountManager transaction it reads the required and confirmed
 keys (each read validates the owner) and returns `.awaitingRevocation`, changing
-nothing, while any bound key lacks a receipt. Otherwise, under the cleanup read
+nothing, while any key an authorizing request may have used lacks a receipt. Otherwise, under the cleanup read
 gate, it requires detached metadata with the owned environment and removes the
 owned raw record if one was promoted, exactly as upstream logout does
 (`updateRecord { nil }`). Unrelated records and a newer current auth are kept.

@@ -226,6 +226,23 @@ public final class AccessModeCoordinator {
         catch { invalidate(); throw error }
     }
 
+    /// Call and succeed before sending any request that may authorize this key,
+    /// QR login-token export included. A failure means the request is not sent.
+    public func markEnrollmentAuthorizationAttempt(_ permit: AccountEnrollmentPermit, sessionKey: AccountEnrollmentSessionKey, ticket: AccessTicket) throws {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        do { try store.markEnrollmentAuthorizationAttempt(permit, sessionKey: sessionKey, grant: verified) }
+        catch { invalidate(); throw error }
+    }
+
+    /// The keys whose server logout must be confirmed before acknowledgment.
+    public func enrollmentSessionKeysRequiringRevocation(_ cleanup: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        return try store.enrollmentSessionKeysRequiringRevocation(cleanup)
+    }
+
     public func boundEnrollmentSessionKeys(_ cleanup: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
         mutex.lock(); defer { mutex.unlock() }
         guard process == .mainApplication else { throw AccessError.authenticationRequired }

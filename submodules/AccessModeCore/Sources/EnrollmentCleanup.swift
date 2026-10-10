@@ -18,6 +18,13 @@ struct PendingEnrollmentCleanup: Codable {
     var claimID: UUID?
     var sessionKeys: [AccountEnrollmentSessionKey]? = nil
     var revokedSessions: [EnrollmentSessionRevocationRecord]? = nil
+    /// Keys an authorizing request may have used; nil means untracked (all bound keys).
+    var authorizationAttempts: [AccountEnrollmentSessionKey]? = nil
+
+    /// An untracked ledger cannot tell which keys signed in, so all stay required.
+    var keysRequiringRevocation: [AccountEnrollmentSessionKey] {
+        authorizationAttempts ?? sessionKeys ?? []
+    }
 
     func validate(configuration: AccessConfiguration) throws {
         guard installation == configuration.installation,
@@ -26,6 +33,11 @@ struct PendingEnrollmentCleanup: Codable {
             guard !sessionKeys.isEmpty, sessionKeys.count <= 32,
                   sessionKeys.allSatisfy({ $0.isValid }),
                   Set(sessionKeys.map(\.datacenterID)).count == sessionKeys.count else { throw AccessError.corrupt }
+        }
+        if let authorizationAttempts {
+            guard let sessionKeys, authorizationAttempts.count <= sessionKeys.count,
+                  Set(authorizationAttempts.map(\.datacenterID)).count == authorizationAttempts.count,
+                  authorizationAttempts.allSatisfy({ $0.isValid && sessionKeys.contains($0) }) else { throw AccessError.corrupt }
         }
         if let revokedSessions {
             guard let claimID, let sessionKeys, !revokedSessions.isEmpty,
@@ -94,6 +106,13 @@ extension AccessCredentialStore {
         }
     }
 
+    func enrollmentSessionKeysRequiringRevocation(_ ticket: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
+        try file.withReadState { state in
+            try requireEnrollmentCleanup(ticket, state: state)
+            return state.pendingEnrollmentCleanup!.keysRequiringRevocation
+        }
+    }
+
     func confirmedEnrollmentSessionKeys(_ ticket: AccountEnrollmentCleanupTicket) throws -> [AccountEnrollmentSessionKey] {
         try file.withReadState { state in
             try requireEnrollmentCleanup(ticket, state: state)
@@ -122,15 +141,16 @@ extension AccessCredentialStore {
 
     /// Native adapter acknowledges only after exact record/session cleanup and
     /// an authoritative absence check. This ticket grants no display authority.
-    /// Every bound original key needs its own receipt first. An owner that never
-    /// bound a key needs none: authorization may use only an already-bound key.
+    /// Every key an authorizing request may have used needs its own receipt
+    /// first. A key never marked as attempted, or an owner that never bound a
+    /// key, needs none: authorization may use only an already-marked bound key.
     func acknowledgeEnrollmentCleanup(_ ticket: AccountEnrollmentCleanupTicket) throws {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
             try requireEnrollmentCleanup(ticket, state: state)
             let cleanup = state.pendingEnrollmentCleanup!
             let revoked = (cleanup.revokedSessions ?? []).map(\.sessionKey)
-            guard (cleanup.sessionKeys ?? []).allSatisfy(revoked.contains) else { throw AccessError.invalidTransition }
+            guard cleanup.keysRequiringRevocation.allSatisfy(revoked.contains) else { throw AccessError.invalidTransition }
             state.pendingEnrollmentCleanup = nil
             stored = state
         }

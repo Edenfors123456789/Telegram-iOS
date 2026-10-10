@@ -95,9 +95,35 @@ extension AccessCredentialStore {
                 guard keys.count < 32 else { throw AccessError.invalidConfiguration }
                 keys.append(sessionKey)
             }
+            // Track attempts only from the first key on: a ledger that already
+            // held untracked keys keeps requiring every one of them.
+            if cleanup.sessionKeys == nil { cleanup.authorizationAttempts = cleanup.authorizationAttempts ?? [] }
             cleanup.sessionKeys = keys
             state.pendingEnrollmentCleanup = cleanup
-            state.version = max(state.version, 4)
+            state.version = max(state.version, cleanup.authorizationAttempts == nil ? 4 : 6)
+            stored = state
+        }
+    }
+
+    /// Write-ahead: durable before the authorizing request is sent. A mark that
+    /// adds nothing (repeat, or an untracked ledger) is validated without a write.
+    func markEnrollmentAuthorizationAttempt(_ permit: AccountEnrollmentPermit, sessionKey: AccountEnrollmentSessionKey, grant: AuthenticatedModeGrant) throws {
+        func attempts(_ state: AccessVaultState) throws -> [AccountEnrollmentSessionKey]? {
+            try state.require(grant, issuer: issuer)
+            try requireEnrollment(permit, grant: grant, state: state)
+            guard sessionKey.isValid, let record = state.pendingEnrollment?.provisionalRecordID,
+                  let cleanup = state.pendingEnrollmentCleanup, cleanup.flowID == permit.flowID,
+                  cleanup.provisionalRecordID == record, cleanup.claimID == nil,
+                  cleanup.sessionKeys?.contains(sessionKey) == true else { throw AccessError.staleAuthorization }
+            // Untracked: every bound key is already required.
+            guard let attempts = cleanup.authorizationAttempts, !attempts.contains(sessionKey) else { return nil }
+            return attempts
+        }
+        guard try file.withReadState({ try attempts($0) }) != nil else { return }
+        try file.transaction { stored, _ in
+            guard var state = stored else { throw AccessError.authenticationRequired }
+            guard let current = try attempts(state) else { return }
+            state.pendingEnrollmentCleanup!.authorizationAttempts = current + [sessionKey]
             stored = state
         }
     }
