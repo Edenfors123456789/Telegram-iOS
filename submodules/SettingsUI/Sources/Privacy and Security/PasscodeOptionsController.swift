@@ -302,6 +302,14 @@ public func passcodeOptionsController(context: AccountContext, focusOnItemTag: P
         return textAlertController(context: context, title: nil, text: strings.PasscodeSettings_UpdateError,
             actions: [TextAlertAction(type: .defaultAction, title: strings.Common_OK, action: {})])
     }
+    if context.sharedContext.requiresInitialModeSetup {
+        settingsSession?.invalidate()
+        if let controller = context.sharedContext.makeInitialModeSetup(context: context) { return controller }
+        context.sharedContext.appLockContext.lock()
+        let strings = context.sharedContext.currentPresentationData.with { $0 }.strings
+        return textAlertController(context: context, title: nil, text: strings.PasscodeSettings_UpdateError,
+            actions: [TextAlertAction(type: .defaultAction, title: strings.Common_OK, action: {})])
+    }
     var currentState = PasscodeOptionsControllerState()
     let initialState = currentState
     let sessionState = PasscodeSettingsSessionState(session: settingsSession)
@@ -764,6 +772,11 @@ public func passcodeOptionsAccessController(context: AccountContext, preferredMo
         if controller == nil { context.sharedContext.appLockContext.lock() }
         return .single(controller)
     }
+    if context.sharedContext.requiresInitialModeSetup {
+        let controller = context.sharedContext.makeInitialModeSetup(context: context)
+        if controller == nil { context.sharedContext.appLockContext.lock() }
+        return .single(controller)
+    }
     return context.sharedContext.accountManager.transaction { transaction -> PostboxAccessChallengeData in
         transaction.getAccessChallengeData()
     }
@@ -772,6 +785,11 @@ public func passcodeOptionsAccessController(context: AccountContext, preferredMo
         // An old legacy metadata callback may arrive after mode setup/locking.
         if context.sharedContext.requiresModePasscodeSettings {
             let controller = context.sharedContext.makeModePasscodeSettings(context: context)
+            if controller == nil { context.sharedContext.appLockContext.lock() }
+            return controller
+        }
+        if context.sharedContext.requiresInitialModeSetup {
+            let controller = context.sharedContext.makeInitialModeSetup(context: context)
             if controller == nil { context.sharedContext.appLockContext.lock() }
             return controller
         }

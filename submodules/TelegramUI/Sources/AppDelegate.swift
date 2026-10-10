@@ -273,6 +273,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var modeRecoveryRun: UUID?
     private var modeInitialSetupRun: UUID?
     private var modeInitialSetupCancellation: Atomic<Bool>?
+    private var modeInitialSetupFailed = false
+    private var modeInitialSetupOwnerPINCommitted = false
     private let modeManagementQueue = DispatchQueue(label: "org.negrfors.telegram.dualpin.management", qos: .userInitiated)
     private var accountManagerState: AccountManagerState?
     
@@ -2203,7 +2205,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         })
     }
 
-    /// Still unexposed by SettingsUI. Only the current ordinary owner root may
+    /// Only the current ordinary owner root may
     /// capture a complete pool and present this initial-only input controller.
     private func makeInitialModeSetup(context: AccountContext) -> ViewController? {
         assert(Thread.isMainThread)
@@ -2236,12 +2238,18 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         let data = context.sharedContext.currentPresentationData.with { $0 }
         let choices = pool.accounts.map {
-            InitialPINSetupView.AccountChoice(recordID: $0.account.id.int64,
-                title: $0.peer.displayTitle(strings: data.strings, displayOrder: data.nameDisplayOrder))
+            let name = $0.peer.displayTitle(strings: data.strings, displayOrder: data.nameDisplayOrder)
+            let title: String
+            if case let .user(user) = $0.peer, let phone = user.phone, !phone.isEmpty {
+                title = name + " · " + (phone.hasPrefix("+") ? phone : "+" + phone)
+            } else { title = name }
+            return InitialPINSetupView.AccountChoice(recordID: $0.account.id.int64, title: title)
         }
         return try? InitialPINSetupController(context: context, accountTitle: "Основной аккаунт",
             accounts: choices, selectedRecord: context.account.id.int64, requiresCurrentPasscode: owner != nil,
-            currentUsesNumericKeyboard: owner?.kind != .alphanumeric, isCurrent: isCurrent,
+            currentUsesNumericKeyboard: owner?.kind != .alphanumeric,
+            initialFailure: self.modeInitialSetupFailed, ownerPINCommitted: self.modeInitialSetupOwnerPINCommitted,
+            isCurrent: isCurrent,
             submit: { [weak self, weak shared] selected, currentPIN, a, b in
                 guard let self, let shared, isCurrent(),
                       let fresh = try? shared.initialModeAccountPool(installation: installation,
@@ -2263,6 +2271,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let cancelled = Atomic<Bool>(value: false)
         self.modeInitialSetupRun = run
         self.modeInitialSetupCancellation = cancelled
+        self.modeInitialSetupFailed = false
+        self.modeInitialSetupOwnerPINCommitted = false
         self.showModeNativeCover()
         self.mainWindow.setAccessPresentationGuard { [weak self, weak appLock, weak shared] controller in
             if let controller, appLock?.isCurrentLockController(controller) == true { return true }
@@ -2305,6 +2315,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         self.modeManagementQueue.async { [weak self, weak shared, weak appLock] in
             guard let self, let shared, let appLock else { return }
+            var operationFailed = false
+            var ownerPINCommitted = false
             do {
                 let store = try makeStore()
                 let coordinator = AccessInitialSetupCoordinator(store: store)
@@ -2329,6 +2341,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     guard !cancelled.with({ $0 }) else { throw PasscodeError.cancelled }
                     let receipt = try DualPINLegacyMigration().installForSetup(store: store, configuration: configuration,
                         pinA: pinA, pinB: pinB, ownerSession: owner, didCommitLegacyReference: { reference in
+                            ownerPINCommitted = true
                             // A changed owner must be acknowledged regardless of
                             // cancellation or a subsequently changed account pool.
                             try commitDualPINLegacyReference(reference, accountManager: accountManager)
@@ -2338,10 +2351,13 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     return receipt
                 }
             } catch {
+                operationFailed = true
                 // Do not infer absence from a thrown operation. It may have
                 // already committed the legacy owner or the access-state file.
             }
             let outcome = AccessRuntimeBootstrap.inspect(makeStore)
+            let failed = operationFailed
+            let committedOwner = ownerPINCommitted
             Queue.mainQueue().async { [weak self, weak shared, weak appLock] in
                 guard let self, let shared, let appLock, self.modeInitialSetupRun == run else { return }
                 self.modeInitialSetupRun = nil
@@ -2354,6 +2370,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     shared.requireModeAccountAccess()
                     self.installModePresentationGuard(appLock: appLock)
                 case .unconfigured:
+                    self.modeInitialSetupFailed = failed
+                    self.modeInitialSetupOwnerPINCommitted = committedOwner
                     appLock.refreshLegacyOwnerAuthentication()
                     do { try shared.restoreInitialModeAccountsIfUnconfigured(publication) }
                     catch {

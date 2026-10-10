@@ -1413,6 +1413,7 @@ public protocol SharedAccountContext: AnyObject {
     var appLockContext: AppLockContext { get }
     var requiresModePasscodeSettings: Bool { get }
     func makeModePasscodeSettings(context: AccountContext) -> ViewController?
+    var requiresInitialModeSetup: Bool { get }
     func makeInitialModeSetup(context: AccountContext) -> ViewController?
     
     var currentPresentationData: Atomic<PresentationData> { get }
@@ -1757,6 +1758,7 @@ public struct ChatSendMessageActionSheetControllerSendParameters {
 public extension SharedAccountContext {
     var requiresModePasscodeSettings: Bool { false }
     func makeModePasscodeSettings(context: AccountContext) -> ViewController? { nil }
+    var requiresInitialModeSetup: Bool { false }
     func makeInitialModeSetup(context: AccountContext) -> ViewController? { nil }
 }
 

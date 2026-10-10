@@ -1,8 +1,9 @@
 # Initial setup and partial-commit checks
 
 These checks are pending. They do not replace the full release/iPhone checklist.
-The initial native handler is currently unexposed by SettingsUI; component tests
-and successful compilation must not be reported as completion of these steps.
+The initial native handler is available from local PIN settings only on an
+ordinary unconfigured owner root with a complete confirmed account pool. Its
+component tests and successful compilation do not complete these manual steps.
 
 Use only a separate test installation, an accessible signing team and explicitly
 chosen test accounts. Do not copy IMO sessions, reset real Keychain/account stores,

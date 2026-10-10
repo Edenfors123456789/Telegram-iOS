@@ -4,14 +4,23 @@ import AccessModeUI
 
 final class InitialPINSetupViewTests: XCTestCase {
     private let choices: [InitialPINSetupView.AccountChoice] = [.init(recordID: -12, title: "Same name"), .init(recordID: 99, title: "Same name")]
-    private func view(accounts: [InitialPINSetupView.AccountChoice]? = nil, selected: Int64 = -12) throws -> InitialPINSetupView {
+    private func view(accounts: [InitialPINSetupView.AccountChoice]? = nil, selected: Int64 = -12, failure: Bool = false) throws -> InitialPINSetupView {
         try InitialPINSetupView(accountTitle: "Shared account", accounts: accounts ?? choices, selectedRecord: selected,
             strings: .init(current: "Current passcode", first: "PIN A", firstConfirmation: "Repeat PIN A",
                 second: "PIN B", secondConfirmation: "Repeat PIN B", submit: "Done", error: "Unable to update passcode"),
             requiresCurrentPasscode: true, currentUsesNumericKeyboard: true,
-            background: .white, fieldBackground: .white, textColor: .black, accent: .blue)
+            background: .white, fieldBackground: .white, textColor: .black, accent: .blue, initialFailure: failure)
     }
     private func descendants(_ view: UIView) -> [UIView] { view.subviews.flatMap { [$0] + descendants($0) } }
+
+    func testPickerCompositionForwardsNeutralFailureWithoutRestoringOldSecrets() throws {
+        let view = try view(failure: true)
+        XCTAssertTrue(descendants(view).compactMap { $0 as? UILabel }.contains { $0.text == "Unable to update passcode" })
+        XCTAssertTrue(descendants(view).compactMap { $0 as? UITextField }.allSatisfy { ($0.text ?? "").isEmpty && $0.isEnabled })
+        view.invalidate()
+        XCTAssertFalse(descendants(view).compactMap { $0 as? UILabel }.contains { $0.text == "Unable to update passcode" })
+        XCTAssertNil(view.selectedRecord); XCTAssertNil(view.submitted)
+    }
     private func fill(_ view: InitialPINSetupView) throws {
         for field in descendants(view).compactMap({ $0 as? UITextField }) {
             switch field.accessibilityIdentifier {

@@ -15,10 +15,13 @@ final class InitialPINSetupController: ViewController {
 
     init(context: AccountContext, accountTitle: String, accounts: [InitialPINSetupView.AccountChoice], selectedRecord: Int64,
          requiresCurrentPasscode: Bool, currentUsesNumericKeyboard: Bool,
+         initialFailure: Bool = false, ownerPINCommitted: Bool = false,
          isCurrent: @escaping () -> Bool, submit: @escaping (Int64, String?, String, String) -> Void) throws {
         assert(Thread.isMainThread)
         guard isCurrent() else { throw AccessError.staleAuthorization }
         let data = context.sharedContext.currentPresentationData.with { $0 }
+        let failureMessage = data.strings.PasscodeSettings_UpdateError + (ownerPINCommitted ?
+            "\nPIN A уже сохранён. При повторной настройке используйте его как текущий код." : "")
         self.isCurrent = isCurrent
         self.form = try InitialPINSetupView(accountTitle: accountTitle, accounts: accounts, selectedRecord: selectedRecord,
             strings: .init(current: data.strings.EnterPasscode_EnterPasscode,
@@ -26,10 +29,11 @@ final class InitialPINSetupController: ViewController {
                 firstConfirmation: "PIN A: " + data.strings.EnterPasscode_RepeatNewPasscode,
                 second: "PIN B: " + data.strings.EnterPasscode_EnterNewPasscodeChange,
                 secondConfirmation: "PIN B: " + data.strings.EnterPasscode_RepeatNewPasscode,
-                submit: data.strings.Common_Done, error: data.strings.PasscodeSettings_UpdateError),
+                submit: data.strings.Common_Done, error: failureMessage),
             requiresCurrentPasscode: requiresCurrentPasscode, currentUsesNumericKeyboard: currentUsesNumericKeyboard,
             background: data.theme.list.blocksBackgroundColor, fieldBackground: data.theme.list.itemBlocksBackgroundColor,
-            textColor: data.theme.list.itemPrimaryTextColor, accent: data.theme.list.itemAccentColor)
+            textColor: data.theme.list.itemPrimaryTextColor, accent: data.theme.list.itemAccentColor,
+            initialFailure: initialFailure)
         super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: data, style: .glass))
         self.title = "Dual PIN"
         self.statusBar.statusBarStyle = data.theme.rootController.statusBarStyle.style

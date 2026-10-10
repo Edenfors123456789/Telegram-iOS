@@ -3,11 +3,11 @@ import UIKit
 import AccessModeUI
 
 final class InitialPINSetupFormTests: XCTestCase {
-    private func form(owner: Bool = false, numeric: Bool = true) -> InitialPINSetupForm {
+    private func form(owner: Bool = false, numeric: Bool = true, failure: Bool = false) -> InitialPINSetupForm {
         InitialPINSetupForm(strings: .init(current: "Current passcode", first: "PIN A", firstConfirmation: "Repeat PIN A",
             second: "PIN B", secondConfirmation: "Repeat PIN B", submit: "Done", error: "Unable to update passcode"),
             requiresCurrentPasscode: owner, currentUsesNumericKeyboard: numeric,
-            background: .white, fieldBackground: .white, textColor: .black, accent: .blue)
+            background: .white, fieldBackground: .white, textColor: .black, accent: .blue, initialFailure: failure)
     }
     private func descendants(_ view: UIView) -> [UIView] { view.subviews.flatMap { [$0] + descendants($0) } }
     private func fields(_ form: InitialPINSetupForm) -> [UITextField] { descendants(form).compactMap { $0 as? UITextField } }
@@ -40,6 +40,25 @@ final class InitialPINSetupFormTests: XCTestCase {
             try? self.button(form).sendActions(for: .touchUpInside)
         }
         try button(form).sendActions(for: .touchUpInside)
+        try button(form).sendActions(for: .touchUpInside)
+        XCTAssertEqual(calls, 1); assertCleared(form)
+    }
+
+    func testFailedSetupShowsNeutralMessageWithEmptyFieldsAndRequiresFreshSubmission() throws {
+        XCTAssertFalse(showsError(form()))
+        let form = form(owner: true, failure: true)
+        XCTAssertTrue(showsError(form))
+        XCTAssertTrue(fields(form).allSatisfy { ($0.text ?? "").isEmpty && $0.isEnabled })
+        var calls = 0
+        form.submitted = { owner, a, b in
+            calls += 1; XCTAssertEqual(owner, "123456"); XCTAssertEqual(a, "111111"); XCTAssertEqual(b, "222222")
+            self.assertCleared(form); XCTAssertFalse(self.showsError(form))
+        }
+        try button(form).sendActions(for: .touchUpInside)
+        XCTAssertEqual(calls, 0)
+        try field("Current", in: form).text = "123456"
+        for id in ["A", "AConfirm"] { try field(id, in: form).text = "111111" }
+        for id in ["B", "BConfirm"] { try field(id, in: form).text = "222222" }
         try button(form).sendActions(for: .touchUpInside)
         XCTAssertEqual(calls, 1); assertCleared(form)
     }

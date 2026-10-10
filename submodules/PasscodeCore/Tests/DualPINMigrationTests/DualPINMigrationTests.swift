@@ -469,10 +469,23 @@ final class DualPINReferenceCommitTests: XCTestCase {
             isTemporary: false, isReadOnly: true, useCaches: false, removeDatabaseOnError: false,
             accessChallenge: AccountManagerAccessChallenge(prepare: { _ in }, resolve: { _, _ in nil }, finishInitialization: {}))
         let persisted = expectation(description: "Known-new-A reference remains on disk")
+        PasscodeSession.setApplicationAvailable(false)
         let read = reader.transaction { $0.getAccessChallengeData() }.start(next: { data in
-            XCTAssertEqual(data, accessChallengeData(reference: reference)); persisted.fulfill()
+            XCTAssertEqual(data, accessChallengeData(reference: reference))
+            do {
+                // The stock lock uses this exact metadata conversion/scope. Its
+                // fresh owner proof must work even while resource access is locked.
+                let unlock = try f.legacy.verify("123456", reference: passcodeCredentialReference(from: data), scope: .appUnlock)
+                defer { unlock.invalidate() }
+                XCTAssertEqual(unlock.scope, .appUnlock)
+                let resource = try f.legacy.verify("123456", scope: .resource(namespace: "owner-test"))
+                defer { resource.invalidate() }
+                XCTAssertThrowsError(try resource.withDerivedKey(namespace: "owner-test", domain: "migration-test") { $0 })
+            } catch { XCTFail("Saved owner code cannot reach stock-lock retry: \(error)") }
+            persisted.fulfill()
         })
         wait(for: [persisted], timeout: 5); read.dispose()
+        PasscodeSession.setApplicationAvailable(true)
         let cleared = expectation(description: "Pending authorization cleared")
         let clear = manager.transaction { $0.removeAuth() }.start(next: { _ in cleared.fulfill() })
         wait(for: [cleared], timeout: 5); clear.dispose()

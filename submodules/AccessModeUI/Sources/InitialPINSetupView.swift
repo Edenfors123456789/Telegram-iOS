@@ -20,14 +20,15 @@ public final class InitialPINSetupView: UIView {
 
     public init(accountTitle: String, accounts: [AccountChoice], selectedRecord: Int64,
                 strings: InitialPINSetupForm.Strings, requiresCurrentPasscode: Bool, currentUsesNumericKeyboard: Bool,
-                background: UIColor, fieldBackground: UIColor, textColor: UIColor, accent: UIColor) throws {
+                background: UIColor, fieldBackground: UIColor, textColor: UIColor, accent: UIColor,
+                initialFailure: Bool = false) throws {
         precondition(Thread.isMainThread)
         guard !accounts.isEmpty, Set(accounts.map(\.recordID)).count == accounts.count,
               accounts.contains(where: { $0.recordID == selectedRecord }) else { throw InputError.invalidAccounts }
         self.accounts = accounts; self.accountTitle = accountTitle; self.selectedRecord = selectedRecord
         form = InitialPINSetupForm(strings: strings, requiresCurrentPasscode: requiresCurrentPasscode,
             currentUsesNumericKeyboard: currentUsesNumericKeyboard, background: background,
-            fieldBackground: fieldBackground, textColor: textColor, accent: accent)
+            fieldBackground: fieldBackground, textColor: textColor, accent: accent, initialFailure: initialFailure)
         super.init(frame: .zero)
         backgroundColor = background
         label.text = accountTitle; label.textColor = textColor; label.font = .systemFont(ofSize: 13)

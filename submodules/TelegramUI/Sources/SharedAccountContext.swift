@@ -228,6 +228,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         guard !self.modeAccountAccessRequired else { return nil }
         return self.initialModeSetupFactory?(context)
     }
+    public var requiresInitialModeSetup: Bool { !self.modeAccountAccessRequired && self.initialModeSetupFactory != nil }
     private let managedAccountDisposables = DisposableDict<AccountRecordId>()
     private let activeAccountsWithInfoPromise = Promise<(primary: AccountRecordId?, accounts: [AccountWithInfo])>()
     // Main-thread cache for initial setup only. A configured/unavailable mode

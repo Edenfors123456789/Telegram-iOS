@@ -21,7 +21,8 @@ public final class InitialPINSetupForm: UIView {
     private var finished = false
 
     public init(strings: Strings, requiresCurrentPasscode: Bool, currentUsesNumericKeyboard: Bool,
-                background: UIColor, fieldBackground: UIColor, textColor: UIColor, accent: UIColor) {
+                background: UIColor, fieldBackground: UIColor, textColor: UIColor, accent: UIColor,
+                initialFailure: Bool = false) {
         self.strings = strings; self.requiresCurrentPasscode = requiresCurrentPasscode
         fields = (0 ..< (requiresCurrentPasscode ? 5 : 4)).map { _ in UITextField() }
         submitButton = UIButton(type: .system); errorLabel = UILabel()
@@ -47,6 +48,7 @@ public final class InitialPINSetupForm: UIView {
             stack.addArrangedSubview(field)
         }
         errorLabel.textColor = textColor; errorLabel.numberOfLines = 0; errorLabel.font = .systemFont(ofSize: 15)
+        errorLabel.text = initialFailure ? strings.error : nil
         stack.addArrangedSubview(errorLabel)
         submitButton.setTitle(strings.submit, for: .normal); submitButton.tintColor = accent
         submitButton.accessibilityIdentifier = "Passcode.Submit"
