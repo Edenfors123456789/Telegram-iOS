@@ -229,6 +229,13 @@ public final class AccessModeCoordinator {
         try store.acknowledgeEnrollmentCleanup(ticket)
     }
 
+    /// Synchronous metadata boundary; never enqueue network work in this body.
+    public func withEnrollmentCleanup<T>(_ ticket: AccountEnrollmentCleanupTicket, _ body: () throws -> T) throws -> T {
+        mutex.lock(); defer { mutex.unlock() }
+        guard process == .mainApplication else { throw AccessError.authenticationRequired }
+        return try store.withEnrollmentCleanup(ticket, body)
+    }
+
     public func completeEnrollment(_ permit: AccountEnrollmentPermit, confirmedAccount: AccountIdentity,
                                    isPremium: Bool, ticket: AccessTicket) throws -> (decision: AccountEnrollmentDecision, ticket: AccessTicket) {
         mutex.lock(); defer { mutex.unlock() }

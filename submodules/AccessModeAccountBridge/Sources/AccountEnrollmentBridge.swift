@@ -8,8 +8,43 @@ public enum AccountEnrollmentCreation {
     case unavailable
 }
 
+public enum AccountEnrollmentAuthCancellation: Equatable {
+    /// Only the owned auth entry is absent; session/record cleanup is still pending.
+    case detached
+    case unavailable
+}
+
 /// Metadata only. Native caller must cover and validate its originating UI/root.
 public enum AccountEnrollmentBridge {
+    public static func detachAuthForCleanup(accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
+        cleanup: AccountEnrollmentCleanupTicket) -> Signal<AccountEnrollmentAuthCancellation, NoError> {
+        // Idempotent submitted cleanup is allowed to drain even when its
+        // observer is disposed. The durable claim already canceled enrollment.
+        return accountManager.transaction { transaction -> AccountEnrollmentAuthCancellation in
+            do {
+                return try coordinator.withEnrollmentCleanup(cleanup) {
+                    guard let auth = transaction.getCurrentAuth(), auth.id.int64 == cleanup.provisionalRecordID else {
+                        // An unrelated current auth is never ours to remove.
+                        return .detached
+                    }
+                    let environments = auth.attributes.compactMap { attribute -> Bool? in
+                        guard case let .environment(value) = attribute else { return nil }
+                        switch value.environment {
+                        case .production: return false
+                        case .test: return true
+                        }
+                    }
+                    guard environments.count <= 1, (environments.first ?? false) == (cleanup.environment == .test) else {
+                        return .unavailable
+                    }
+                    transaction.removeAuth()
+                    // No record deletion, session proof or ledger acknowledgment.
+                    return .detached
+                }
+            } catch { return .unavailable }
+        }
+    }
+
     public static func createProvisionalAccount(accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
         ticket: AccessTicket, environment: AccessModeCore.AccountEnvironment) -> Signal<AccountEnrollmentCreation, NoError> {
         // A retained signal cannot allocate a second flow after its first owner

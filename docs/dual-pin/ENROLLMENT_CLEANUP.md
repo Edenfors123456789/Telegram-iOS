@@ -23,6 +23,19 @@ membership transfer or enrollment completion. Claiming again is idempotent;
 foreign/reopened-instance tickets and old acknowledgments cannot erase a later
 owner. A fresh instance obtains a fresh local ticket for the durable claim.
 
+`withEnrollmentCleanup` provides a pre-side-effect synchronous metadata boundary.
+It validates the same exact durable owner and completion cancellation before the
+callback, and keeps the vault read lock held through that callback. Old/foreign
+tickets, unavailable/corrupt storage and Share are denied before the body runs.
+Successful reads and throwing callbacks do not rewrite the vault, acknowledge
+cleanup, change the role or grant an unlock. Acknowledgment shares this owner
+validation but remains a separate operation after actual cleanup/absence proof.
+
+The callback must be short and synchronous; do not reenter the vault or enqueue
+network/async work inside it. A network cleanup job needs a fresh validation at
+submission and again when its result is consumed, and must preserve pending
+ownership on failure. The gate alone does not revoke a Telegram session.
+
 ## Storage version and failures
 
 First provisional binding upgrades the vault payload to version 3. Existing
@@ -56,6 +69,16 @@ Cancellation during binding rolls back the unpublished auth while retaining any
 durable cleanup ownership. A later cancellation, after the last check or after
 metadata commit, still requires native reconciliation of that exact owner; this
 is not an absolute guarantee that subscription disposal undoes a commit.
+
+`detachAuthForCleanup` runs an idempotent AccountManager transaction after the
+durable cleanup claim. It validates the current claim under the Core read gate
+before touching metadata, removes only the matching raw auth entry with the
+same unambiguous environment, and leaves a replacement auth intact. Missing
+owned auth is already detached. Its result proves only that auth-entry boundary:
+an already promoted record and the encrypted ownership ledger remain unchanged.
+It does not delete account data, revoke a server session or acknowledge cleanup.
+This submitted cleanup may drain even after its observer is disposed; each
+execution still validates the current owner inside the metadata callback.
 
 The module does not expose authorization UI and is not connected to a native
 root/session cleanup adapter yet. A real caller must prove its originating root,
@@ -96,10 +119,11 @@ admission, or full stage-3 acceptance.
 
 ## Fresh component verification
 
-Core cleanup/schema checks passed 144 Mac cases and 146 hosted iOS cases; the
+Core cleanup/schema checks passed 149 Mac cases and 151 hosted iOS cases; the
 fresh legacy migration suite passed 29 hosted cases. Metadata bridge passed
-16 hosted cases with zero failures, exit 0, 52.508 seconds overall / 4.010 test
-seconds, including nine creation/cancellation and seven common-promotion cases.
+24 hosted cases with zero failures, exit 0, 48.000 seconds overall / 6.575 test
+seconds, including nine creation/cancellation, seven common-promotion and eight
+auth-detachment cases.
 They use unique temporary fixture directories, no real account session
 or network authorization. The independent-reader case verifies actual atomic
 AccountManager metadata and the reopened encrypted vault; the publication
@@ -112,8 +136,20 @@ timed out after the actual tests completed; both facts remain in the logs. Green
 finished successfully. Common promotion red ran 14 cases with 21 expected
 failures; its expanded red ran 16 with 27 expected failures. Both had zero
 unexpected XCTest errors and later hit the upstream result-export `_values`
-KeyError. All 16 corrected cases then passed with exit 0. Retained evidence is under ignored
+KeyError. All 16 corrected cases then passed with exit 0. The cleanup read gate
+red ran five Mac cases with seven expected failures; its green and full 149-case
+Mac/151-case hosted checks passed. Auth-detachment red ran 22 cases with six
+expected failures, zero unexpected errors; 22-case green and expanded 24-case
+checks then passed with exit 0. Retained evidence is under ignored
 `build-input/dual-pin-stage3/account-bridge-creation-*`.
+
+Read-gate evidence is under `cleanup-read-gate-*`, and auth-detachment evidence
+is under `auth-detachment-*` in the same ignored directory. No real account
+session was authorized or revoked by these tests. The official
+[auth.logOut reference](https://core.telegram.org/method/auth.logOut) was refreshed
+on 2026-10-10: the method returns `auth.LoggedOut`. Our future native job must
+keep ownership/retry evidence on a network failure; a generic upstream cleanup
+completion that swallowed that failure is insufficient.
 
 Hosted metadata command (run serially with other Bazel/build invocations):
 

@@ -2,6 +2,97 @@ import XCTest
 @testable import AccessModeCore
 
 final class EnrollmentCleanupTests: XCTestCase {
+    func testCleanupReadGateWorksWhileLockedWithoutRewritingOrUnlocking() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator), permit = try coordinator.beginEnrollment(ticket: a)
+        try coordinator.bindEnrollment(permit, provisionalRecordID: -20, environment: .test, ticket: a)
+        try coordinator.lock()
+        guard let owner = try cleanup(coordinator) else { return }
+        let before = try Data(contentsOf: f.file)
+        var ran = false
+        do {
+            let result = try coordinator.withEnrollmentCleanup(owner) {
+                ran = true
+                XCTAssertEqual(owner.provisionalRecordID, -20)
+                XCTAssertEqual(owner.environment, .test)
+                return 71
+            }
+            XCTAssertEqual(result, 71)
+        } catch { XCTFail("Current cleanup read gate refused: \(error)") }
+        XCTAssertTrue(ran)
+        XCTAssertEqual(try Data(contentsOf: f.file), before)
+        XCTAssertEqual(coordinator.state, .locked)
+        XCTAssertThrowsError(try coordinator.withPolicy(a) { $0.visibleAccounts })
+        // This is only a read gate; no external cleanup or acknowledgment here.
+    }
+
+    func testStaleCleanupReadGateCannotRunOrInvalidateANewerRoleGrant() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator), permit = try coordinator.beginEnrollment(ticket: a)
+        try coordinator.bindEnrollment(permit, provisionalRecordID: 20, ticket: a)
+        guard let old = try cleanup(coordinator) else { return }
+        try coordinator.acknowledgeEnrollmentCleanup(old)
+        let b = try ready(coordinator, pin: "654321"), next = try coordinator.beginEnrollment(ticket: b)
+        try coordinator.bindEnrollment(next, provisionalRecordID: 21, ticket: b)
+        guard let current = try cleanup(coordinator) else { return }
+        let before = try Data(contentsOf: f.file)
+        XCTAssertThrowsError(try coordinator.withEnrollmentCleanup(old) { XCTFail("Stale cleanup body ran") })
+        XCTAssertEqual(try Data(contentsOf: f.file), before)
+        XCTAssertEqual(try coordinator.withPolicy(b) { $0.mode }, .b)
+        XCTAssertNoThrow(try coordinator.withEnrollmentCleanup(current) {})
+    }
+
+    func testForeignReopenedAndShareCleanupReadGatesCannotRun() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator), permit = try coordinator.beginEnrollment(ticket: a)
+        try coordinator.bindEnrollment(permit, provisionalRecordID: 20, ticket: a)
+        guard let original = try cleanup(coordinator) else { return }
+        let reopened = AccessModeCoordinator(store: try f.reopen())
+        guard let owner = try cleanup(reopened) else { return }
+        let foreign = try VaultFixture(), other = AccessModeCoordinator(store: foreign.store)
+        let share = AccessModeCoordinator(store: f.store, process: .shareExtension)
+        let before = try Data(contentsOf: f.file)
+        XCTAssertThrowsError(try reopened.withEnrollmentCleanup(original) { XCTFail("Foreign issuer body ran") })
+        XCTAssertThrowsError(try other.withEnrollmentCleanup(owner) { XCTFail("Foreign vault body ran") })
+        XCTAssertThrowsError(try share.withEnrollmentCleanup(owner) { XCTFail("Share cleanup body ran") })
+        XCTAssertEqual(try Data(contentsOf: f.file), before)
+        XCTAssertEqual(reopened.state, .locked)
+        XCTAssertNoThrow(try reopened.withEnrollmentCleanup(owner) {})
+    }
+
+    func testThrowingCleanupReadBodyKeepsTheExactOwnerForRetry() throws {
+        let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator), permit = try coordinator.beginEnrollment(ticket: a)
+        try coordinator.bindEnrollment(permit, provisionalRecordID: 20, ticket: a)
+        guard let owner = try cleanup(coordinator) else { return }
+        let before = try Data(contentsOf: f.file)
+        var ran = false
+        XCTAssertThrowsError(try coordinator.withEnrollmentCleanup(owner) { () -> Void in
+            ran = true
+            throw AccessError.invalidTransition
+        }) { XCTAssertEqual($0 as? AccessError, .invalidTransition) }
+        XCTAssertTrue(ran)
+        XCTAssertEqual(try Data(contentsOf: f.file), before)
+        XCTAssertNoThrow(try coordinator.withEnrollmentCleanup(owner) {})
+        XCTAssertEqual(try coordinator.withPolicy(a) { $0.mode }, .a)
+    }
+
+    func testUnreadableOrCorruptCleanupReadGateNeverRunsTheBody() throws {
+        for corrupt in [false, true] {
+            let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store)
+            let a = try ready(coordinator), permit = try coordinator.beginEnrollment(ticket: a)
+            try coordinator.bindEnrollment(permit, provisionalRecordID: 20, ticket: a)
+            guard let owner = try cleanup(coordinator) else { return }
+            if corrupt {
+                try f.store.file.transaction { stored, _ in stored!.pendingEnrollmentCleanup = nil }
+            } else {
+                f.keys.denied = true
+            }
+            XCTAssertThrowsError(try coordinator.withEnrollmentCleanup(owner) { XCTFail("Unavailable cleanup body ran") })
+            f.keys.denied = false
+        }
+    }
+
     func testCorruptOwnershipOrMissingNewSchemaLedgerNeverFallsBackToSetup() throws {
         for mutation in 0 ... 3 {
             let f = try VaultFixture(), coordinator = AccessModeCoordinator(store: f.store)

@@ -2,7 +2,7 @@ import XCTest
 import Foundation
 @testable import AccessModeCore
 import AccessModeAccountBridge
-import TelegramCore
+@testable import TelegramCore
 import SwiftSignalKit
 
 private final class BridgeDeviceKey: AccessDeviceKeyProvider {
@@ -44,6 +44,135 @@ private final class BridgeFixture {
 }
 
 final class AccountEnrollmentBridgeTests: XCTestCase {
+    func testSubmittedAuthDetachmentDrainsAfterItsObserverIsDisposed() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        let began = expectation(description: "Earlier metadata transaction began")
+        let release = DispatchSemaphore(value: 0)
+        let blocker = f.manager.transaction { _ -> Void in
+            began.fulfill()
+            XCTAssertEqual(release.wait(timeout: .now() + 3), .success)
+        }.start()
+        defer { release.signal(); blocker.dispose() }
+        wait(for: [began], timeout: 3)
+        let submitted = AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)
+            .start(next: { _ in XCTFail("Disposed cleanup observer delivered a result") })
+        submitted.dispose()
+        release.signal()
+        XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }))
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+    }
+
+    func testUnreadableCleanupOwnershipCannotDetachAnyAuthAndCanBeRetried() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        f.keys.failOnLoad = f.keys.loads + 1
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .unavailable)
+        XCTAssertEqual(try value(f.manager.transaction { $0.getCurrentAuth()?.id }), id)
+        f.keys.failOnLoad = nil
+        XCTAssertEqual(try coordinator.withPolicy(a) { $0.mode }, .a)
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }))
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+    }
+
+    func testOwnedAuthDetachmentWhileLockedStopsLatePromotionAndKeepsCleanupPending() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        try coordinator.lock()
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }))
+        XCTAssertFalse(try value(f.manager.transaction { switchAuthorizationRecord(transaction: $0, id: id, testingEnvironment: false, isSupportUser: false) }))
+        XCTAssertTrue(try value(f.manager.transaction { $0.getRecords().isEmpty }))
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+        XCTAssertEqual(coordinator.state, .locked)
+        // No acknowledgment: detaching auth is not server/session cleanup proof.
+    }
+
+    func testOwnedAuthDetachmentCannotRemoveAReplacementAuth() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        let replacement = try XCTUnwrap(value(f.manager.transaction { $0.createAuth([.environment(AccountEnvironmentAttribute(environment: .test))])?.id }))
+        XCTAssertNotEqual(replacement, id)
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        XCTAssertEqual(try value(f.manager.transaction { $0.getCurrentAuth()?.id }), replacement)
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+    }
+
+    func testAuthDetachmentLeavesAnAlreadyPromotedOwnedRecordForSessionCleanup() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        XCTAssertTrue(try value(f.manager.transaction { switchAuthorizationRecord(transaction: $0, id: id, testingEnvironment: false, isSupportUser: false) }))
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        XCTAssertEqual(try value(f.manager.transaction { $0.getRecords().map { $0.id } }), [id])
+        XCTAssertEqual(try value(f.manager.transaction { $0.getCurrent()?.0 }), id)
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+        XCTAssertEqual(try coordinator.withPolicy(a) { $0.visibleAccounts }, [f.config.selectedA])
+        // No deletion/acknowledgment without actual session cleanup proof.
+    }
+
+    func testCleanupEnvironmentMismatchPreservesTheMatchingRawAuth() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator), permit = try coordinator.beginEnrollment(ticket: a)
+        let id = try XCTUnwrap(value(f.manager.transaction { $0.createAuth([.environment(AccountEnvironmentAttribute(environment: .production))])?.id }))
+        // Deliberately inconsistent fixtures simulate changed raw metadata.
+        try coordinator.bindEnrollment(permit, provisionalRecordID: id.int64, environment: .test, ticket: a)
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .unavailable)
+        XCTAssertEqual(try value(f.manager.transaction { $0.getCurrentAuth()?.id }), id)
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.environment, .test)
+    }
+
+    func testStaleAuthDetachmentCannotTouchANewerProvisionalOwner() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let first = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = first else { XCTFail("Current creation refused"); return }
+        let old = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        _ = try value(f.manager.transaction { transaction -> Void in
+            XCTAssertEqual(transaction.getCurrentAuth()?.id, id)
+            transaction.removeAuth()
+        })
+        XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }))
+        try coordinator.acknowledgeEnrollmentCleanup(old)
+        let next = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .test))
+        guard case let .created(newID, _) = next else { XCTFail("Next creation refused"); return }
+        let current = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: old)), .unavailable)
+        XCTAssertEqual(try value(f.manager.transaction { $0.getCurrentAuth()?.id }), newID)
+        XCTAssertEqual(current.provisionalRecordID, newID.int64)
+        XCTAssertEqual(try coordinator.withPolicy(a) { $0.mode }, .a)
+    }
+
+    func testForeignAndShareAuthDetachmentCannotMutateMainMetadata() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        let other = try BridgeFixture(), foreign = AccessModeCoordinator(store: other.store)
+        let share = AccessModeCoordinator(store: f.store, process: .shareExtension)
+        for denied in [foreign, share] {
+            XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: denied, cleanup: cleanup)), .unavailable)
+            XCTAssertEqual(try value(f.manager.transaction { $0.getCurrentAuth()?.id }), id)
+        }
+    }
+
     func testDisposedCreationDoesNotRunAfterAnEarlierMetadataTransaction() throws {
         let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
         let a = try ready(coordinator)

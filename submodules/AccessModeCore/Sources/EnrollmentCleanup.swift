@@ -24,6 +24,23 @@ struct PendingEnrollmentCleanup: Codable {
 }
 
 extension AccessCredentialStore {
+    private func requireEnrollmentCleanup(_ ticket: AccountEnrollmentCleanupTicket, state: AccessVaultState) throws {
+        try state.validate()
+        guard ticket.issuer == issuer, let cleanup = state.pendingEnrollmentCleanup,
+              cleanup.claimID == ticket.claimID, cleanup.flowID == ticket.flowID,
+              cleanup.provisionalRecordID == ticket.provisionalRecordID, cleanup.environment == ticket.environment,
+              state.pendingEnrollment == nil else { throw AccessError.staleAuthorization }
+    }
+
+    /// Hold the durable read lock through the small synchronous metadata action.
+    /// The callback must not reenter the vault or enqueue network/async work.
+    func withEnrollmentCleanup<T>(_ ticket: AccountEnrollmentCleanupTicket, _ body: () throws -> T) throws -> T {
+        try file.withReadState { state in
+            try requireEnrollmentCleanup(ticket, state: state)
+            return try body()
+        }
+    }
+
     /// Claim before touching AccountManager. Claiming cancels completion authority
     /// durably, so the same provisional record cannot become a member mid-cleanup.
     func claimEnrollmentCleanup() throws -> AccountEnrollmentCleanupTicket? {
@@ -48,11 +65,7 @@ extension AccessCredentialStore {
     func acknowledgeEnrollmentCleanup(_ ticket: AccountEnrollmentCleanupTicket) throws {
         try file.transaction { stored, _ in
             guard var state = stored else { throw AccessError.authenticationRequired }
-            try state.validate()
-            guard ticket.issuer == issuer, let cleanup = state.pendingEnrollmentCleanup,
-                  cleanup.claimID == ticket.claimID, cleanup.flowID == ticket.flowID,
-                  cleanup.provisionalRecordID == ticket.provisionalRecordID, cleanup.environment == ticket.environment,
-                  state.pendingEnrollment == nil else { throw AccessError.staleAuthorization }
+            try requireEnrollmentCleanup(ticket, state: state)
             state.pendingEnrollmentCleanup = nil
             stored = state
         }
