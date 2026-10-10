@@ -25,9 +25,26 @@ does not establish native context-menu rendering or end-to-end chat filtering.
   Native B remains denied at this intermediate stage; do not weaken admission to
   exercise this manually before the filtering/external-surface gates pass.
 
+## Central management view (adapter route pending)
+
+- UIKit component verification: 44 hosted cases passed, including actual window
+  layout, search, duplicate titles with distinct row IDs and clearing retained
+  cell text before callbacks, on inactivity and on window removal. Its rendered
+  attachment was visually inspected. These presentation IDs grant no authority.
+- The native wrapper compiles in the full application. It is still unexposed:
+  exact root-bound data loading and the A-only Settings route follow next.
+- Once connected, enter from both the shared and an A-exclusive account. The
+  list must contain only the shared account's hidden chats. Equal titles,
+  cloud/secret aliases and signed secret IDs must retain exact chat identity.
+- Delay the peer query, lock and enter A again, then deliver the old result:
+  no old names or controller may appear. Repeat with account/policy changes,
+  inactivity, a detached settings page and missing local peer metadata.
+- Searching must never open a conversation. Selecting a row changes only the
+  local visibility flag behind the cover; it must prepare a fresh permitted root.
+
 ## Remaining implementation
 
-The adjacent title marker, central hidden-chat search/management screen and native
+The adjacent title marker, central management adapter/route and native
 account enrollment are still stage-3 work. Full B discovery/history filtering,
 message provenance, notification suppression and external surfaces remain later
 stages. This menu checkpoint does not complete any of those requirements.
