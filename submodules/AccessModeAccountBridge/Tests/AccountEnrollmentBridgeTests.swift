@@ -1,7 +1,7 @@
 import XCTest
 import Foundation
 @testable import AccessModeCore
-import AccessModeAccountBridge
+@testable import AccessModeAccountBridge
 @testable import TelegramCore
 import SwiftSignalKit
 
@@ -43,7 +43,196 @@ private final class BridgeFixture {
     deinit { try? FileManager.default.removeItem(at: directory) }
 }
 
+private final class FakeLogoutTransport: AccountEnrollmentLogoutTransport {
+    let recordID: Int64
+    let environment: AccessModeCore.AccountEnvironment
+    var reply: Signal<AccountEnrollmentLogoutReply, NoError>
+    var starts = 0
+    var hasOriginalAuthorizationBinding = false
+    var onStart: (() -> Void)?
+    init(recordID: Int64, environment: AccessModeCore.AccountEnvironment, reply: Signal<AccountEnrollmentLogoutReply, NoError>) {
+        self.recordID = recordID; self.environment = environment; self.reply = reply
+    }
+    func logout() -> Signal<AccountEnrollmentLogoutReply, NoError> {
+        return Signal { subscriber in
+            self.starts += 1
+            self.onStart?()
+            return self.reply.start(next: { subscriber.putNext($0) }, completed: { subscriber.putCompletion() })
+        }
+    }
+}
+
 final class AccountEnrollmentBridgeTests: XCTestCase {
+    func testInactiveSessionReplyNeedsAnOriginalCredentialBinding() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        let unbound = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.rpcError(code: 401, type: "AUTH_KEY_UNREGISTERED")))
+        logoutUnavailable(try value(AccountEnrollmentBridge.revokeSession(transport: unbound, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)))
+        // Tests simulate a future verified transport; public Native has no override.
+        let bound = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.rpcError(code: 401, type: "SESSION_REVOKED")))
+        bound.hasOriginalAuthorizationBinding = true
+        guard case .confirmed = try value(AccountEnrollmentBridge.revokeSession(transport: bound, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)) else {
+            XCTFail("Bound inactive response was refused"); return
+        }
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+    }
+
+    func testPublicLogoutAdapterRefusesAnUpgradingAccountWithoutNetwork() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator), permit = try coordinator.beginEnrollment(ticket: a)
+        try coordinator.bindEnrollment(permit, provisionalRecordID: 20, ticket: a)
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        logoutUnavailable(try value(AccountEnrollmentBridge.revokeProvisionalSession(account: .upgrading(0), accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)))
+        XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }))
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, 20)
+    }
+    func testOnlyExactConfirmedLogoutOrInactiveAuthorizationResponsesAreAccepted() {
+        XCTAssertTrue(AccountEnrollmentBridge.isConfirmedSessionLogout(.loggedOut))
+        for type in ["AUTH_KEY_UNREGISTERED", "AUTH_KEY_INVALID", "SESSION_REVOKED", "SESSION_EXPIRED"] {
+            XCTAssertTrue(AccountEnrollmentBridge.isConfirmedSessionLogout(.rpcError(code: 401, type: type)))
+            XCTAssertFalse(AccountEnrollmentBridge.isConfirmedSessionLogout(.rpcError(code: 400, type: type)))
+            XCTAssertFalse(AccountEnrollmentBridge.isConfirmedSessionLogout(.rpcError(code: 401, type: type + "_OTHER")))
+        }
+        XCTAssertTrue(AccountEnrollmentBridge.isConfirmedSessionLogout(.rpcError(code: 406, type: "AUTH_KEY_DUPLICATED")))
+        for type in ["AUTH_KEY_PERM_EMPTY", "SESSION_PASSWORD_NEEDED", "USER_DEACTIVATED", "UNKNOWN"] {
+            XCTAssertFalse(AccountEnrollmentBridge.isConfirmedSessionLogout(.rpcError(code: 401, type: type)))
+        }
+        XCTAssertFalse(AccountEnrollmentBridge.isConfirmedSessionLogout(.rpcError(code: 420, type: "FLOOD_WAIT_30")))
+        XCTAssertFalse(AccountEnrollmentBridge.isConfirmedSessionLogout(.rpcError(code: 500, type: "INTERNAL")))
+        XCTAssertFalse(AccountEnrollmentBridge.isConfirmedSessionLogout(.unavailable))
+    }
+
+    func testScopedConfirmedSessionLogoutKeepsMetadataAndLedgerForLaterCleanup() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .test))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        XCTAssertTrue(try value(f.manager.transaction { switchAuthorizationRecord(transaction: $0, id: id, testingEnvironment: true, isSupportUser: false) }))
+        try coordinator.lock()
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        let transport = FakeLogoutTransport(recordID: id.int64, environment: .test, reply: .single(.loggedOut))
+        let result = try value(AccountEnrollmentBridge.revokeSession(transport: transport, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup))
+        guard case .confirmed = result else { XCTFail("Scoped logout was not confirmed"); return }
+        XCTAssertEqual(transport.starts, 1)
+        XCTAssertEqual(try value(f.manager.transaction { $0.getRecords().map { $0.id } }), [id])
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+        XCTAssertEqual(coordinator.state, .locked)
+        // Fake transport proves adapter control flow, not an actual server logout.
+    }
+
+    func testLogoutCannotStartBeforeOwnedAuthDetachmentOrWithTheWrongTarget() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        let stillAttached = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.loggedOut))
+        logoutUnavailable(try value(AccountEnrollmentBridge.revokeSession(transport: stillAttached, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)))
+        XCTAssertEqual(stillAttached.starts, 0)
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        for transport in [FakeLogoutTransport(recordID: id.int64 ^ 1, environment: .production, reply: .single(.loggedOut)),
+                          FakeLogoutTransport(recordID: id.int64, environment: .test, reply: .single(.loggedOut))] {
+            logoutUnavailable(try value(AccountEnrollmentBridge.revokeSession(transport: transport, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)))
+            XCTAssertEqual(transport.starts, 0)
+        }
+        let other = try BridgeFixture(), foreign = AccessModeCoordinator(store: other.store)
+        let share = AccessModeCoordinator(store: f.store, process: .shareExtension)
+        for denied in [foreign, share] {
+            let transport = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.loggedOut))
+            logoutUnavailable(try value(AccountEnrollmentBridge.revokeSession(transport: transport, accountManager: f.manager, coordinator: denied, cleanup: cleanup)))
+            XCTAssertEqual(transport.starts, 0)
+        }
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+    }
+
+    func testLogoutEmptyFailureAndTimeoutDoNotConfirmOrAcknowledgeCleanup() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        let replies: [Signal<AccountEnrollmentLogoutReply, NoError>] = [.single(.unavailable), .complete(), .never()]
+        for reply in replies {
+            let transport = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: reply)
+            logoutUnavailable(try value(AccountEnrollmentBridge.revokeSession(transport: transport, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup, timeoutSeconds: 0.02)))
+            XCTAssertEqual(transport.starts, 1)
+            XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+        }
+        XCTAssertEqual(try coordinator.withPolicy(a) { $0.mode }, .a)
+    }
+
+    private func logoutUnavailable(_ result: AccountEnrollmentLogoutResult, file: StaticString = #filePath, line: UInt = #line) {
+        guard case .unavailable = result else { XCTFail("Unconfirmed logout produced proof", file: file, line: line); return }
+    }
+
+    func testRetainedLogoutSignalCannotIssueAnotherRPC() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        let transport = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.loggedOut))
+        let signal = AccountEnrollmentBridge.revokeSession(transport: transport, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)
+        guard case .confirmed = try value(signal) else { XCTFail("Current logout refused"); return }
+        logoutUnavailable(try value(signal))
+        XCTAssertEqual(transport.starts, 1)
+    }
+
+    func testLateLogoutReplyCannotConfirmOrResetANewerOwner() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let old = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: old)), .detached)
+        let pipe = ValuePipe<AccountEnrollmentLogoutReply>(), began = expectation(description: "Scoped fake RPC began")
+        let done = expectation(description: "Stale reply refused")
+        let transport = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: pipe.signal())
+        transport.onStart = { began.fulfill() }
+        let pending = AccountEnrollmentBridge.revokeSession(transport: transport, accountManager: f.manager, coordinator: coordinator, cleanup: old).start(next: {
+            self.logoutUnavailable($0); done.fulfill()
+        })
+        defer { pending.dispose() }
+        wait(for: [began], timeout: 3)
+        // A different fixture worker resolved this no-session owner first.
+        try coordinator.acknowledgeEnrollmentCleanup(old)
+        let next = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .test))
+        guard case let .created(newID, _) = next else { XCTFail("Next creation refused"); return }
+        let current = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        pipe.putNext(.loggedOut)
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(try value(f.manager.transaction { $0.getCurrentAuth()?.id }), newID)
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, current.provisionalRecordID)
+        XCTAssertEqual(try coordinator.withPolicy(a) { $0.mode }, .a)
+    }
+
+    func testDisposedQueuedLogoutCannotStartItsRPC() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        let creation = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator, ticket: a, environment: .production))
+        guard case let .created(id, _) = creation else { XCTFail("Current creation refused"); return }
+        let cleanup = try XCTUnwrap(coordinator.claimEnrollmentCleanup())
+        XCTAssertEqual(try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)), .detached)
+        let began = expectation(description: "Earlier metadata transaction began"), release = DispatchSemaphore(value: 0)
+        let blocker = f.manager.transaction { _ -> Void in
+            began.fulfill(); XCTAssertEqual(release.wait(timeout: .now() + 3), .success)
+        }.start()
+        defer { release.signal(); blocker.dispose() }
+        wait(for: [began], timeout: 3)
+        let transport = FakeLogoutTransport(recordID: id.int64, environment: .production, reply: .single(.loggedOut))
+        let pending = AccountEnrollmentBridge.revokeSession(transport: transport, accountManager: f.manager, coordinator: coordinator, cleanup: cleanup)
+            .start(next: { _ in XCTFail("Disposed queued logout delivered a result") })
+        pending.dispose(); release.signal()
+        XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }))
+        XCTAssertEqual(transport.starts, 0)
+        XCTAssertEqual(try coordinator.claimEnrollmentCleanup()?.provisionalRecordID, id.int64)
+    }
     func testSubmittedAuthDetachmentDrainsAfterItsObserverIsDisposed() throws {
         let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
         let a = try ready(coordinator)

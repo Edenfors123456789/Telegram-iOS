@@ -7,7 +7,7 @@ swift_library(
     module_name = "AccessModeAccountBridge",
     srcs = glob(["Sources/**/*.swift"]),
     copts = ["-warnings-as-errors"],
-    deps = ["//submodules/AccessModeCore", "//submodules/TelegramCore", "//submodules/SSignalKit/SwiftSignalKit"],
+    deps = ["//submodules/AccessModeCore", "//submodules/TelegramCore", "//submodules/TelegramApi", "//submodules/SSignalKit/SwiftSignalKit"],
     visibility = ["//visibility:public"],
 )
 

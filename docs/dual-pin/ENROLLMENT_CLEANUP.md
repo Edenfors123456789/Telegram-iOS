@@ -80,6 +80,22 @@ It does not delete account data, revoke a server session or acknowledge cleanup.
 This submitted cleanup may drain even after its observer is disposed; each
 execution still validates the current owner inside the metadata callback.
 
+`revokeProvisionalSession` is an unconnected Network adapter. It checks the
+account's exact signed ID/environment, its directory under the supplied actual
+AccountManager root, the current claimed Core owner and prior auth detachment.
+The request is single-use, bounded to 15 seconds, and stops the owned service
+tasks without automatic flood waiting. Empty responses, timeout, cancellation
+and stale result ownership cannot mint its non-Codable ephemeral proof. No
+metadata record deletion or ledger acknowledgment occurs at this boundary.
+
+The real transport confirms only successful `auth.LoggedOut`. Every real RPC
+error remains unconfirmed. Internal tests classify the exact documented inactive
+authorization errors, but applicability requires an original-credential binding;
+the public transport has no such override. A newly generated unregistered key
+after database/key loss does not prove the previous session was revoked.
+Persistent original-key/restart reconciliation remains a prerequisite for native
+cleanup admission. The internal fake transport is not real server evidence.
+
 The module does not expose authorization UI and is not connected to a native
 root/session cleanup adapter yet. A real caller must prove its originating root,
 actual AccountManager/context and confirmed self identity separately.
@@ -121,9 +137,9 @@ admission, or full stage-3 acceptance.
 
 Core cleanup/schema checks passed 149 Mac cases and 151 hosted iOS cases; the
 fresh legacy migration suite passed 29 hosted cases. Metadata bridge passed
-24 hosted cases with zero failures, exit 0, 48.000 seconds overall / 6.575 test
+33 hosted cases with zero failures, exit 0, 54.048 seconds overall / 8.691 test
 seconds, including nine creation/cancellation, seven common-promotion and eight
-auth-detachment cases.
+auth-detachment and nine scoped logout/response cases.
 They use unique temporary fixture directories, no real account session
 or network authorization. The independent-reader case verifies actual atomic
 AccountManager metadata and the reopened encrypted vault; the publication
