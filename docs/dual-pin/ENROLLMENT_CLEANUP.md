@@ -231,6 +231,28 @@ zero unexpected errors, against a refusing stub; green passed all 76 with exit
 between removal and acknowledgment was actually exercised and then retried.
 Evidence: `build-input/dual-pin-stage0/local-completion-20261010/`.
 
+## Cleanup job
+
+`AccountEnrollmentBridge.runProvisionalCleanup` composes the boundaries above
+for an already-claimed owner: detach the owned auth, then revoke, one at a
+time, each key that an authorizing request may have used and that has no
+receipt yet, then complete locally. The revocation is injected and trusted for
+nothing: after it finishes, whatever it emitted, the job asks Core whether the
+key's receipt exists. A missing receipt (an empty, failed or lying attempt)
+stops the job with `.retryLater`, retaining the auth detachment, record, ledger
+and directory; the next key is not tried until the previous one is confirmed.
+A retry revokes only keys still unconfirmed. Keys never marked as attempted are
+never sent a logout. A foreign or Share coordinator gets `.unavailable` before
+anything is detached or revoked. The caller claims first and decides when to
+retry; the job does not poll.
+
+The native caller still has to supply the revocation (the scoped transport
+covers the original main key only; any other required key returns no receipt
+and keeps the owner) and to release its provisional account object before
+completion. Six regressions: the real red ran 83 hosted cases with 14
+expected failures against a refusing stub; green passed all 83. Evidence:
+`build-input/dual-pin-stage0/cleanup-job-20261010/`.
+
 ## Native integration still pending
 
 `AccessModeAccountBridge` now implements the metadata-creation boundary in an
