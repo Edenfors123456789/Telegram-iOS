@@ -47,6 +47,14 @@ public enum AccountEnrollmentBridge {
 
     public static func createProvisionalAccount(accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
         ticket: AccessTicket, environment: AccessModeCore.AccountEnvironment) -> Signal<AccountEnrollmentCreation, NoError> {
+        createProvisionalAccount(accountManager: accountManager, coordinator: coordinator, ticket: ticket,
+            environment: environment, beforeDirectoryReservation: { _ in })
+    }
+
+    /// The hook lets tests place an entry at the randomly allocated path.
+    static func createProvisionalAccount(accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
+        ticket: AccessTicket, environment: AccessModeCore.AccountEnvironment,
+        beforeDirectoryReservation: @escaping (AccountRecordId) -> Void) -> Signal<AccountEnrollmentCreation, NoError> {
         // A retained signal cannot allocate a second flow after its first owner
         // has been resolved. Each deliberate attempt needs a new invocation.
         let consumed = Atomic<Bool>(value: false)
@@ -80,10 +88,19 @@ public enum AccountEnrollmentBridge {
                     try? coordinator.cancelEnrollment(permit, ticket: ticket)
                     return .unavailable
                 }
+                beforeDirectoryReservation(record.id)
+                // Nor may a raw ID without a record adopt an orphaned directory's
+                // existing Postbox and keys as the new provisional session.
+                guard let reserved = reserveAccountDirectory(accountManager: accountManager, recordID: record.id) else {
+                    if transaction.getCurrentAuth()?.id == record.id { transaction.removeAuth() }
+                    try? coordinator.cancelEnrollment(permit, ticket: ticket)
+                    return .unavailable
+                }
                 do {
                     try coordinator.bindEnrollment(permit, provisionalRecordID: record.id.int64, environment: environment, ticket: ticket)
                     guard !cancelled.with({ $0 }) else {
                         if transaction.getCurrentAuth()?.id == record.id { transaction.removeAuth() }
+                        rmdir(reserved)
                         try? coordinator.cancelEnrollment(permit, ticket: ticket)
                         // Keep durable cleanup: binding may already have committed.
                         return .unavailable
@@ -93,6 +110,7 @@ public enum AccountEnrollmentBridge {
                     // This callback has not published/synced yet. Leave other flows
                     // and records intact; a partially durable ledger survives retry.
                     if transaction.getCurrentAuth()?.id == record.id { transaction.removeAuth() }
+                    rmdir(reserved)
                     try? coordinator.cancelEnrollment(permit, ticket: ticket)
                     return .unavailable
                 }
@@ -102,5 +120,15 @@ public enum AccountEnrollmentBridge {
                 disposable.dispose()
             }
         }
+    }
+
+    /// Exclusively creates the canonical directory of a freshly allocated ID.
+    /// mkdir fails for any existing entry, a symlink or dangling one included.
+    /// Rollback uses rmdir, which removes only a still-empty directory.
+    static func reserveAccountDirectory(accountManager: AccountManager<TelegramAccountManagerTypes>, recordID: AccountRecordId) -> String? {
+        let metadata = URL(fileURLWithPath: accountManager.basePath).standardizedFileURL
+        guard metadata.lastPathComponent == "accounts-metadata" else { return nil }
+        let path = metadata.deletingLastPathComponent().appendingPathComponent(accountRecordIdPathName(recordID)).path
+        return mkdir(path, 0o700) == 0 ? path : nil
     }
 }

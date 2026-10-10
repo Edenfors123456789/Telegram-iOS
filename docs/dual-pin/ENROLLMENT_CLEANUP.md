@@ -108,6 +108,34 @@ arrays and bindings in downgraded payloads refuse access. Owner-PIN recovery
 preserves version 4 and the bindings. Only a current main-app cleanup ticket can
 read them after lock/reopen; this grants no account data or unlock.
 
+The Core component can now record a verified scoped `auth.LoggedOut` result
+for each exact original datacenter key and durable cleanup claim. These records
+contain only the claim ID and saved key fingerprint. The first result upgrades
+the encrypted payload to version 5; ordinary versions 1–4 remain readable and
+return no invented confirmations. Older readers reject version 5.
+
+Duplicate identical results are logically idempotent. Unknown/replacement keys,
+old/foreign tickets and Share are denied. Duplicate datacenters, empty result
+arrays, malformed keys, another claim, unbound keys and downgraded payloads
+refuse access. Read-only lookup survives lock/reopen without rewriting the vault;
+owner-PIN journal recovery preserves the results and version. Failed pre-write
+key/filesystem operations preserve the prior bytes for exact retry.
+
+Only the native verified opaque-response consumer may call the record method.
+That consumer remains pending. A record proves only its recorded scoped result;
+it neither invents results for other datacenters nor grants account access,
+local deletion or ledger acknowledgment. The official
+[datacenter documentation](https://core.telegram.org/api/datacenter) describes
+separate keys and authorization transfer; it does not establish our tested
+all-datacenter logout guarantee. Final cleanup admission must resolve those
+boundaries before removing the local evidence.
+
+Fresh receipt checks passed six focused cases, then 167 Mac and 169 hosted iOS
+Core cases with zero failures. The real red had 36 expected failed assertions,
+zero unexpected errors. Exact commands/results are retained under
+`build-input/dual-pin-stage0/session-revocation-receipts-20261010/`.
+Dependent/full-application checks are pending for this checkpoint.
+
 This storage boundary accepts a digest from the native adapter described below.
 Extraction, read-only restart reconciliation and protected request preparation
 are implemented. The Core component alone does not establish original-session
@@ -129,6 +157,17 @@ ticket, allocates a new raw auth record, rejects any existing raw-record ID
 collision, and persists the exact environment binding inside the AccountManager
 transaction callback before metadata synchronization or record-view publication.
 Failure removes only the matching auth it just created, before publication.
+
+A new raw ID must also be new on disk. Before binding, the bridge exclusively
+creates that ID's canonical `account-<id>` directory beside `accounts-metadata`
+with `mkdir`, which fails for any existing entry, including a symlink or a
+dangling one. An orphaned directory (data without a metadata record) would
+otherwise hand its existing Postbox and keys to the supposedly new provisional
+session. Refusal removes the just-created auth and cancels the flow without a
+cleanup ledger entry; the orphan is left untouched and a later attempt
+allocates another ID. Rollback after the reservation uses `rmdir`, which removes
+only a still-empty directory. A forced-collision regression covers a populated
+directory, a symlink to another directory and a dangling symlink.
 
 Each creation signal is single-use, including after cleanup or cancellation.
 AccountManager's own queued transaction returns `EmptyDisposable`; subscription
@@ -226,7 +265,8 @@ no server/local completion or physical-device behavior is inferred.
 Before exposing authorization:
 
 1. Validate a current role/root and persist the enrollment origin.
-2. Refuse an existing auth flow or raw-record collision. Inside AccountManager's
+2. Refuse an existing auth flow, raw-record collision or existing account
+   directory for the new ID. Inside AccountManager's
    transaction, create an auth record and persist its exact Core binding before
    returning; publication/file synchronization occurs after that callback.
 3. On bind failure, cancel only that newly created matching auth record before

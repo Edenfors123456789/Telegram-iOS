@@ -491,6 +491,8 @@ final class AccountEnrollmentBridgeTests: XCTestCase {
             // A transaction on the same metadata queue also drains publication.
             XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }))
             XCTAssertFalse(exposed)
+            // The rolled-back reservation leaves no directory for a later owner.
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: f.directory.path).filter { $0.hasPrefix("account-") }, [])
             XCTAssertEqual(coordinator.state, .locked)
             f.keys.failOnLoad = nil
             XCTAssertNil(try coordinator.claimEnrollmentCleanup())
@@ -559,6 +561,59 @@ final class AccountEnrollmentBridgeTests: XCTestCase {
         XCTAssertEqual(cleanup.provisionalRecordID, id.int64); XCTAssertEqual(cleanup.environment, .test)
         XCTAssertEqual(try value(f.manager.transaction { $0.getCurrentAuth()?.id }), id)
         // No acknowledgment: actual auth metadata still exists.
+    }
+
+    func testCreationRefusesAnAllocatedIDWhoseAccountDirectoryAlreadyExists() throws {
+        // A directory without an AccountManager record (an orphan) keeps its
+        // Postbox and keys; adopting it would make old data the "new" session.
+        for kind in ["directory", "symlink", "dangling"] {
+            let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+            let a = try ready(coordinator)
+            let outside = f.directory.appendingPathComponent("outside")
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try Data([1, 2, 3]).write(to: outside.appendingPathComponent("db"))
+            var planted: URL?
+            let result = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager, coordinator: coordinator,
+                ticket: a, environment: .production, beforeDirectoryReservation: { id in
+                    let path = f.directory.appendingPathComponent(accountRecordIdPathName(id))
+                    switch kind {
+                    case "directory":
+                        try? FileManager.default.createDirectory(at: path, withIntermediateDirectories: false)
+                        try? Data([4, 5, 6]).write(to: path.appendingPathComponent("db"))
+                    case "symlink":
+                        try? FileManager.default.createSymbolicLink(at: path, withDestinationURL: outside)
+                    default:
+                        try? FileManager.default.createSymbolicLink(at: path, withDestinationURL: f.directory.appendingPathComponent("missing"))
+                    }
+                    planted = path
+                }))
+            unavailable(result)
+            let path = try XCTUnwrap(planted)
+            XCTAssertNotNil(try? FileManager.default.attributesOfItem(atPath: path.path), kind)
+            if kind == "directory" { XCTAssertEqual(try Data(contentsOf: path.appendingPathComponent("db")), Data([4, 5, 6])) }
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), ["db"], kind)
+            XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("db")), Data([1, 2, 3]), kind)
+            XCTAssertNil(try value(f.manager.transaction { $0.getCurrentAuth() }), kind)
+            XCTAssertNil(try coordinator.claimEnrollmentCleanup(), kind)
+            XCTAssertEqual(try coordinator.withPolicy(a) { $0.selectedAccount }, f.config.selectedA, kind)
+            // The refusal is not sticky: a later attempt allocates another ID.
+            guard case let .created(id, _) = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager,
+                coordinator: coordinator, ticket: a, environment: .production)) else { XCTFail("Retry refused: \(kind)"); continue }
+            XCTAssertNotEqual(f.directory.appendingPathComponent(accountRecordIdPathName(id)), path, kind)
+        }
+    }
+
+    func testCreationReservesOnlyItsOwnEmptyAccountDirectory() throws {
+        let f = try BridgeFixture(), coordinator = AccessModeCoordinator(store: f.store)
+        let a = try ready(coordinator)
+        guard case let .created(id, _) = try value(AccountEnrollmentBridge.createProvisionalAccount(accountManager: f.manager,
+            coordinator: coordinator, ticket: a, environment: .production)) else { XCTFail("Current creation refused"); return }
+        let path = f.directory.appendingPathComponent(accountRecordIdPathName(id)).path
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        XCTAssertEqual(attributes[.type] as? FileAttributeType, .typeDirectory)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: path), [])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: f.directory.path).filter { $0.hasPrefix("account-") },
+            [accountRecordIdPathName(id)])
     }
 
     func testAnExistingAuthFlowCannotBeReplacedOrClaimedByAnotherCreation() throws {
