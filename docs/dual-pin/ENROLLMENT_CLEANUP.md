@@ -59,10 +59,10 @@ arrays and bindings in downgraded payloads refuse access. Owner-PIN recovery
 preserves version 4 and the bindings. Only a current main-app cleanup ticket can
 read them after lock/reopen; this grants no account data or unlock.
 
-This storage boundary accepts a digest from a trusted adapter. Native extraction
-of the actual persistent key, binding before authorization, reconciliation after
-restart and verifying which key a logout RPC used remain pending. The Core
-component alone does not establish original-session provenance or server logout.
+This storage boundary accepts a digest from the native adapter described below.
+Extraction and read-only restart reconciliation are implemented; verification of
+the key actually used by a logout RPC remains pending. The Core component alone
+does not establish original-session provenance or server logout.
 
 A new-schema bound enrollment requires its matching cleanup ledger. Missing,
 aliased, inconsistent or downgraded ownership is corrupt and refuses access;
@@ -108,13 +108,16 @@ tasks without automatic flood waiting. Empty responses, timeout, cancellation
 and stale result ownership cannot mint its non-Codable ephemeral proof. No
 metadata record deletion or ledger acknowledgment occurs at this boundary.
 
-The real transport confirms only successful `auth.LoggedOut`. Every real RPC
-error remains unconfirmed. Internal tests classify the exact documented inactive
-authorization errors, but applicability requires an original-credential binding;
-the public transport has no such override. A newly generated unregistered key
-after database/key loss does not prove the previous session was revoked.
-Persistent original-key/restart reconciliation remains a prerequisite for native
-cleanup admission. The internal fake transport is not real server evidence.
+All transports now default to refusing original-session evidence. The public
+native transport remains closed until request-level permanent/PFS-key provenance
+is implemented; even a successful response cannot bypass this prerequisite.
+Internal tests simulate a current original session and classify the exact
+documented inactive authorization errors, with a separate original-binding
+requirement for those errors. They are not real server evidence. A newly
+generated unregistered key after database/key loss does not prove the previous
+session was revoked. Every accepted simulated response also revalidates current
+session evidence, detached metadata, environment and durable ownership in a
+fresh AccountManager transaction before minting the ephemeral proof.
 
 The module does not expose authorization UI and is not connected to a native
 root/session cleanup adapter yet. A real caller must prove its originating root,
@@ -138,10 +141,24 @@ A key change detected at write completion locks access and retains the saved
 original. No auth record or server session is deleted by this operation.
 
 This Bool reports durable evidence only. It grants no authorization, unlock or
-logout proof. Native caller/root integration, datacenter-migration handling,
-restart reconciliation and request-level PFS provenance remain pending. The
+logout proof. Native caller/root integration, datacenter-migration handling
+and request-level PFS provenance remain pending. The
 future caller must repeat ownership and key validation at actual submission;
 an earlier successful binding cannot authorize a later request on its own.
+
+`reconcileOriginalSessionKeys` reads the actual native account after restart and
+requires every saved datacenter fingerprint to match. The account's current
+datacenter must have a saved binding, and its exact directory, detached metadata,
+environment and current cleanup ticket must still agree. Old unbound ledgers,
+upgrading accounts, missing keys and replacement keys refuse. This operation
+does not rewrite the encrypted vault, create a key or submit a network request.
+MTContext reads occur outside the Core vault lock to avoid lock inversion.
+
+The [Telegram PFS specification](https://core.telegram.org/api/pfs) binds each
+temporary key to a permanent key. A current context snapshot does not establish
+which cached key a delayed request actually uses. The next transport boundary
+must check the selected key at every preparation, including retries, and retain
+successful temporary-key binding provenance.
 
 Before exposing authorization:
 
@@ -207,6 +224,19 @@ sources passed full app compilation, exit 0, 37.915 seconds, 52 actions; artifac
 `build-input/dual-pin-stage0/native-session-binding-20261010/app-builds/20261010T064641Z/Telegram.ipa`,
 SHA-256 `b976b0548245eaddfbe5c9386120a23e278fc8815dfcf8ecf26a0c556d7471e4`.
 Commands and retained test/build results are in that ignored stage-0 directory.
+
+Restart/response reconciliation added six regressions. The real red executed 47
+cases with five expected failures and zero unexpected XCTest errors, then the
+upstream runner timed out after completed assertions. The initial fixture compile
+failure executed no tests; its stale prior test log is explicitly annotated.
+Fresh green passed all 47 cases, exit 0, 67.192 seconds overall / 14.276 test
+seconds. Full application compilation passed exit 0, 39.369 seconds, 51 actions;
+artifact `build-input/dual-pin-stage0/native-session-reconciliation-20261010/app-builds/20261010T070847Z/Telegram.ipa`,
+609,559,497 bytes, SHA-256
+`3048f0bb3a0599a773ad13916df4cf0218f9898c5c1597567314db200682bc9e`.
+Exact commands, fresh results and source digests are retained in that stage-0
+directory. No native cleanup job, configured-account acceptance, simulator
+launch or physical-device/server behavior is inferred from these checks.
 
 Replay and cancellation regressions were observed failing before the correction:
 seven-case replay red had three expected failures; nine-case cancellation red

@@ -12,14 +12,76 @@ private final class BindingKeySource: AccountEnrollmentSessionKeySource {
     var basePath: String
     var key: AccountEnrollmentSessionKey?
     var onRead: (() -> Void)?
+    var extraKeys: [Int32: AccountEnrollmentSessionKey] = [:]
     init(fixture: BridgeFixture, id: AccountRecordId, key: AccountEnrollmentSessionKey?) {
         recordID = id.int64; environment = .production; self.key = key
         basePath = fixture.directory.appendingPathComponent(accountRecordIdPathName(id)).path
     }
     func persistentFingerprint() -> AccountEnrollmentSessionKey? { onRead?(); return key }
+    func persistentFingerprint(datacenterID: Int32) -> AccountEnrollmentSessionKey? {
+        if let key, key.datacenterID == datacenterID { return key }
+        return extraKeys[datacenterID]
+    }
 }
 
 final class AccountEnrollmentSessionBindingTests: XCTestCase {
+    func testOriginalKeyReconciliationAfterReopenIsReadOnlyAndRequiresAllSavedKeys() throws {
+        let f = try BridgeFixture(), c = AccessModeCoordinator(store: f.store), t = try ready(c)
+        let (id, permit) = try create(f, c, t), first = try key(), second = try key(2, byte: 0x52)
+        try c.bindEnrollmentSessionKey(permit, sessionKey: first, ticket: t)
+        try c.bindEnrollmentSessionKey(permit, sessionKey: second, ticket: t)
+        try c.lock()
+        let reopenedStore = try AccessCredentialStore(directory: f.directory.appendingPathComponent("vault"), namespace: "test.account-bridge", keyProvider: f.keys, iterations: 600_000)
+        let reopened = AccessModeCoordinator(store: reopenedStore), cleanup = try XCTUnwrap(reopened.claimEnrollmentCleanup())
+        _ = try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: reopened, cleanup: cleanup))
+        let source = BindingKeySource(fixture: f, id: id, key: first)
+        let before = try Data(contentsOf: f.directory.appendingPathComponent("vault/access-state.v1.enc"))
+        XCTAssertFalse(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: reopened, cleanup: cleanup)))
+        source.extraKeys[2] = second
+        XCTAssertTrue(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: reopened, cleanup: cleanup)))
+        XCTAssertEqual(try reopened.boundEnrollmentSessionKeys(cleanup), [first, second])
+        XCTAssertEqual(reopened.state, .locked)
+        XCTAssertEqual(try Data(contentsOf: f.directory.appendingPathComponent("vault/access-state.v1.enc")), before)
+        source.key = try key(byte: 0x53)
+        XCTAssertFalse(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: reopened, cleanup: cleanup)))
+    }
+
+    func testUnboundAttachedForeignAndWrongNativeSourcesCannotReconcile() throws {
+        let f = try BridgeFixture(), c = AccessModeCoordinator(store: f.store), t = try ready(c)
+        let (id, permit) = try create(f, c, t), original = try key()
+        let source = BindingKeySource(fixture: f, id: id, key: original)
+        try c.bindEnrollmentSessionKey(permit, sessionKey: original, ticket: t)
+        let cleanup = try XCTUnwrap(c.claimEnrollmentCleanup())
+        XCTAssertFalse(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: c, cleanup: cleanup)), "Owned auth must be detached first")
+        _ = try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: c, cleanup: cleanup))
+        let share = AccessModeCoordinator(store: f.store, process: .shareExtension)
+        XCTAssertFalse(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: share, cleanup: cleanup)))
+        source.environment = .test
+        XCTAssertFalse(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: c, cleanup: cleanup)))
+        source.environment = .production; source.basePath += "/foreign"
+        XCTAssertFalse(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: c, cleanup: cleanup)))
+        XCTAssertEqual(try c.boundEnrollmentSessionKeys(cleanup), [original])
+    }
+
+    func testAnOldLedgerCannotAcquireInventedKeysDuringReconciliation() throws {
+        let f = try BridgeFixture(), c = AccessModeCoordinator(store: f.store), t = try ready(c)
+        let (id, _) = try create(f, c, t), source = BindingKeySource(fixture: f, id: id, key: try key())
+        let cleanup = try XCTUnwrap(c.claimEnrollmentCleanup())
+        _ = try value(AccountEnrollmentBridge.detachAuthForCleanup(accountManager: f.manager, coordinator: c, cleanup: cleanup))
+        let before = try Data(contentsOf: f.directory.appendingPathComponent("vault/access-state.v1.enc"))
+        XCTAssertFalse(try value(AccountEnrollmentBridge.reconcileOriginalSessionKeys(source: source, accountManager: f.manager,
+            coordinator: c, cleanup: cleanup)))
+        XCTAssertEqual(try c.boundEnrollmentSessionKeys(cleanup), [])
+        XCTAssertEqual(try Data(contentsOf: f.directory.appendingPathComponent("vault/access-state.v1.enc")), before)
+    }
+
     private func value<T>(_ signal: Signal<T, NoError>) throws -> T {
         let done = expectation(description: "Binding metadata result")
         var result: T?

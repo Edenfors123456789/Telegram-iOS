@@ -14,11 +14,13 @@ protocol AccountEnrollmentLogoutTransport: AnyObject {
     var recordID: Int64 { get }
     var environment: AccessModeCore.AccountEnvironment { get }
     var hasOriginalAuthorizationBinding: Bool { get }
+    var isOriginalSessionCurrent: Bool { get }
     func logout() -> Signal<AccountEnrollmentLogoutReply, NoError>
 }
 
 extension AccountEnrollmentLogoutTransport {
     var hasOriginalAuthorizationBinding: Bool { false }
+    var isOriginalSessionCurrent: Bool { false }
 }
 
 private final class TelegramEnrollmentLogoutTransport: AccountEnrollmentLogoutTransport {
@@ -103,35 +105,33 @@ extension AccountEnrollmentBridge {
             }
             let cancelled = Atomic<Bool>(value: false), emitted = Atomic<Bool>(value: false)
             let ready = accountManager.transaction { transaction -> Bool in
-                guard !cancelled.with({ $0 }) else { return false }
+                guard !cancelled.with({ $0 }), transport.isOriginalSessionCurrent else { return false }
                 do {
                     return try coordinator.withEnrollmentCleanup(cleanup) {
-                        guard transport.recordID == cleanup.provisionalRecordID, transport.environment == cleanup.environment,
-                              transaction.getCurrentAuth()?.id.int64 != cleanup.provisionalRecordID else { return false }
-                        if let record = transaction.getRecords().first(where: { $0.id.int64 == cleanup.provisionalRecordID }) {
-                            let environments = record.attributes.compactMap { attribute -> Bool? in
-                                guard case let .environment(value) = attribute else { return nil }
-                                switch value.environment { case .production: return false; case .test: return true }
-                            }
-                            guard environments.count <= 1, (environments.first ?? false) == (cleanup.environment == .test) else { return false }
-                        }
-                        return true
+                        cleanupMetadataIsDetached(transaction: transaction, recordID: transport.recordID,
+                            environment: transport.environment, cleanup: cleanup)
                     }
                 } catch { return false }
             }
             let request = ready |> mapToSignal { allowed -> Signal<AccountEnrollmentLogoutResult, NoError> in
-                guard allowed, !cancelled.with({ $0 }) else { return .single(.unavailable) }
+                guard allowed, !cancelled.with({ $0 }), transport.isOriginalSessionCurrent else { return .single(.unavailable) }
                 return transport.logout()
                 |> timeout(timeoutSeconds, queue: Queue.concurrentDefaultQueue(), alternate: .single(.unavailable))
                 |> take(1)
-                |> map { reply -> AccountEnrollmentLogoutResult in
-                    guard !cancelled.with({ $0 }), isConfirmedSessionLogout(reply) else { return .unavailable }
-                    if case .rpcError = reply, !transport.hasOriginalAuthorizationBinding { return .unavailable }
-                    do {
-                        return try coordinator.withEnrollmentCleanup(cleanup) {
-                            .confirmed(AccountEnrollmentSessionRevocation(accountManager: accountManager, coordinator: coordinator, cleanup: cleanup))
-                        }
-                    } catch { return .unavailable }
+                |> mapToSignal { reply -> Signal<AccountEnrollmentLogoutResult, NoError> in
+                    guard !cancelled.with({ $0 }), transport.isOriginalSessionCurrent,
+                          isConfirmedSessionLogout(reply) else { return .single(.unavailable) }
+                    if case .rpcError = reply, !transport.hasOriginalAuthorizationBinding { return .single(.unavailable) }
+                    return accountManager.transaction { transaction -> AccountEnrollmentLogoutResult in
+                        guard !cancelled.with({ $0 }), transport.isOriginalSessionCurrent else { return .unavailable }
+                        do {
+                            return try coordinator.withEnrollmentCleanup(cleanup) {
+                                guard cleanupMetadataIsDetached(transaction: transaction, recordID: transport.recordID,
+                                    environment: transport.environment, cleanup: cleanup) else { return .unavailable }
+                                return .confirmed(AccountEnrollmentSessionRevocation(accountManager: accountManager, coordinator: coordinator, cleanup: cleanup))
+                            }
+                        } catch { return .unavailable }
+                    }
                 }
             }
             let disposable = request.start(next: { result in
