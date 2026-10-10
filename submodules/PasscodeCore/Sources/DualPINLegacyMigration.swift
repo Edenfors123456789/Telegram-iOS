@@ -49,6 +49,12 @@ public final class DualPINLegacyMigration {
             // This must reach AccountManager even if biometric cleanup or the access
             // file commit fails. Never silently restore a prior unsecured challenge.
             try didCommitLegacyReference(result.reference)
+            // A stored legacy PIN may exist with resource protection turned off.
+            // Dual PIN must not publish while that key remains accessible through
+            // the ordinary unprotected-resource-session path.
+            if try !self.legacy.protectionSettings().enabled {
+                try self.legacy.setProtectionEnabled(true, session: result.session)
+            }
             try self.legacy.disableBiometrics(session: result.session)
         })
         guard let reference else { throw PasscodeError.unavailable }

@@ -405,6 +405,49 @@ final class DualPINMigrationTests: XCTestCase {
         XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
     }
 
+    func testInitialMigrationEnablesProtectionForAnOwnerWhoHadDisabledLegacyLocking() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let before = try f.resourceKey(code: "1234")
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        try f.legacy.setProtectionEnabled(false, session: owner)
+        XCTAssertFalse(try f.legacy.protectionSettings().enabled)
+        let unprotected = try f.legacy.unprotectedSession(namespace: "owner-test")
+        XCTAssertEqual(try unprotected.withDerivedKey(namespace: "owner-test", domain: "migration-test") { $0 }, before)
+        unprotected.invalidate()
+        _ = try f.install(owner: owner)
+        XCTAssertTrue(try f.legacy.protectionSettings().enabled)
+        XCTAssertThrowsError(try f.legacy.unprotectedSession(namespace: "owner-test"))
+        XCTAssertEqual(try f.resourceKey(code: "123456"), before)
+        XCTAssertThrowsError(try f.resourceKey(code: "654321"))
+        XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
+    }
+
+    func testFailedProtectionEnableCannotPublishDualPINAndKnownNewOwnerCanRetry() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let before = try f.resourceKey(code: "1234")
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        try f.legacy.setProtectionEnabled(false, session: owner)
+        var published: PasscodeCredentialReference?
+        XCTAssertThrowsError(try f.install(owner: owner, publish: { reference in
+            published = reference
+            f.storage.deniedWrite = "credential" // Fail only after rewrap/reference publication.
+        }))
+        XCTAssertEqual(try f.legacy.protectionSettings().passcode, published)
+        XCTAssertFalse(try f.vault.isConfigured())
+        XCTAssertEqual(try f.resourceKey(code: "123456"), before)
+        XCTAssertThrowsError(try f.resourceKey(code: "1234"))
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "654321"))
+        f.storage.deniedWrite = nil
+        let retryOwner = try f.legacy.verify("123456", scope: .settings)
+        _ = try f.install(owner: retryOwner)
+        XCTAssertTrue(try f.legacy.protectionSettings().enabled)
+        XCTAssertThrowsError(try f.legacy.unprotectedSession(namespace: "owner-test"))
+        XCTAssertEqual(try f.resourceKey(code: "123456"), before)
+        XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
+    }
+
     func testMissingRevokedOrWrongScopeOwnerCannotInitializeDualAccess() throws {
         let f = try MigrationFixture()
         _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
