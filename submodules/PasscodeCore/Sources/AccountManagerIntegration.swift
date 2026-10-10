@@ -55,6 +55,36 @@ public func commitDualPINLegacyReference<Types: AccountManagerTypes>(_ reference
           acknowledged.with({ $0 }) else { throw PasscodeError.unavailable }
 }
 
+public struct InitialDualPINAccountSnapshot<Types: AccountManagerTypes> {
+    public let records: [AccountRecord<Types.Attribute>]
+    public let pendingAuthorization: Bool
+
+    fileprivate init(transaction: AccountManagerModifier<Types>) {
+        self.records = transaction.getRecords()
+        self.pendingAuthorization = transaction.getCurrentAuth() != nil
+    }
+}
+
+/// Read-only initial configuration gate. A committed legacy owner reference must
+/// still be acknowledged even when this gate refuses Core publication afterward.
+/// The callback must only inspect metadata and must not reenter credential stores.
+public func validateInitialDualPINAccountState<Types: AccountManagerTypes>(accountManager: AccountManager<Types>,
+        timeout: TimeInterval = 5, validate: @escaping (InitialDualPINAccountSnapshot<Types>) -> Bool) throws {
+    guard !Thread.isMainThread else { throw PasscodeError.authenticationRequired }
+    guard timeout.isFinite, timeout > 0, timeout <= 5 else { throw PasscodeError.unavailable }
+    let accepted = Atomic<Bool>(value: false)
+    let completion = DispatchSemaphore(value: 0)
+    let disposable = accountManager.transaction { transaction -> Bool in
+        validate(InitialDualPINAccountSnapshot(transaction: transaction))
+    }.start(next: { value in
+        _ = accepted.swap(value)
+        completion.signal()
+    })
+    defer { disposable.dispose() }
+    guard completion.wait(timeout: .now() + timeout) == .success else { throw PasscodeError.unavailable }
+    guard accepted.with({ $0 }) else { throw PasscodeError.staleAuthorization }
+}
+
 /// nil input requests authority without migrating legacy metadata. A nil result
 /// means no managed credential exists; .some(.none) is an authoritative removal.
 @available(macOS 10.15, *)

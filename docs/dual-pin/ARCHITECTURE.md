@@ -71,6 +71,10 @@ Partition UI history, search recents, drafts, pending selection, thumbnails deri
 
 ## Integration and verification gates
 
+Initial owner setup captures the complete account/self-peer pool independently from AccountManager metadata. Its off-main adapter must validate that pool before owner work and again before Core publication. `validateInitialDualPINAccountState` supplies a read-only transaction snapshot with records and pending-authorization state; refusal or timeout grants no authority. This is not a lock against all later account changes: root preparation still validates actual identities against the committed configuration.
+
+Keep account-state validation separate from `commitDualPINLegacyReference`. Once the authenticated legacy owner has been rewrapped to PIN A, acknowledge its exact AccountManager reference even if newer account metadata prevents Core initialization. Never restore the prior reference or unsecured challenge. A failed initial publication remains unconfigured and permits fresh owner-authenticated retry with the already committed new A code, preserving the original protected-resource key. Actual hosted metadata/reopen/retry tests verify this ordering; native initial setup remains pending.
+
 The concrete path/surface matrix is [SURFACES.md](SURFACES.md). It starts as a research inventory, not a completed implementation checklist. Each row must acquire enforcement, automated/manual evidence, and supported/closed/limited status before release.
 
 Stage 2 verifies isolated credential/configuration/policy/epoch/transcript boundaries. Stage 3 verifies actual PIN/UI/accounts. Stage 4 verifies every data/navigation surface. Stage 5 verifies zero push registration and external consumers. Stage 6 verifies final full build, regression tests, physical-iPhone behavior, performance and documented limitations. Do not label a stage complete from a foundation module compiling alone.

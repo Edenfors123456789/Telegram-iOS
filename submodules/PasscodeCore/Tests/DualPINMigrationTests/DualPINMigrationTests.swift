@@ -294,6 +294,53 @@ final class DualPINReferenceCommitTests: XCTestCase {
         wait(for: [done], timeout: 7)
     }
 
+    func testInitialAccountGateChecksPendingAuthorizationWithoutWritingReferenceAndCanRetry() throws {
+        let f = try MigrationFixture()
+        let trusted = Atomic<PasscodeCredentialReference?>(value: nil)
+        let manager = self.manager(f, reference: trusted)
+        let create = expectation(description: "Pending auth metadata")
+        let created = manager.transaction { $0.createAuth([]) != nil }.start(next: { success in
+            XCTAssertTrue(success); create.fulfill()
+        })
+        wait(for: [create], timeout: 5); created.dispose()
+        let checked = Atomic<Int>(value: 0)
+        let rejected = expectation(description: "Pending auth refuses initial publication")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try validateInitialDualPINAccountState(accountManager: manager, validate: { snapshot in
+                    _ = checked.modify { $0 + 1 }
+                    return !snapshot.pendingAuthorization
+                })
+                XCTFail("A newly pending login cannot acknowledge initial publication")
+            } catch {}
+            rejected.fulfill()
+        }
+        wait(for: [rejected], timeout: 7)
+        XCTAssertEqual(checked.with { $0 }, 1)
+        let reader = AccountManager<TelegramAccountManagerTypes>(basePath: manager.basePath,
+            isTemporary: false, isReadOnly: true, useCaches: false, removeDatabaseOnError: false,
+            accessChallenge: AccountManagerAccessChallenge(prepare: { _ in }, resolve: { _, _ in nil }, finishInitialization: {}))
+        let persisted = expectation(description: "No resolver fallback or rejected write")
+        let read = reader.transaction { $0.getAccessChallengeData() }.start(next: { data in
+            XCTAssertEqual(data, .none); persisted.fulfill()
+        })
+        wait(for: [persisted], timeout: 5); read.dispose()
+        let remove = expectation(description: "Pending auth cleared")
+        let removed = manager.transaction { $0.removeAuth() }.start(next: { _ in remove.fulfill() })
+        wait(for: [remove], timeout: 5); removed.dispose()
+        let retried = expectation(description: "Current metadata permits retry")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try validateInitialDualPINAccountState(accountManager: manager, validate: { snapshot in
+                    _ = checked.modify { $0 + 1 }
+                    return !snapshot.pendingAuthorization
+                })
+            } catch { XCTFail("Confirmed metadata retry failed: \(error)") }
+            retried.fulfill()
+        }
+        wait(for: [retried], timeout: 7); XCTAssertEqual(checked.with { $0 }, 2)
+    }
+
     func testAcknowledgedReferenceSurvivesReopeningRealMetadataWithNoResolverFallback() throws {
         let f = try MigrationFixture()
         let trusted = Atomic<PasscodeCredentialReference?>(value: nil)
@@ -317,6 +364,135 @@ final class DualPINReferenceCommitTests: XCTestCase {
         })
         wait(for: [read], timeout: 5)
         disposable.dispose()
+    }
+
+    func testInitialAccountGateRejectsChangedRecordPoolAndAcceptsFreshSnapshot() throws {
+        let f = try MigrationFixture()
+        let manager = self.manager(f, reference: Atomic(value: nil))
+        let ids = Atomic<[AccountRecordId]>(value: [])
+        let created = expectation(description: "Original account record")
+        let first = manager.transaction { $0.createRecord([]) }.start(next: { id in
+            _ = ids.modify { $0 + [id] }; created.fulfill()
+        })
+        wait(for: [created], timeout: 5); first.dispose()
+        let original = ids.with { $0 }
+        let changed = expectation(description: "Additional account record")
+        let second = manager.transaction { $0.createRecord([]) }.start(next: { id in
+            _ = ids.modify { $0 + [id] }; changed.fulfill()
+        })
+        wait(for: [changed], timeout: 5); second.dispose()
+        let current = ids.with { $0 }
+        XCTAssertEqual(current.count, 2)
+        let done = expectation(description: "Current complete metadata required")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try validateInitialDualPINAccountState(accountManager: manager, validate: { snapshot in
+                    !snapshot.pendingAuthorization && Set(snapshot.records.map { $0.id }) == Set(original)
+                })
+                XCTFail("Changed record pool accepted")
+            } catch { XCTAssertEqual(error as? PasscodeError, .staleAuthorization) }
+            do {
+                try validateInitialDualPINAccountState(accountManager: manager, validate: { snapshot in
+                    !snapshot.pendingAuthorization && Set(snapshot.records.map { $0.id }) == Set(current)
+                })
+            } catch { XCTFail("Fresh complete record pool refused: \(error)") }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 7)
+    }
+
+    func testInitialAccountGateDeniesMainInvalidTimeoutAndBlockedMetadata() throws {
+        let f = try MigrationFixture()
+        let manager = self.manager(f, reference: Atomic(value: nil))
+        XCTAssertThrowsError(try validateInitialDualPINAccountState(accountManager: manager, validate: { _ in
+            XCTFail("Main-thread validator ran"); return true
+        })) { XCTAssertEqual($0 as? PasscodeError, .authenticationRequired) }
+        let blocker = DispatchSemaphore(value: 0)
+        let blocking = expectation(description: "Isolated metadata queue blocked")
+        let blocked = manager.transaction { _ -> Void in
+            blocking.fulfill(); _ = blocker.wait(timeout: .now() + 3)
+        }.start()
+        defer { blocker.signal(); blocked.dispose() }
+        wait(for: [blocking], timeout: 5)
+        let done = expectation(description: "Bounded metadata refusal")
+        DispatchQueue.global(qos: .userInitiated).async {
+            for timeout in [0.0, -1.0, Double.infinity, Double.nan, 6.0] {
+                do {
+                    try validateInitialDualPINAccountState(accountManager: manager, timeout: timeout, validate: { _ in
+                        XCTFail("Invalid timeout validator ran"); return true
+                    })
+                    XCTFail("Invalid timeout accepted")
+                } catch { XCTAssertEqual(error as? PasscodeError, .unavailable) }
+            }
+            do {
+                try validateInitialDualPINAccountState(accountManager: manager, timeout: 0.03, validate: { _ in true })
+                XCTFail("Blocked metadata accepted")
+            } catch { XCTAssertEqual(error as? PasscodeError, .unavailable) }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+    }
+
+    func testInitialMetadataRefusalStillAcknowledgesNewOwnerReferenceAndAllowsKnownPINRetry() throws {
+        let f = try MigrationFixture()
+        _ = try f.legacy.setPasscode("1234", kind: .digits4, session: nil)
+        let key = try f.resourceKey(code: "1234")
+        let owner = try f.legacy.verify("1234", scope: .settings)
+        defer { owner.invalidate() }
+        let trusted = Atomic<PasscodeCredentialReference?>(value: nil)
+        let manager = self.manager(f, reference: trusted)
+        let failed = expectation(description: "New owner acknowledged before metadata refusal")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try f.install(owner: owner, publish: { reference in
+                _ = trusted.swap(reference)
+                try commitDualPINLegacyReference(reference, accountManager: manager)
+                let completion = DispatchSemaphore(value: 0)
+                let pending = manager.transaction { $0.createAuth([]) }.start(next: { value in
+                    XCTAssertNotNil(value); completion.signal()
+                })
+                defer { pending.dispose() }
+                guard completion.wait(timeout: .now() + 5) == .success else { throw PasscodeError.unavailable }
+                try validateInitialDualPINAccountState(accountManager: manager, validate: { !$0.pendingAuthorization })
+                })
+                XCTFail("Pending authorization published Core")
+            } catch { XCTAssertEqual(error as? PasscodeError, .staleAuthorization) }
+            failed.fulfill()
+        }
+        wait(for: [failed], timeout: 10)
+        XCTAssertFalse(try f.vault.isConfigured())
+        XCTAssertThrowsError(try f.vault.authenticate(pin: "654321"))
+        XCTAssertEqual(try f.resourceKey(code: "123456"), key)
+        XCTAssertThrowsError(try f.legacy.verify("1234", scope: .settings))
+        let reference = try XCTUnwrap(trusted.with { $0 })
+        let reader = AccountManager<TelegramAccountManagerTypes>(basePath: manager.basePath,
+            isTemporary: false, isReadOnly: true, useCaches: false, removeDatabaseOnError: false,
+            accessChallenge: AccountManagerAccessChallenge(prepare: { _ in }, resolve: { _, _ in nil }, finishInitialization: {}))
+        let persisted = expectation(description: "Known-new-A reference remains on disk")
+        let read = reader.transaction { $0.getAccessChallengeData() }.start(next: { data in
+            XCTAssertEqual(data, accessChallengeData(reference: reference)); persisted.fulfill()
+        })
+        wait(for: [persisted], timeout: 5); read.dispose()
+        let cleared = expectation(description: "Pending authorization cleared")
+        let clear = manager.transaction { $0.removeAuth() }.start(next: { _ in cleared.fulfill() })
+        wait(for: [cleared], timeout: 5); clear.dispose()
+        let freshOwner = try f.legacy.verify("123456", scope: .settings)
+        defer { freshOwner.invalidate() }
+        let retried = expectation(description: "Fresh known-new-A retry")
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try f.install(owner: freshOwner, publish: { next in
+                    _ = trusted.swap(next)
+                    try commitDualPINLegacyReference(next, accountManager: manager)
+                    try validateInitialDualPINAccountState(accountManager: manager, validate: { !$0.pendingAuthorization })
+                })
+            } catch { XCTFail("Known-new-A retry failed: \(error)") }
+            retried.fulfill()
+        }
+        wait(for: [retried], timeout: 10)
+        XCTAssertEqual(try f.resourceKey(code: "123456"), key)
+        XCTAssertEqual(try f.vault.authenticate(pin: "123456").mode, .a)
+        XCTAssertEqual(try f.vault.authenticate(pin: "654321").mode, .b)
     }
 
     func testTimedOutPublicationKeepsRealJournalDeniedAndLateCommitCanRetry() throws {
