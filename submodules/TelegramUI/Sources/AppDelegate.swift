@@ -1155,14 +1155,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             })
             self.appLockContextImpl = appLockContext
             if modeBootstrap.requiresModeAuthentication {
-                appLockContext.requireModeAuthentication()
-                self.mainWindow.setAccessPresentationGuard { [weak self, weak appLockContext] controller in
-                    if let controller, appLockContext?.isCurrentLockController(controller) == true { return true }
-                    guard let self, self.isActiveValue, !self.nativeSnapshotCover.isVisible,
-                          let driver = self.modeRootPresentation, driver.hasActiveRoot else { return false }
-                    do { return try driver.withActivePolicy { _ in true } }
-                    catch { appLockContext?.lock(); return false }
-                }
+                self.installModePresentationGuard(appLock: appLockContext)
             }
             
             var setPresentationCall: ((PresentationCall?) -> Void)?
@@ -2070,8 +2063,25 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }))
     }
 
+    /// Install on both configured startup and later initial activation. Guard
+    /// queued presentation before invalidating legacy sessions or raw streams.
+    private func installModePresentationGuard(appLock: AppLockContextImpl) {
+        assert(Thread.isMainThread)
+        self.mainWindow.setAccessPresentationGuard { [weak self, weak appLock] controller in
+            if let controller, appLock?.isCurrentLockController(controller) == true { return true }
+            guard let self, self.isActiveValue, !self.nativeSnapshotCover.isVisible,
+                  let driver = self.modeRootPresentation, driver.hasActiveRoot else { return false }
+            do { return try driver.withActivePolicy { _ in true } }
+            catch { appLock?.lock(); return false }
+        }
+        appLock.requireModeAuthentication()
+    }
+
     private func installModeRuntime(store: AccessCredentialStore, sharedContext: SharedAccountContextImpl, appLock: AppLockContextImpl) {
         assert(Thread.isMainThread)
+        PasscodeCredentialStore.shared.requireModePINManagement()
+        self.installModePresentationGuard(appLock: appLock)
+        sharedContext.requireModeAccountAccess()
         let coordinator = AccessModeCoordinator(store: store)
         self.modeCredentialStore = store
         self.modeSharedContext = sharedContext

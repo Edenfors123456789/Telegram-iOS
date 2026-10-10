@@ -223,6 +223,9 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     }
     private let managedAccountDisposables = DisposableDict<AccountRecordId>()
     private let activeAccountsWithInfoPromise = Promise<(primary: AccountRecordId?, accounts: [AccountWithInfo])>()
+    // Main-thread cache for initial setup only. A configured/unavailable mode
+    // registry can never obtain this unfiltered pool.
+    private var initialModeAccountInfos: [AccountWithInfo]?
     public var activeAccountsWithInfo: Signal<(primary: AccountRecordId?, accounts: [AccountWithInfo]), NoError> {
         return self.activeAccountsWithInfoPromise.get()
         |> deliverOnMainQueue
@@ -874,7 +877,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         })
         
         self.activeAccountsWithInfoPromise.set(self.activeAccountContexts
-        |> mapToSignal { primary, accounts, _ -> Signal<(primary: AccountRecordId?, accounts: [AccountWithInfo]), NoError> in
+        |> mapToSignal { [weak self] primary, accounts, _ -> Signal<(primary: AccountRecordId?, accounts: [AccountWithInfo]), NoError> in
             return combineLatest(accounts.map { _, context, _ -> Signal<AccountWithInfo?, NoError> in
                 return context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
                 |> map { peer -> AccountWithInfo? in
@@ -885,12 +888,16 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 }
                 |> distinctUntilChanged
             })
-            |> map { accountsWithInfo -> (primary: AccountRecordId?, accounts: [AccountWithInfo]) in
+            |> deliverOnMainQueue
+            |> map { [weak self] accountsWithInfo -> (primary: AccountRecordId?, accounts: [AccountWithInfo]) in
                 var accountsWithInfoResult: [AccountWithInfo] = []
                 for info in accountsWithInfo {
                     if let info = info {
                         accountsWithInfoResult.append(info)
                     }
+                }
+                if let self {
+                    self.initialModeAccountInfos = self.modeAccountAccessRequired ? nil : accountsWithInfoResult
                 }
                 return (primary?.account.id, accountsWithInfoResult)
             }
@@ -1832,6 +1839,44 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             userID: account.peerId.id._internalGetInt64Value())
     }
 
+    /// A caller must capture this complete snapshot for the picker and obtain it
+    /// again with the same installation/shared record before covered owner work.
+    /// No display name or filtered account-info emission establishes ownership.
+    func initialModeAccountPool(installation: UUID, sharedRecord: AccountRecordId) throws -> (configuration: AccessConfiguration, accounts: [AccountWithInfo]) {
+        assert(Queue.mainQueue().isCurrent())
+        guard !self.modeAccountAccessRequired, let raw = self.activeAccountsValue,
+              let infos = self.initialModeAccountInfos, raw.currentAuth == nil,
+              raw.accounts.count == infos.count,
+              Set(raw.accounts.map { $0.0 }).count == raw.accounts.count,
+              Set(infos.map { $0.account.id }).count == infos.count,
+              Set(raw.accounts.map { $0.0 }) == Set(infos.map { $0.account.id }),
+              let shared = infos.first(where: { $0.account.id == sharedRecord }) else {
+            throw AccessError.unavailable
+        }
+        var accounts: [InitialSetupAccount] = []
+        for info in infos {
+            guard let loaded = raw.accounts.first(where: { $0.0 == info.account.id }),
+                  loaded.0 == loaded.1.account.id, loaded.1.account === info.account,
+                  info.peer.id == info.account.peerId, case let .user(user) = info.peer else {
+                throw AccessError.invalidConfiguration
+            }
+            accounts.append(InitialSetupAccount(observed: self.observedAccount(info.account), isPremium: user.isPremium))
+        }
+        // Read AccountManager independently of loaded contexts/self-peer results.
+        let view = self.accountManager._internalAccountRecordsSync()
+        let records = view.records.compactMap { record -> InitialAccountRecord? in
+            if record.attributes.contains(where: { if case .loggedOut = $0 { return true }; return false }) { return nil }
+            let testing = record.attributes.contains(where: {
+                if case let .environment(environment) = $0, case .test = environment.environment { return true }
+                return false
+            })
+            return InitialAccountRecord(recordID: record.id.int64, environment: testing ? .test : .production)
+        }
+        let configuration = try AccessConfiguration.initial(installation: installation, records: records,
+            hasPendingAuthorization: view.currentAuthAccount != nil, accounts: accounts, sharedAccount: self.observedAccount(shared.account))
+        return (configuration, infos)
+    }
+
     private func visibleAccountContexts(_ raw: (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?)) -> (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?) {
         guard self.modeAccountAccessRequired else { return raw }
         guard let driver = self.modeRootPresentation else { return (nil, [], nil) }
@@ -1870,6 +1915,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         assert(Queue.mainQueue().isCurrent())
         precondition(self.modeRootPresentation == nil)
         self.modeAccountAccessRequired = true
+        self.initialModeAccountInfos = nil
         self.modeRootPresentation = driver
         self.clearModeAccountPresentation()
     }
@@ -1879,6 +1925,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     func requireModeAccountAccess() {
         assert(Queue.mainQueue().isCurrent())
         self.modeAccountAccessRequired = true
+        self.initialModeAccountInfos = nil
         self.clearModeAccountPresentation()
     }
 
