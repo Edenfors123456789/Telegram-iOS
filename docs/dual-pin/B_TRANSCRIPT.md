@@ -73,6 +73,15 @@ the same facts. Changing the mirror bumps a version that makes the views re-filt
 - A send confirmed while the app was not running (the message arrives through `getDifference`
   instead of the send's own result) must still be matched to its recorded random id.
 
+## Decision: no list entry, ever (user, 2026-10-11)
+
+Asked whether a hidden chat should appear in B's chat list once it has been opened explicitly
+(with a preview built from the B transcript only), the user chose "Никогда не показывать": a
+hidden chat never gets a row in B, not after an explicit open and not after new messages. It is
+reached again only through an explicit route (public username search, link). The transcript
+itself persists between opens. This narrows ARCHITECTURE.md's "lists can include an activated
+projection" to "lists never include it".
+
 ## Native wiring decisions (5c)
 
 - The B root registers a history restriction for **every** undiscoverable chat when it is
