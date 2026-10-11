@@ -25,6 +25,24 @@ final class TranscriptFixture {
 }
 
 final class TranscriptTests: XCTestCase {
+    func testASendIsRecordedByRandomIDBeforeItHasALocalID() throws {
+        // The engine learns a message's local id only when it is stored, after the record.
+        let f = try TranscriptFixture()
+        let b = try f.b()
+        let handle = try f.store.begin(chat: f.chat, boundary: f.boundary(), now: f.now, grant: b)
+        guard case let .recorded(receipt) = try f.store.recordOutgoing(randomID: 4242, localID: nil, timestamp: f.now, now: f.now, handle: handle, grant: b) else {
+            return XCTFail("recorded")
+        }
+        XCTAssertNil(receipt.localID)
+        XCTAssertEqual(try f.store.recordOutgoing(randomID: 4242, localID: nil, timestamp: f.now, now: f.now, handle: handle, grant: b), .alreadyRecorded(receipt))
+        try f.store.acknowledge(receipt, serverID: f.message(140))
+        let restarted = try RestrictedTranscriptStore(directory: f.vault.directory.appendingPathComponent("transcripts"),
+            namespace: "test.fork", keyProvider: f.vault.keys, credentials: f.vault.store)
+        let snapshot = try restarted.snapshot(handle: handle, now: f.now, grant: b)
+        XCTAssertEqual(snapshot.sendRandomIDs, [4242])
+        XCTAssertEqual(snapshot.sendServerIDs, [f.message(140)])
+    }
+
     func testSnapshotNamesWhatTheHistoryRestrictionNeeds() throws {
         let f = try TranscriptFixture()
         let b = try f.b()

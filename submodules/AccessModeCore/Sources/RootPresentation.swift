@@ -117,8 +117,12 @@ public final class AccessRootPresentation {
         precondition(Thread.isMainThread)
         guard let active else { throw AccessError.staleAuthorization }
         return try coordinator.withRestrictedTranscriptGrant(active.ticket) { grant in
-            let handle = try store.begin(chat: chat, boundary: boundary, now: now, grant: grant)
-            return (handle, try store.snapshot(handle: handle, now: now, grant: grant))
+            // The first boundary stays; a later open's fresh one only fills a missing boundary.
+            let handle = try store.begin(chat: chat, now: now, grant: grant)
+            let snapshot = try store.snapshot(handle: handle, now: now, grant: grant)
+            guard snapshot.boundary == nil, let boundary else { return (handle, snapshot) }
+            let established = try store.begin(chat: chat, boundary: boundary, now: now, grant: grant)
+            return (established, try store.snapshot(handle: established, now: now, grant: grant))
         }
     }
 
@@ -139,6 +143,15 @@ public final class AccessRootPresentation {
         return try coordinator.withRestrictedTranscriptGrant(active.ticket) { grant in
             try store.recordOutgoing(randomID: randomID, localID: localID, timestamp: timestamp, now: now, handle: handle, grant: grant)
         }
+    }
+
+    /// Records B sends of one transcript from any thread (Postbox stores messages on its own
+    /// queue) for as long as the current root stays active; afterwards every call throws.
+    public func restrictedSendRecorder(_ handle: RestrictedTranscriptHandle, store: RestrictedTranscriptStore) throws -> RestrictedSendRecorder {
+        precondition(Thread.isMainThread)
+        guard let active else { throw AccessError.staleAuthorization }
+        try coordinator.withRestrictedTranscriptGrant(active.ticket) { _ in }
+        return RestrictedSendRecorder(coordinator: coordinator, ticket: active.ticket, handle: handle, store: store)
     }
 
     public func withActivePolicy<T>(_ body: (AccessModePolicy) throws -> T) throws -> T {
@@ -322,5 +335,28 @@ public final class AccessRootPresentation {
     private func matches(_ lhs: AccessRootPreparation, _ rhs: AccessRootPreparation?) -> Bool {
         guard let rhs else { return false }
         return lhs.owner == owner && rhs.owner == owner && lhs.generation == rhs.generation
+    }
+}
+
+public final class RestrictedSendRecorder {
+    private let coordinator: AccessModeCoordinator
+    private let ticket: AccessTicket
+    private let handle: RestrictedTranscriptHandle
+    private let store: RestrictedTranscriptStore
+
+    init(coordinator: AccessModeCoordinator, ticket: AccessTicket, handle: RestrictedTranscriptHandle, store: RestrictedTranscriptStore) {
+        self.coordinator = coordinator
+        self.ticket = ticket
+        self.handle = handle
+        self.store = store
+    }
+
+    public var chat: ChatIdentity { handle.chat }
+
+    /// Durable before the caller lets the message be sent; enqueue only on `.recorded`.
+    public func record(randomID: Int64, timestamp: Int64, now: Int64) throws -> BSendRegistration {
+        try coordinator.withRestrictedTranscriptGrant(ticket) { grant in
+            try store.recordOutgoing(randomID: randomID, localID: nil, timestamp: timestamp, now: now, handle: handle, grant: grant)
+        }
     }
 }

@@ -273,6 +273,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private var modeRootPresentation: AccessRootPresentation?
     private var modeCredentialStore: AccessCredentialStore?
     private var modeStoreFactory: (() throws -> AccessCredentialStore)?
+    private var modeTranscriptStoreFactory: ((AccessCredentialStore) throws -> RestrictedTranscriptStore)?
     private weak var modeSharedContext: SharedAccountContextImpl?
     private var modeRuntimeRetryInFlight = false
     private var modeRecoveryRun: UUID?
@@ -752,6 +753,13 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         let modeBootstrap = AccessRuntimeBootstrap.inspect(makeModeStore)
         self.modeStoreFactory = makeModeStore
+        // B's restricted transcripts: metadata only, next to the configuration and under its key.
+        self.modeTranscriptStoreFactory = { credentials in
+            let group = try PasscodeEnvironment.shared.sharedAccessGroup()
+            let key = try KeychainAccessDeviceKey(service: baseAppBundleId + ".dual-pin.v1", accessGroup: group)
+            return try RestrictedTranscriptStore(directory: URL(fileURLWithPath: rootPath).appendingPathComponent("dual-pin-access", isDirectory: true),
+                namespace: baseAppBundleId + ":" + group, keyProvider: key, credentials: credentials)
+        }
         if modeBootstrap.requiresModeAuthentication { PasscodeCredentialStore.shared.requireModePINManagement() }
 
         let deviceSpecificEncryptionParameters = BuildConfig.deviceSpecificEncryptionParameters(rootPath, baseAppBundleId: baseAppBundleId)
@@ -2141,7 +2149,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     self.nativeSnapshotTicket = nil
                 })
             self.modeRootPresentation = driver
-            sharedContext.configureModeAccountAccess(driver, coordinator: coordinator)
+            // Without it a hidden chat cannot be opened in B (the transcript open fails closed).
+            let transcripts = try? self.modeTranscriptStoreFactory?(store)
+            sharedContext.configureModeAccountAccess(driver, coordinator: coordinator, transcripts: transcripts)
             sharedContext.modePasscodeSettingsFactory = { [weak self] context in
                 self?.makeModePasscodeSettings(context: context)
             }

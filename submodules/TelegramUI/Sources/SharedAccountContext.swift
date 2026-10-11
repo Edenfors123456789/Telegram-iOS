@@ -232,6 +232,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     /// Keeps the current root's undiscoverable chats out of its account's chat
     /// lists (Postbox drops them before pagination); released with the root.
     private let modeChatListExclusion = MetaDisposable()
+    /// B only: the current root's undiscoverable chats, each under a Postbox history
+    /// restriction (empty until explicitly opened) and, once opened, a send recorder.
+    private var modeTranscriptStore: RestrictedTranscriptStore?
+    private var modeUndiscoverableChats: [EnginePeer.Id: ChatIdentity] = [:]
+    private var modeHistoryRestrictions: [EnginePeer.Id: Disposable] = [:]
+    private var modeOpenedTranscripts: [EnginePeer.Id: Disposable] = [:]
+    private let modeTranscriptOpenDisposable = MetaDisposable()
     private let modeAccountPublication: AccessAccountPublicationGate
     private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
     private var pendingModeRoot: AccessRootPreparation?
@@ -2107,9 +2114,10 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
     }
 
-    func configureModeAccountAccess(_ driver: AccessRootPresentation, coordinator: AccessModeCoordinator) {
+    func configureModeAccountAccess(_ driver: AccessRootPresentation, coordinator: AccessModeCoordinator, transcripts: RestrictedTranscriptStore?) {
         assert(Queue.mainQueue().isCurrent())
         precondition(self.modeRootPresentation == nil)
+        self.modeTranscriptStore = self.applicationBindings.isMainApp ? transcripts : nil
         self.modeAccountPublication.requireModePolicy()
         self.initialModeAccountInfos = nil
         self.modeRootPresentation = driver
@@ -2180,6 +2188,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.pendingModeRoot = nil
         self.switchingData = (nil, nil, nil)
         self.modeChatListExclusion.set(nil)
+        self.releaseModeTranscripts()
         self.modeAccountRootPromise.set(ModeAccountRoot(context: nil, preparation: nil))
         self.activeAccountsPromise.set(.single((nil, [], nil)))
     }
@@ -2193,20 +2202,30 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private func publishModeRoot(_ preparation: AccessRootPreparation) throws {
         guard let driver = self.modeRootPresentation else { throw AccessError.authenticationRequired }
         let raw = self.activeAccountsValue?.accounts ?? []
-        let (context, excluded): (AccountContext?, [EnginePeer.Id]) = try driver.withPreparingPolicy(preparation) { policy in
+        let (context, undiscoverable): (AccountContext?, [EnginePeer.Id: ChatIdentity]) = try driver.withPreparingPolicy(preparation) { policy in
             let projection = try policy.projectAccounts(raw.map { self.observedAccount($0.1.account) })
             let context = projection.primary.flatMap { selected in raw.first { $0.0.int64 == selected.recordID && $0.0 == $0.1.account.id }?.1 }
-            let excluded = try (projection.primary.map { policy.undiscoverableChats(of: $0) } ?? []).map { chat -> EnginePeer.Id in
+            var undiscoverable: [EnginePeer.Id: ChatIdentity] = [:]
+            for chat in projection.primary.map({ policy.undiscoverableChats(of: $0) }) ?? [] {
                 // A chat that cannot be named here cannot be excluded: no root.
                 guard chat.peerID <= 0x00ff_ffff_ffff_ffff else { throw AccessError.unavailable }
-                return EnginePeer.Id(namespace: ._internalFromInt32Value(chat.peerNamespace), id: ._internalFromInt64Value(chat.peerID))
+                undiscoverable[EnginePeer.Id(namespace: ._internalFromInt32Value(chat.peerNamespace), id: ._internalFromInt64Value(chat.peerID))] = chat
             }
-            return (context, excluded)
+            return (context, undiscoverable)
         }
         // Registered before the root is published: its views are created later on
         // the same Postbox queue, so none of them is ever filled without it.
-        if let context, !excluded.isEmpty {
-            self.modeChatListExclusion.set(context.account.postbox.addHiddenChatIds(peerIds: excluded))
+        self.releaseModeTranscripts()
+        if let context, !undiscoverable.isEmpty {
+            let postbox = context.account.postbox
+            self.modeChatListExclusion.set(postbox.addHiddenChatIds(peerIds: Array(undiscoverable.keys)))
+            // Until an explicit open supplies a boundary, every view of these chats is empty.
+            let windowStart = Int32(max(0, Int64(Date().timeIntervalSince1970) - RestrictedTranscriptStore.window))
+            for peerId in undiscoverable.keys {
+                self.modeHistoryRestrictions[peerId] = postbox.addHistoryRestriction(peerId: peerId, MessageHistoryRestriction(boundary: nil,
+                    windowStart: windowStart, outgoingGloballyUniqueIds: [], deletedMessageIds: []))
+            }
+            self.modeUndiscoverableChats = undiscoverable
         } else {
             self.modeChatListExclusion.set(nil)
         }
@@ -2793,7 +2812,98 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     }
     
     public func navigateToChatController(_ params: NavigateToChatControllerParams) {
+        assert(Queue.mainQueue().isCurrent())
+        let peerId = params.chatLocation.peerId
+        if let chat = self.modeUndiscoverableChats[peerId], self.modeOpenedTranscripts[peerId] == nil {
+            // An explicit open of a hidden chat in B: its restricted transcript first.
+            self.openModeRestrictedTranscript(context: params.context, peerId: peerId, chat: chat, completion: { opened in
+                if opened {
+                    navigateToChatControllerImpl(params)
+                }
+            })
+            return
+        }
         navigateToChatControllerImpl(params)
+    }
+    
+    private func releaseModeTranscripts() {
+        self.modeTranscriptOpenDisposable.set(nil)
+        for (_, disposable) in self.modeOpenedTranscripts {
+            disposable.dispose()
+        }
+        for (_, disposable) in self.modeHistoryRestrictions {
+            disposable.dispose()
+        }
+        self.modeOpenedTranscripts = [:]
+        self.modeHistoryRestrictions = [:]
+        self.modeUndiscoverableChats = [:]
+    }
+    
+    /// Boundary from the server (none offline), Core's transcript, then the chat's Postbox
+    /// restriction set to it and its sends recorded; `completion(false)` leaves the chat closed.
+    private func openModeRestrictedTranscript(context: AccountContext, peerId: EnginePeer.Id, chat: ChatIdentity, completion: @escaping (Bool) -> Void) {
+        guard let driver = self.modeRootPresentation, let store = self.modeTranscriptStore, let origin = self.pendingModeRoot,
+              origin.mode == .b, origin.account.recordID == context.account.id.int64, driver.hasActiveRoot else {
+            completion(false)
+            return
+        }
+        Logger.shared.log("AccessMode", "restricted transcript: opening")
+        self.modeTranscriptOpenDisposable.set((context.engine.messages.restrictedTranscriptBoundary(peerId: peerId)
+        |> take(1)
+        |> timeout(10.0, queue: Queue.mainQueue(), alternate: .single(nil))
+        |> deliverOnMainQueue).start(next: { [weak self] boundary in
+            guard let self, self.pendingModeRoot == origin, self.modeUndiscoverableChats[peerId] == chat, self.modeOpenedTranscripts[peerId] == nil else {
+                completion(false)
+                return
+            }
+            do {
+                let now = Int64(Date().timeIntervalSince1970)
+                let (handle, snapshot) = try driver.openRestrictedTranscript(chat, store: store, boundary: boundary.map {
+                    TranscriptBoundary(maximumMessageIDs: $0.maximumMessageIds, serverTimestamp: Int64($0.serverTimestamp))
+                }, now: now)
+                guard let restriction = RestrictedTranscriptRestriction.historyRestriction(chat: chat, snapshot: snapshot) else {
+                    throw AccessError.unavailable
+                }
+                let recorder = try driver.restrictedSendRecorder(handle, store: store)
+                let postbox = context.account.postbox
+                // Every message this account stores for the chat while B holds it: a pending
+                // outgoing one is a B send, recorded durably and admitted in the same transaction.
+                let recording = postbox.installStoreMessageAction(peerId: peerId, { messages, transaction in
+                    var recorded = Set<Int64>()
+                    for message in messages where !message.flags.contains(.Incoming) && message.flags.contains(.Unsent) {
+                        guard let randomId = message.globallyUniqueId else {
+                            continue
+                        }
+                        let timestamp = Int64(message.timestamp)
+                        if (try? recorder.record(randomID: randomId, timestamp: timestamp, now: max(timestamp, Int64(Date().timeIntervalSince1970)))) != nil {
+                            recorded.insert(randomId)
+                        }
+                    }
+                    if !recorded.isEmpty {
+                        transaction.updateHistoryRestriction(peerId: peerId) { current in
+                            var current = current
+                            current.outgoingGloballyUniqueIds.formUnion(recorded)
+                            return current
+                        }
+                    }
+                })
+                self.modeOpenedTranscripts[peerId] = recording
+                Logger.shared.log("AccessMode", "restricted transcript: opened, boundary \(snapshot.boundary == nil ? "none" : "set")")
+                let _ = (postbox.transaction { transaction -> Void in
+                    transaction.updateHistoryRestriction(peerId: peerId) { _ in restriction }
+                }
+                |> deliverOnMainQueue).start(completed: { [weak self] in
+                    guard let self, self.pendingModeRoot == origin, self.modeOpenedTranscripts[peerId] != nil else {
+                        completion(false)
+                        return
+                    }
+                    completion(true)
+                })
+            } catch {
+                Logger.shared.log("AccessMode", "restricted transcript: open failed \(error)")
+                completion(false)
+            }
+        }))
     }
     
     public func navigateToForumChannel(context: AccountContext, peerId: EnginePeer.Id, navigationController: NavigationController) {

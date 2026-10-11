@@ -39,7 +39,9 @@ public struct RestrictedTranscriptHandle {
 public struct BSendReceipt: Codable, Equatable {
     public let chat: ChatIdentity
     public let randomID: Int64
-    public let localID: TranscriptMessageID
+    /// Nil when the send was recorded before the engine assigned its local id; it is then
+    /// known by its random id (and its server id once acknowledged).
+    public let localID: TranscriptMessageID?
     let generation: UUID
 }
 
@@ -107,11 +109,11 @@ private struct TranscriptState: Codable {
         var serverIDs = Set<TranscriptMessageID>()
         for send in sends {
             let receipt = send.receipt
-            guard receipt.randomID != 0, receipt.localID.chat == receipt.chat, receipt.localID.namespace == 1,
-                  receipt.localID.supported, send.timestamp >= 0,
+            guard receipt.randomID != 0, receipt.localID.map({ $0.chat == receipt.chat && $0.namespace == 1 && $0.supported }) ?? true,
+                  send.timestamp >= 0,
                   send.serverID.map({ $0.chat == receipt.chat && $0.supported }) ?? true else { throw AccessError.corrupt }
             guard randomIDs.insert(SendRandomIdentity(account: receipt.chat.account, randomID: receipt.randomID)).inserted,
-                  localIDs.insert(receipt.localID).inserted else { throw AccessError.corrupt }
+                  receipt.localID.map({ localIDs.insert($0).inserted }) ?? true else { throw AccessError.corrupt }
             if let serverID = send.serverID, !serverIDs.insert(serverID).inserted { throw AccessError.corrupt }
         }
     }
@@ -180,15 +182,15 @@ public final class RestrictedTranscriptStore {
         }
     }
 
-    public func recordOutgoing(randomID: Int64, localID: TranscriptMessageID, timestamp: Int64, now: Int64,
+    public func recordOutgoing(randomID: Int64, localID: TranscriptMessageID?, timestamp: Int64, now: Int64,
                                handle: RestrictedTranscriptHandle, grant: AuthenticatedModeGrant) throws -> BSendRegistration {
         try mutate(handle, grant: grant) { state, index in
             try state.projections[index].advance(to: now)
-            guard randomID != 0, localID.chat == handle.chat, localID.supported, localID.namespace == 1,
+            guard randomID != 0, localID.map({ $0.chat == handle.chat && $0.supported && $0.namespace == 1 }) ?? true,
                   timestamp > state.projections[index].highWaterTime - Self.window,
                   timestamp <= state.projections[index].highWaterTime else { throw AccessError.invalidConfiguration }
             let receipt = BSendReceipt(chat: handle.chat, randomID: randomID, localID: localID, generation: handle.generation)
-            if let old = state.sends.first(where: { $0.receipt.chat.account == handle.chat.account && ($0.receipt.randomID == randomID || $0.receipt.localID == localID) }) {
+            if let old = state.sends.first(where: { $0.receipt.chat.account == handle.chat.account && ($0.receipt.randomID == randomID || (localID != nil && $0.receipt.localID == localID)) }) {
                 guard old.receipt == receipt, !old.deleted else { throw AccessError.invalidTransition }
                 return .alreadyRecorded(old.receipt)
             }
@@ -220,7 +222,9 @@ public final class RestrictedTranscriptStore {
             var result = Set(projection.incoming.map(\.id)).subtracting(projection.deleted)
             for send in state.sends where send.receipt.chat == handle.chat && send.receipt.generation == handle.generation {
                 if !send.deleted, send.timestamp > projection.highWaterTime - Self.window {
-                    result.insert(send.serverID ?? send.receipt.localID)
+                    if let id = send.serverID ?? send.receipt.localID {
+                        result.insert(id)
+                    }
                 }
             }
             return result

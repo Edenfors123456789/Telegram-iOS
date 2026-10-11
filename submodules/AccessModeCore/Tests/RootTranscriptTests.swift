@@ -39,6 +39,10 @@ final class RootTranscriptTests: XCTestCase {
         XCTAssertEqual(try o.controller.restrictedTranscriptSnapshot(handle, store: o.store, now: now).sendRandomIDs, [900])
         let (_, reopened) = try o.controller.openRestrictedTranscript(o.chat, store: o.store, boundary: nil, now: now)
         XCTAssertEqual(reopened.boundary, boundary(), "reopening keeps the first boundary")
+        let later = TranscriptBoundary(maximumMessageIDs: [0: 180], serverTimestamp: now + 60)
+        let (_, refetched) = try o.controller.openRestrictedTranscript(o.chat, store: o.store, boundary: later, now: now + 60)
+        XCTAssertEqual(refetched.boundary, boundary(), "a later open with a fresh boundary neither fails nor moves it")
+        XCTAssertEqual(refetched.sendRandomIDs, [900])
     }
 
     func testAOrAnOrdinaryChatHasNoTranscript() throws {
@@ -47,6 +51,24 @@ final class RootTranscriptTests: XCTestCase {
         let b = try setUp(pin: "654321")
         let ordinary = ChatIdentity(account: b.f.config.selectedA, peerNamespace: 0, peerID: 51)
         XCTAssertThrowsError(try b.controller.openRestrictedTranscript(ordinary, store: b.store, boundary: boundary(), now: now))
+    }
+
+    func testASendRecorderWorksOffTheMainThreadUntilTheRootGoes() throws {
+        // Sends are recorded where Postbox stores them, on its queue.
+        let o = try setUp(pin: "654321")
+        let (handle, _) = try o.controller.openRestrictedTranscript(o.chat, store: o.store, boundary: boundary(), now: now)
+        let recorder = try o.controller.restrictedSendRecorder(handle, store: o.store)
+        let done = expectation(description: "recorded off main")
+        var registration: BSendRegistration?
+        DispatchQueue.global().async {
+            registration = try? recorder.record(randomID: 31, timestamp: self.now, now: self.now)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        guard case .recorded? = registration else { return XCTFail("recorded") }
+        XCTAssertEqual(try o.controller.restrictedTranscriptSnapshot(handle, store: o.store, now: now).sendRandomIDs, [31])
+        try o.controller.lock()
+        XCTAssertThrowsError(try recorder.record(randomID: 32, timestamp: now, now: now))
     }
 
     func testALockedRootCannotUseAnEarlierHandle() throws {
