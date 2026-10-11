@@ -131,7 +131,13 @@ public final class RestrictedTranscriptStore {
     private let credentials: AccessCredentialStore
     private let file: EncryptedAccessFile<TranscriptState>
 
+    /// `directory` must not be the credential store's: every encrypted file locks
+    /// `access-state.lock` in its own directory, and this store works inside the vault's lock,
+    /// so sharing the directory would deadlock the first transcript operation.
     public init(directory: URL, namespace: String, keyProvider: AccessDeviceKeyProvider, credentials: AccessCredentialStore) throws {
+        guard directory.standardizedFileURL.resolvingSymlinksInPath() != credentials.file.directory.standardizedFileURL.resolvingSymlinksInPath() else {
+            throw AccessError.invalidConfiguration
+        }
         self.credentials = credentials
         self.file = try EncryptedAccessFile(directory: directory, namespace: namespace + ".transcripts", keyProvider: keyProvider)
     }

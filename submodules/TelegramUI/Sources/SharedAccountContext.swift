@@ -2909,6 +2909,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private func openModeRestrictedTranscript(context: AccountContext, peerId: EnginePeer.Id, chat: ChatIdentity, completion: @escaping (Bool) -> Void) {
         guard let driver = self.modeRootPresentation, let store = self.modeTranscriptStore, let origin = self.pendingModeRoot,
               origin.mode == .b, origin.account.recordID == context.account.id.int64, driver.hasActiveRoot else {
+            Logger.shared.log("AccessMode", "restricted transcript: not opened (no B root, store \(self.modeTranscriptStore != nil))")
             completion(false)
             return
         }
@@ -2917,7 +2918,12 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         |> take(1)
         |> timeout(10.0, queue: Queue.mainQueue(), alternate: .single(nil))
         |> deliverOnMainQueue).start(next: { [weak self] boundary in
-            guard let self, self.pendingModeRoot == origin, self.modeUndiscoverableChats[peerId] == chat, self.modeOpenedTranscripts[peerId] == nil else {
+            guard let self else {
+                completion(false)
+                return
+            }
+            guard self.pendingModeRoot == origin, self.modeUndiscoverableChats[peerId] == chat, self.modeOpenedTranscripts[peerId] == nil else {
+                Logger.shared.log("AccessMode", "restricted transcript: not opened (root \(self.pendingModeRoot == origin), chat \(self.modeUndiscoverableChats[peerId] == chat), opened \(self.modeOpenedTranscripts[peerId] != nil))")
                 completion(false)
                 return
             }
@@ -2960,6 +2966,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 }
                 |> deliverOnMainQueue).start(completed: { [weak self] in
                     guard let self, self.pendingModeRoot == origin, self.modeOpenedTranscripts[peerId] != nil else {
+                        Logger.shared.log("AccessMode", "restricted transcript: root changed before showing")
                         completion(false)
                         return
                     }

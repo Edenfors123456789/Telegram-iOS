@@ -757,7 +757,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.modeTranscriptStoreFactory = { credentials in
             let group = try PasscodeEnvironment.shared.sharedAccessGroup()
             let key = try KeychainAccessDeviceKey(service: baseAppBundleId + ".dual-pin.v1", accessGroup: group)
-            return try RestrictedTranscriptStore(directory: URL(fileURLWithPath: rootPath).appendingPathComponent("dual-pin-access", isDirectory: true),
+            // Its own directory: each encrypted file locks one lock file per directory.
+            return try RestrictedTranscriptStore(directory: URL(fileURLWithPath: rootPath).appendingPathComponent("dual-pin-access", isDirectory: true).appendingPathComponent("transcripts", isDirectory: true),
                 namespace: baseAppBundleId + ":" + group, keyProvider: key, credentials: credentials)
         }
         if modeBootstrap.requiresModeAuthentication { PasscodeCredentialStore.shared.requireModePINManagement() }

@@ -25,6 +25,16 @@ final class TranscriptFixture {
 }
 
 final class TranscriptTests: XCTestCase {
+    func testTheTranscriptStoreCannotShareTheVaultsDirectory() throws {
+        // Every encrypted file locks `access-state.lock` in its directory, and the transcript
+        // store works inside the vault's lock: one directory would deadlock the first open.
+        let f = try TranscriptFixture()
+        XCTAssertThrowsError(try RestrictedTranscriptStore(directory: f.vault.store.file.directory, namespace: "test.fork",
+            keyProvider: f.vault.keys, credentials: f.vault.store))
+        XCTAssertThrowsError(try RestrictedTranscriptStore(directory: f.vault.store.file.directory.appendingPathComponent("."), namespace: "test.fork",
+            keyProvider: f.vault.keys, credentials: f.vault.store))
+    }
+
     func testASendIsRecordedByRandomIDBeforeItHasALocalID() throws {
         // The engine learns a message's local id only when it is stored, after the record.
         let f = try TranscriptFixture()
