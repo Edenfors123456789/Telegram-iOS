@@ -450,7 +450,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         return self.activeUnauthorizedAccountPromise.get()
     }
     
-    private let registeredNotificationTokensDisposable = MetaDisposable()
+    private var pushRegistrationCleanup: PushRegistrationCleanupRunner?
     
     public let mediaManager: MediaManager
     public let contactDataManager: DeviceContactDataManager?
@@ -556,7 +556,6 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     
     private weak var appDelegate: AppDelegate?
     
-    private var invalidatedApsToken: Data?
     
     private let energyUsageAutomaticDisposable = MetaDisposable()
     private var webProxyCarrierHost: WebProxyCarrierWindowHost?
@@ -592,21 +591,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         
         self.firebaseSecretStream = firebaseSecretStream
         
-        self.authorizationPushConfigurationValue.set(apsNotificationToken |> map { data -> AuthorizationCodePushNotificationConfiguration? in
-            guard let data else {
-                return nil
-            }
-            let sandbox: Bool
-            #if DEBUG
-            sandbox = true
-            #else
-            sandbox = false
-            #endif
-            return AuthorizationCodePushNotificationConfiguration(
-                token: hexString(data),
-                isSandbox: sandbox
-            )
-        })
+        // No push token is offered for the sign-in code: push is disabled (docs/dual-pin/PUSH.md).
                 
         if applicationBindings.isMainApp {
             self.locationManager = DeviceLocationManager(queue: Queue.mainQueue())
@@ -1388,7 +1373,6 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     
     deinit {
         assertionFailure("SharedAccountContextImpl is not supposed to be deallocated")
-        self.registeredNotificationTokensDisposable.dispose()
         self.presentationDataDisposable.dispose()
         self.automaticMediaDownloadSettingsDisposable.dispose()
         self.currentAutodownloadSettingsDisposable.dispose()
@@ -1909,137 +1893,37 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }*/
     }
     
+    /// Dual PIN: push is disabled in both modes (docs/dual-pin/PUSH.md), so nothing registers.
+    /// What earlier builds registered is cancelled on the server; the tokens are asked for only
+    /// while such a cancellation is pending.
     public func updateNotificationTokensRegistration() {
-        let sandbox: Bool
-        #if DEBUG
-        sandbox = true
-        #else
-        sandbox = false
-        #endif
-        
-        let settings = self.accountManager.sharedData(keys: [ApplicationSpecificSharedDataKeys.inAppNotificationSettings])
-        |> map { sharedData -> (allAccounts: Bool, includeMuted: Bool) in
-            let settings = sharedData.entries[ApplicationSpecificSharedDataKeys.inAppNotificationSettings]?.get(InAppNotificationSettings.self) ?? InAppNotificationSettings.defaultSettings
-            return (settings.displayNotificationsFromAllAccounts, false)
+        guard self.applicationBindings.isMainApp else {
+            return
         }
-        |> distinctUntilChanged(isEqual: { lhs, rhs in
-            if lhs.allAccounts != rhs.allAccounts {
-                return false
-            }
-            if lhs.includeMuted != rhs.includeMuted {
-                return false
-            }
-            return true
-        })
-        
-        let updatedApsToken = self.apsNotificationToken |> distinctUntilChanged(isEqual: { $0 == $1 })
-        self.registeredNotificationTokensDisposable.set((combineLatest(
-            queue: .mainQueue(),
-            settings,
-            self.activeAccountContexts,
-            updatedApsToken
-        )
-        |> mapToSignal { settings, activeAccountsAndInfo, apsNotificationToken -> Signal<(Bool, Data?), NoError> in
-            let (primary, activeAccounts, _) = activeAccountsAndInfo
-            var appliedApsList: [Signal<Bool?, NoError>] = []
-            var appliedVoipList: [Signal<Never, NoError>] = []
-            var activeProductionUserIds = activeAccounts.map({ $0.1 }).filter({ !$0.account.testingEnvironment }).map({ $0.account.peerId.id })
-            var activeTestingUserIds = activeAccounts.map({ $0.1 }).filter({ $0.account.testingEnvironment }).map({ $0.account.peerId.id })
-            
-            let allProductionUserIds = activeProductionUserIds
-            let allTestingUserIds = activeTestingUserIds
-            
-            if !settings.allAccounts {
-                if let primary = primary {
-                    if !primary.account.testingEnvironment {
-                        activeProductionUserIds = [primary.account.peerId.id]
-                        activeTestingUserIds = []
-                    } else {
-                        activeProductionUserIds = []
-                        activeTestingUserIds = [primary.account.peerId.id]
-                    }
-                } else {
-                    activeProductionUserIds = []
-                    activeTestingUserIds = []
+        let signedInAccounts = Set(self.accountManager._internalAccountRecordsSync().records.filter { record in
+            return !record.attributes.contains(where: { attribute in
+                if case .loggedOut = attribute {
+                    return true
                 }
-            }
-            
-            for (_, account, _) in activeAccounts {
-                let appliedAps: Signal<Bool, NoError>
-                let appliedVoip: Signal<Never, NoError>
-                
-                if !activeProductionUserIds.contains(account.account.peerId.id) && !activeTestingUserIds.contains(account.account.peerId.id) {
-                    if let apsNotificationToken {
-                        appliedAps = account.engine.accountData.unregisterNotificationToken(token: apsNotificationToken, type: .aps(encrypt: false), otherAccountUserIds: (account.account.testingEnvironment ? allTestingUserIds : allProductionUserIds).filter({ $0 != account.account.peerId.id }))
-                        |> map { _ -> Bool in
-                        }
-                        |> then(.single(true))
-                    } else {
-                        appliedAps = .single(true)
-                    }
-                    
-                    appliedVoip = self.voipNotificationToken
-                    |> distinctUntilChanged(isEqual: { $0 == $1 })
-                    |> mapToSignal { token -> Signal<Never, NoError> in
-                        guard let token = token else {
-                            return .complete()
-                        }
-                        return account.engine.accountData.unregisterNotificationToken(token: token, type: .voip, otherAccountUserIds: (account.account.testingEnvironment ? allTestingUserIds : allProductionUserIds).filter({ $0 != account.account.peerId.id }))
-                    }
-                } else {
-                    if let apsNotificationToken {
-                        appliedAps = account.engine.accountData.registerNotificationToken(token: apsNotificationToken, type: .aps(encrypt: true), sandbox: sandbox, otherAccountUserIds: (account.account.testingEnvironment ? activeTestingUserIds : activeProductionUserIds).filter({ $0 != account.account.peerId.id }), excludeMutedChats: !settings.includeMuted)
-                    } else {
-                        appliedAps = .single(true)
-                    }
-                    appliedVoip = self.voipNotificationToken
-                    |> distinctUntilChanged(isEqual: { $0 == $1 })
-                    |> mapToSignal { token -> Signal<Never, NoError> in
-                        guard let token = token else {
-                            return .complete()
-                        }
-                        return account.engine.accountData.registerNotificationToken(token: token, type: .voip, sandbox: sandbox, otherAccountUserIds: (account.account.testingEnvironment ? activeTestingUserIds : activeProductionUserIds).filter({ $0 != account.account.peerId.id }), excludeMutedChats: !settings.includeMuted)
-                        |> ignoreValues
-                    }
-                }
-                
-                appliedApsList.append(Signal<Bool?, NoError>.single(nil) |> then(appliedAps |> map(Optional.init)))
-                appliedVoipList.append(appliedVoip)
-            }
-            
-            let allApsSuccess = combineLatest(appliedApsList)
-            |> map { values -> Bool in
-                return !values.contains(false)
-            }
-            
-            let allVoipSuccess = combineLatest(appliedVoipList)
-            
-            return combineLatest(
-                allApsSuccess,
-                Signal<Void, NoError>.single(Void())
-                |> then(
-                    allVoipSuccess
-                    |> map { _ -> Void in
-                        return Void()
-                    }
-                )
-            )
-            |> map { allApsSuccess, _ -> (Bool, Data?) in
-                return (allApsSuccess, apsNotificationToken)
-            }
+                return false
+            })
+        }.map { $0.id.int64 })
+        guard let runner = PushRegistrationCleanupRunner.make(signedInAccounts: signedInAccounts, finished: { [weak self] in
+            self?.pushRegistrationCleanup = nil
+            self?.appDelegate?.finishPushRegistrationCleanup()
+        }) else {
+            self.pushRegistrationCleanup = nil
+            self.appDelegate?.finishPushRegistrationCleanup()
+            return
         }
-        |> deliverOnMainQueue).start(next: { [weak self] allApsSuccess, apsToken in
-            guard let self, let appDelegate = self.appDelegate else {
-                return
-            }
-            if !allApsSuccess {
-                if self.invalidatedApsToken != apsToken {
-                    self.invalidatedApsToken = apsToken
-                    
-                    appDelegate.requestNotificationTokenInvalidation()
-                }
-            }
-        }))
+        self.pushRegistrationCleanup = runner
+        let activeAccounts = self.activeAccountContexts
+        |> map { _, accounts, _ -> [AccountContext] in
+            return accounts.map { $0.1 }
+        }
+        runner.start(type: .aps, token: self.apsNotificationToken, activeAccounts: activeAccounts)
+        runner.start(type: .voip, token: self.voipNotificationToken, activeAccounts: activeAccounts)
+        self.appDelegate?.acquirePushTokensForRegistrationCleanup()
     }
     
     private func observedAccount(_ account: Account) -> ObservedAccount {

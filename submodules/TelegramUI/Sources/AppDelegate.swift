@@ -366,7 +366,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     
     private var alertActions: (primary: (() -> Void)?, other: (() -> Void)?)?
     
-    private let voipDeviceToken = Promise<Data?>(nil)
     private let regularDeviceToken = Promise<Data?>(nil)
     
     private var recaptchaClientsBySiteKey: [String: Promise<RecaptchaClient>] = [:]
@@ -375,12 +374,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         precondition(!testIsLaunched)
         testIsLaunched = true
         
-        let _ = voipTokenPromise.get().start(next: { token in
-            self.voipDeviceToken.set(.single(token))
-        })
-        let _ = notificationTokenPromise.get().start(next: { token in
-            self.regularDeviceToken.set(.single(token))
-        })
+        // Dual PIN: push is disabled (docs/dual-pin/PUSH.md). A token obtained to cancel an
+        // earlier registration goes only to that cancellation, never into the connection's
+        // app data, so `regularDeviceToken` stays nil.
         
         let launchStartTime = CFAbsoluteTimeGetCurrent()
         
@@ -1138,13 +1134,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             return true
         }
 
-        let pushRegistry = PKPushRegistry(queue: .main)
-        if #available(iOS 9.0, *) {
-            pushRegistry.desiredPushTypes = Set([.voIP])
-        }
-        self.pushRegistry = pushRegistry
-        pushRegistry.delegate = self
-
         self.accountManagerState = extractAccountManagerState(records: accountManager._internalAccountRecordsSync())
         let _ = (accountManager.accountRecords()
         |> deliverOnMainQueue).start(next: { view in
@@ -1728,9 +1717,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             })
         }
         
-        if #available(iOS 12.0, *) {
-            UIApplication.shared.registerForRemoteNotifications()
-        }
+        // Dual PIN: push is disabled; remove notifications an earlier build delivered or scheduled.
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
         
         let _ = self.urlSession(identifier: "\(baseAppBundleId).backroundSession")
         
@@ -2074,14 +2063,12 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 return .single(0)
             }
         }
-        |> deliverOnMainQueue).start(next: { count in
+        |> deliverOnMainQueue).start(next: { _ in
             if resetOnce {
                 resetOnce = false
-                if count == 0 {
-                    //UIApplication.shared.applicationIconBadgeNumber = 1
-                }
             }
-            UIApplication.shared.applicationIconBadgeNumber = Int(count)
+            // Dual PIN: the icon badge is always zero (plan §7); counts are not published outside the app.
+            UIApplication.shared.applicationIconBadgeNumber = 0
         }))
     }
 
@@ -2724,7 +2711,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
     
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        Logger.shared.log("App \(self.episodeId)", "register for notifications: didRegisterForRemoteNotificationsWithDeviceToken (deviceToken: \(hexString(deviceToken)))")
+        Logger.shared.log("App \(self.episodeId)", "register for notifications: didRegisterForRemoteNotificationsWithDeviceToken")
         self.notificationTokenPromise.set(.single(deviceToken))
     }
     
@@ -2801,7 +2788,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     public func pushRegistry(_ registry: PKPushRegistry, didUpdate credentials: PKPushCredentials, for type: PKPushType) {
         if #available(iOS 9.0, *) {
             if case PKPushType.voIP = type {
-                Logger.shared.log("App \(self.episodeId)", "pushRegistry credentials: \(credentials.token as NSData)")
+                Logger.shared.log("App \(self.episodeId)", "pushRegistry credentials received")
                 
                 self.voipTokenPromise.set(.single(credentials.token))
             }
@@ -3677,93 +3664,32 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         })
     }
     
-    func requestNotificationTokenInvalidation() {
-        UIApplication.shared.unregisterForRemoteNotifications()
-        DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 1.0, execute: {
-            UIApplication.shared.registerForRemoteNotifications()
-        })
+    /// Dual PIN: the tokens are asked for only while `SharedAccountContextImpl` still has an
+    /// earlier build's server registration to cancel; they go to that cancellation alone.
+    func acquirePushTokensForRegistrationCleanup() {
+        UIApplication.shared.registerForRemoteNotifications()
+        if self.pushRegistry == nil {
+            let pushRegistry = PKPushRegistry(queue: .main)
+            pushRegistry.delegate = self
+            pushRegistry.desiredPushTypes = Set([.voIP])
+            self.pushRegistry = pushRegistry
+        }
     }
     
-    private func registerForNotifications(context: AccountContextImpl, authorize: Bool = true, completion: @escaping (Bool) -> Void = { _ in }) {
-        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-        let _ = (context.sharedContext.accountManager.transaction { transaction -> Bool in
-            let settings = transaction.getSharedData(ApplicationSpecificSharedDataKeys.inAppNotificationSettings)?.get(InAppNotificationSettings.self) ?? InAppNotificationSettings.defaultSettings
-            return settings.displayNameOnLockscreen
+    /// No registration is left to cancel: give the tokens back.
+    func finishPushRegistrationCleanup() {
+        UIApplication.shared.unregisterForRemoteNotifications()
+        if let pushRegistry = self.pushRegistry {
+            pushRegistry.desiredPushTypes = Set()
+            pushRegistry.delegate = nil
+            self.pushRegistry = nil
         }
-        |> deliverOnMainQueue).start(next: { displayNames in
-            self.registerForNotifications(replyString: presentationData.strings.Notification_Reply, messagePlaceholderString: presentationData.strings.Conversation_InputTextPlaceholder, hiddenContentString: presentationData.strings.Watch_MessageView_Title, hiddenReactionContentString: presentationData.strings.Notification_LockScreenReactionPlaceholder, hiddenStoryContentString: presentationData.strings.Notification_LockScreenStoryPlaceholder, hiddenStoryReactionContentString: presentationData.strings.PUSH_REACT_STORY_HIDDEN, includeNames: displayNames, authorize: authorize, completion: completion)
-        })
     }
-
-    private func registerForNotifications(replyString: String, messagePlaceholderString: String, hiddenContentString: String, hiddenReactionContentString: String, hiddenStoryContentString: String, hiddenStoryReactionContentString: String, includeNames: Bool, authorize: Bool = true, completion: @escaping (Bool) -> Void = { _ in }) {
-        let notificationCenter = UNUserNotificationCenter.current()
-        Logger.shared.log("App \(self.episodeId)", "register for notifications: get settings (authorize: \(authorize))")
-        notificationCenter.getNotificationSettings(completionHandler: { settings in
-            Logger.shared.log("App \(self.episodeId)", "register for notifications: received settings: \(settings.authorizationStatus)")
-            
-            switch (settings.authorizationStatus, authorize) {
-                case (.authorized, _), (.notDetermined, true):
-                    var authorizationOptions: UNAuthorizationOptions = [.badge, .sound, .alert, .carPlay]
-                    if #available(iOS 12.0, *) {
-                        authorizationOptions.insert(.providesAppNotificationSettings)
-                    }
-                    Logger.shared.log("App \(self.episodeId)", "register for notifications: request authorization")
-                    notificationCenter.requestAuthorization(options: authorizationOptions, completionHandler: { result, _ in
-                        Logger.shared.log("App \(self.episodeId)", "register for notifications: received authorization: \(result)")
-                        completion(result)
-                        if result {
-                            Queue.mainQueue().async {
-                                let reply = UNTextInputNotificationAction(identifier: "reply", title: replyString, options: [], textInputButtonTitle: replyString, textInputPlaceholder: messagePlaceholderString)
-                                                                    
-                                let unknownMessageCategory: UNNotificationCategory
-                                let repliableMessageCategory: UNNotificationCategory
-                                let repliableMediaMessageCategory: UNNotificationCategory
-                                let groupRepliableMessageCategory: UNNotificationCategory
-                                let groupRepliableMediaMessageCategory: UNNotificationCategory
-                                let channelMessageCategory: UNNotificationCategory
-                                let reactionMessageCategory: UNNotificationCategory
-                                let storyCategory: UNNotificationCategory
-                                let storyReactionCategory: UNNotificationCategory
-                                
-                                var options: UNNotificationCategoryOptions = []
-                                if includeNames {
-                                    options.insert(.hiddenPreviewsShowTitle)
-                                }
-                                
-                                var carPlayOptions = options
-                                carPlayOptions.insert(.allowInCarPlay)
-                                
-                                unknownMessageCategory = UNNotificationCategory(identifier: "unknown", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: hiddenContentString, options: options)
-                                repliableMessageCategory = UNNotificationCategory(identifier: "r", actions: [reply], intentIdentifiers: [INSearchForMessagesIntentIdentifier], hiddenPreviewsBodyPlaceholder: hiddenContentString, options: carPlayOptions)
-                                repliableMediaMessageCategory = UNNotificationCategory(identifier: "m", actions: [reply], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: hiddenContentString, options: carPlayOptions)
-                                groupRepliableMessageCategory = UNNotificationCategory(identifier: "gr", actions: [reply], intentIdentifiers: [INSearchForMessagesIntentIdentifier], hiddenPreviewsBodyPlaceholder: hiddenContentString, options: carPlayOptions)
-                                groupRepliableMediaMessageCategory = UNNotificationCategory(identifier: "gm", actions: [reply], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: hiddenContentString, options: carPlayOptions)
-                                channelMessageCategory = UNNotificationCategory(identifier: "c", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: hiddenContentString, options: options)
-                                reactionMessageCategory = UNNotificationCategory(identifier: "t", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: hiddenReactionContentString, options: options)
-                                storyCategory = UNNotificationCategory(identifier: "st", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: hiddenStoryContentString, options: options)
-                                storyReactionCategory = UNNotificationCategory(identifier: "str", actions: [], intentIdentifiers: [], hiddenPreviewsBodyPlaceholder: hiddenStoryReactionContentString, options: options)
-                                
-                                UNUserNotificationCenter.current().setNotificationCategories([
-                                    unknownMessageCategory,
-                                    repliableMessageCategory,
-                                    repliableMediaMessageCategory,
-                                    channelMessageCategory,
-                                    reactionMessageCategory,
-                                    groupRepliableMessageCategory,
-                                    groupRepliableMediaMessageCategory,
-                                    storyCategory,
-                                    storyReactionCategory
-                                ])
-                                
-                                Logger.shared.log("App \(self.episodeId)", "register for notifications: invoke registerForRemoteNotifications")
-                                UIApplication.shared.registerForRemoteNotifications()
-                            }
-                        }
-                    })
-                default:
-                    break
-            }
-        })
+    
+    /// Dual PIN: push is disabled in both modes (plan §7): the app never asks for notification
+    /// authorization and never registers. Reports "not authorized".
+    private func registerForNotifications(context: AccountContextImpl, authorize: Bool = true, completion: @escaping (Bool) -> Void = { _ in }) {
+        completion(false)
     }
     
     @available(iOS 10.0, *)

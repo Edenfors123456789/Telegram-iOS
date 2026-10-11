@@ -9,7 +9,9 @@ public enum NotificationTokenType {
     case voip
 }
 
-func _internal_unregisterNotificationToken(account: Account, token: Data, type: NotificationTokenType, otherAccountUserIds: [PeerId.Id]) -> Signal<Never, NoError> {
+/// True once the server answered (either answer means no registration remains for the token);
+/// false on an error, so the caller can keep the cancellation pending.
+func _internal_unregisterNotificationToken(account: Account, token: Data, type: NotificationTokenType, otherAccountUserIds: [PeerId.Id]) -> Signal<Bool, NoError> {
     let mappedType: Int32
     switch type {
         case .aps:
@@ -18,8 +20,12 @@ func _internal_unregisterNotificationToken(account: Account, token: Data, type: 
             mappedType = 9
     }
     return account.network.request(Api.functions.account.unregisterDevice(tokenType: mappedType, token: hexString(token), otherUids: otherAccountUserIds.map({ $0._internalGetInt64Value() })))
-    |> retryRequest
-    |> ignoreValues
+    |> map { _ -> Bool in
+        return true
+    }
+    |> `catch` { _ -> Signal<Bool, NoError> in
+        return .single(false)
+    }
 }
 
 func _internal_registerNotificationToken(account: Account, token: Data, type: NotificationTokenType, sandbox: Bool, otherAccountUserIds: [PeerId.Id], excludeMutedChats: Bool) -> Signal<Bool, NoError> {

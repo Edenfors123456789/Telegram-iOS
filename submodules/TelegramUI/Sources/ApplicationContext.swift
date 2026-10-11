@@ -294,22 +294,11 @@ final class AuthorizedApplicationContext {
         }))
 
         let engine = context.engine
-        let postbox = context.account.postbox
         self.notificationMessagesDisposable.set((context.account.stateManager.notificationMessages
-        |> mapToSignal { messageList -> Signal<[([Message], PeerGroupId, Bool, MessageHistoryThreadData?)], NoError> in
-            // Dual PIN: a chat kept out of the lists never surfaces as a banner either.
-            return postbox.chatIdsHiddenFromLists()
-            |> map { hidden -> [([Message], PeerGroupId, Bool, MessageHistoryThreadData?)] in
-                if hidden.isEmpty {
-                    return messageList
-                }
-                return messageList.filter { item in
-                    guard let message = item.0.first else {
-                        return false
-                    }
-                    return !hidden.contains(message.id.peerId)
-                }
-            }
+        |> map { _ -> [([Message], PeerGroupId, Bool, MessageHistoryThreadData?)] in
+            // Dual PIN: no message banners, sounds or vibration in either mode (plan §7,
+            // docs/dual-pin/PUSH.md), for every chat, not only those hidden from B.
+            return []
         }
         |> mapToSignal { messageList -> Signal<[([Message], PeerGroupId, Bool, MessageHistoryThreadData?)], NoError> in
             return engine.data.get(EngineDataMap(
@@ -618,19 +607,15 @@ final class AuthorizedApplicationContext {
         if #available(iOS 10.0, *) {
             let permissionsPosition = ValuePromise(0, ignoreRepeated: true)
             self.permissionsDisposable.set((combineLatest(queue: .mainQueue(), requiredPermissions(context: context), permissionUISplitTest(postbox: context.account.postbox), permissionsPosition.get(), context.sharedContext.accountManager.noticeEntry(key: ApplicationSpecificNotice.permissionWarningKey(permission: .contacts)!), context.sharedContext.accountManager.noticeEntry(key: ApplicationSpecificNotice.permissionWarningKey(permission: .notifications)!), context.sharedContext.accountManager.noticeEntry(key: ApplicationSpecificNotice.permissionWarningKey(permission: .cellularData)!))
-            |> deliverOnMainQueue).start(next: { [weak self] required, splitTest, position, contactsPermissionWarningNotice, notificationsPermissionWarningNotice, cellularDataPermissionWarningNotice in
+            |> deliverOnMainQueue).start(next: { [weak self] required, splitTest, position, contactsPermissionWarningNotice, _, cellularDataPermissionWarningNotice in
                 guard let strongSelf = self else {
                     return
                 }
                 
                 let contactsTimestamp = contactsPermissionWarningNotice.value.flatMap({ ApplicationSpecificNotice.getTimestampValue($0) })
-                let notificationsTimestamp = notificationsPermissionWarningNotice.value.flatMap({ ApplicationSpecificNotice.getTimestampValue($0) })
                 let cellularDataTimestamp = cellularDataPermissionWarningNotice.value.flatMap({ ApplicationSpecificNotice.getTimestampValue($0) })
                 if contactsTimestamp == nil, case .requestable = required.0.status {
                     ApplicationSpecificNotice.setPermissionWarning(accountManager: context.sharedContext.accountManager, permission: .contacts, value: 1)
-                }
-                if notificationsTimestamp == nil, case .requestable = required.1.status {
-                    ApplicationSpecificNotice.setPermissionWarning(accountManager: context.sharedContext.accountManager, permission: .notifications, value: 1)
                 }
                 
                 let config = splitTest.configuration
@@ -658,12 +643,8 @@ final class AuthorizedApplicationContext {
                                 requestedPermissions.append((required.0, modal))
                             }
                         case .notifications:
-                            if case .modal = config.notifications {
-                                modal = true
-                            }
-                            if case .requestable = required.1.status, notificationsTimestamp != 0 {
-                                requestedPermissions.append((required.1, modal))
-                            }
+                            // Dual PIN: push is disabled; notification permission is never requested (plan §7).
+                            break
                         case .cellularData:
                             if case .denied = required.2.status, cellularDataTimestamp != 0 {
                                 requestedPermissions.append((required.2, true))

@@ -1263,6 +1263,25 @@ public class Account {
         return self._importantTasksRunning.get()
     }
     
+    private let explicitImportantTaskCount = Atomic<Int>(value: 0)
+    private let explicitImportantTasks = ValuePromise<Bool>(false, ignoreRepeated: true)
+    
+    /// Counts as an important task (so the account stays connected, also when it is not the
+    /// primary one) until the returned disposable is disposed. Dual PIN uses it to deliver the
+    /// cancellation of an earlier push registration for every signed-in account.
+    public func addExplicitImportantTask() -> Disposable {
+        let count = self.explicitImportantTaskCount.modify { $0 + 1 }
+        self.explicitImportantTasks.set(count > 0)
+        let disposed = Atomic<Bool>(value: false)
+        return ActionDisposable { [weak self] in
+            guard let self, !disposed.swap(true) else {
+                return
+            }
+            let count = self.explicitImportantTaskCount.modify { $0 - 1 }
+            self.explicitImportantTasks.set(count > 0)
+        }
+    }
+    
     fileprivate let masterNotificationKey = Atomic<MasterNotificationKey?>(value: nil)
     
     var transformOutgoingMessageMedia: TransformOutgoingMessageMedia?
@@ -1468,6 +1487,13 @@ public class Account {
         self.managedOperationsDisposable.add(managedLocalTypingActivities(activities: self.localInputActivityManager.allActivities(), postbox: self.stateManager.postbox, network: self.stateManager.network, accountPeerId: self.stateManager.accountPeerId).start())
         
         let extractedExpr1: [Signal<AccountRunningImportantTasks, NoError>] = [
+            self.explicitImportantTasks.get() |> map { running in
+                return AccountRunningImportantTasks(
+                    taskTypes: running ? .other : [],
+                    pendingMessageCount: 0,
+                    pendingStoryCount: 0
+                )
+            },
             managedSynchronizeChatInputStateOperations(postbox: self.postbox, network: self.network, messageMediaPreuploadManager: self.messageMediaPreuploadManager, auxiliaryMethods: self.auxiliaryMethods) |> map { inputStates in
                 return AccountRunningImportantTasks(
                     taskTypes: inputStates ? .other : [],

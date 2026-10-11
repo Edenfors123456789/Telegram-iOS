@@ -55,7 +55,7 @@ public extension TelegramEngine {
             return _internal_updateNameColorAndEmoji(account: self.account, nameColor: nameColor, profileColor: profileColor, profileBackgroundEmojiId: profileBackgroundEmojiId)
         }
 
-        public func unregisterNotificationToken(token: Data, type: NotificationTokenType, otherAccountUserIds: [PeerId.Id]) -> Signal<Never, NoError> {
+        public func unregisterNotificationToken(token: Data, type: NotificationTokenType, otherAccountUserIds: [PeerId.Id]) -> Signal<Bool, NoError> {
             return _internal_unregisterNotificationToken(account: self.account, token: token, type: type, otherAccountUserIds: otherAccountUserIds)
         }
 
