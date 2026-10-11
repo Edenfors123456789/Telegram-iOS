@@ -237,8 +237,9 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private var modeTranscriptStore: RestrictedTranscriptStore?
     private var modeUndiscoverableChats: [EnginePeer.Id: ChatIdentity] = [:]
     private var modeHistoryRestrictions: [EnginePeer.Id: Disposable] = [:]
-    private var modeOpenedTranscripts: [EnginePeer.Id: Disposable] = [:]
+    private var modeOpenedTranscripts: [EnginePeer.Id: OpenedModeTranscript] = [:]
     private let modeTranscriptOpenDisposable = MetaDisposable()
+    private var modeTranscriptExpiryTimer: SwiftSignalKit.Timer?
     private let modeAccountPublication: AccessAccountPublicationGate
     private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
     private var pendingModeRoot: AccessRootPreparation?
@@ -2826,10 +2827,58 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         navigateToChatControllerImpl(params)
     }
     
+    /// Entries leave the seven-day window while a transcript is on screen too: once a minute
+    /// each opened transcript's snapshot (which also advances its persisted high-water time)
+    /// replaces its restriction. A failure leaves the chat closed to everything but new sends.
+    private func startModeTranscriptExpiry() {
+        guard self.modeTranscriptExpiryTimer == nil else {
+            return
+        }
+        let timer = SwiftSignalKit.Timer(timeout: 60.0, repeat: true, completion: { [weak self] in
+            self?.refreshModeTranscriptExpiry()
+        }, queue: Queue.mainQueue())
+        self.modeTranscriptExpiryTimer = timer
+        timer.start()
+    }
+    
+    private func refreshModeTranscriptExpiry() {
+        guard let driver = self.modeRootPresentation, let store = self.modeTranscriptStore, driver.hasActiveRoot else {
+            return
+        }
+        let now = Int64(Date().timeIntervalSince1970)
+        for (peerId, opened) in self.modeOpenedTranscripts {
+            let restriction: MessageHistoryRestriction
+            var failed = false
+            do {
+                let snapshot = try driver.restrictedTranscriptSnapshot(opened.handle, store: store, now: now)
+                guard let value = RestrictedTranscriptRestriction.historyRestriction(chat: opened.chat, snapshot: snapshot) else {
+                    throw AccessError.unavailable
+                }
+                restriction = value
+            } catch {
+                failed = true
+                restriction = MessageHistoryRestriction(boundary: nil, windowStart: Int32(clamping: now), outgoingGloballyUniqueIds: [], deletedMessageIds: [])
+            }
+            let _ = opened.postbox.transaction({ transaction -> Void in
+                transaction.updateHistoryRestriction(peerId: peerId) { current in
+                    // Sends recorded since the snapshot stay admitted.
+                    var updated = restriction
+                    if !failed {
+                        updated.outgoingGloballyUniqueIds.formUnion(current.outgoingGloballyUniqueIds)
+                        updated.outgoingMessageIds.formUnion(current.outgoingMessageIds)
+                    }
+                    return updated
+                }
+            }).start()
+        }
+    }
+    
     private func releaseModeTranscripts() {
         self.modeTranscriptOpenDisposable.set(nil)
-        for (_, disposable) in self.modeOpenedTranscripts {
-            disposable.dispose()
+        self.modeTranscriptExpiryTimer?.invalidate()
+        self.modeTranscriptExpiryTimer = nil
+        for (_, opened) in self.modeOpenedTranscripts {
+            opened.recording.dispose()
         }
         for (_, disposable) in self.modeHistoryRestrictions {
             disposable.dispose()
@@ -2887,7 +2936,8 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                         }
                     }
                 })
-                self.modeOpenedTranscripts[peerId] = recording
+                self.modeOpenedTranscripts[peerId] = OpenedModeTranscript(chat: chat, handle: handle, postbox: postbox, recording: recording)
+                self.startModeTranscriptExpiry()
                 Logger.shared.log("AccessMode", "restricted transcript: opened, boundary \(snapshot.boundary == nil ? "none" : "set")")
                 let _ = (postbox.transaction { transaction -> Void in
                     transaction.updateHistoryRestriction(peerId: peerId) { _ in restriction }
@@ -5524,4 +5574,18 @@ private func useFlatModalCallsPresentation(context: AccountContext) -> Bool {
         return false
     }
     return true
+}
+
+private final class OpenedModeTranscript {
+    let chat: ChatIdentity
+    let handle: RestrictedTranscriptHandle
+    let postbox: Postbox
+    let recording: Disposable
+
+    init(chat: ChatIdentity, handle: RestrictedTranscriptHandle, postbox: Postbox, recording: Disposable) {
+        self.chat = chat
+        self.handle = handle
+        self.postbox = postbox
+        self.recording = recording
+    }
 }

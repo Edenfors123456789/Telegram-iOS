@@ -88,6 +88,16 @@ the same facts. Changing the mirror bumps a version that makes the views re-filt
   `recordOutgoing(localID:)` precondition does not fit the engine; the record should be keyed by
   random id, with the local id optional. To settle before wiring the composer.
 
+## Current limitations (native wiring)
+
+- Expiry while viewing: once a minute each opened transcript's snapshot replaces its
+  restriction (`refreshModeTranscriptExpiry`); a failed snapshot closes the chat to everything.
+- Confirmations are not written back to Core yet (`acknowledge`): a confirmed single send keeps
+  its random id and stays admitted after a restart; a confirmed album is admitted by id only in
+  memory, so after a restart it drops out of the transcript (hidden, never revealed).
+- Server deletions remove the messages from Postbox, so they leave every view; Core's
+  `applyDeletion` ledger is not fed yet.
+
 ## Steps
 
 5a. Postbox restriction primitive and tests (this design's "Where Postbox applies it" 1–4).
