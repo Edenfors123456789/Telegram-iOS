@@ -183,6 +183,22 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         XCTAssertEqual(self.ids(recorder.waitForValues(count: 1).last), [12, 20])
     }
 
+    func testAServerCopyOfABSendKeepsItsRandomId() {
+        // `messages.sendMultiMedia` answers with full `updateNewMessage`s, which the state
+        // manager stores over the confirmed album messages; the server's copy carries no random id.
+        self.seed()
+        self.restrict()
+        let recorder = self.observe()
+        XCTAssertEqual(self.ids(recorder.waitForValues(count: 1).last), [12, 13])
+        self.fixture.transaction { transaction in
+            let _ = transaction.addMessages([self.message(13, timestamp: 1400, incoming: false)], location: .Random)
+        }
+        self.fixture.transaction { _ in }
+        XCTAssertEqual(self.ids(recorder.values.last), [12, 13])
+        let stored = self.fixture.transaction { $0.getMessage(self.id(13))?.globallyUniqueId }
+        XCTAssertEqual(stored ?? nil, self.bSendRandomId)
+    }
+
     func testATaggedViewIsRestrictedToo() {
         self.seed()
         self.restrict()

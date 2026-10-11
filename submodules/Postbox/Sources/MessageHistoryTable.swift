@@ -350,7 +350,11 @@ final class MessageHistoryTable: Table {
                     if self.seedConfiguration.chatMessagesNamespaces.contains(message.id.namespace) && !message.flags.intersection(.IsIncomingMask).isEmpty {
                         accumulatedAddedIncomingMessageIndices.insert(message.index)
                     }
-                case let .InsertExistingMessage(storeMessage):
+                case let .InsertExistingMessage(incomingStoreMessage):
+                    // A server copy of a stored message carries no random id (the server never
+                    // sends one); keep the stored one. Dual PIN's restricted transcript admits B's
+                    // sends by it, and an album send is re-stored this way from its updateNewMessage.
+                    let storeMessage = self.keepingStoredGloballyUniqueId(incomingStoreMessage)
                     commitAccumulatedAddedIndices()
                     processIndexOperationsCommitAccumulatedRemoveIndices(peerId: peerId, accumulatedRemoveIndices: &accumulatedRemoveIndices, updatedCombinedState: &updatedCombinedState, invalidateReadState: &invalidateReadState, unsentMessageOperations: &unsentMessageOperations, outputOperations: &outputOperations, globalTagsOperations: &globalTagsOperations, pendingActionsOperations: &pendingActionsOperations, updatedMessageActionsSummaries: &updatedMessageActionsSummaries, updatedMessageTagSummaries: &updatedMessageTagSummaries, invalidateMessageTagSummaries: &invalidateMessageTagSummaries, localTagsOperations: &localTagsOperations, timestampBasedMessageAttributesOperations: &timestampBasedMessageAttributesOperations)
                     
@@ -1540,6 +1544,13 @@ final class MessageHistoryTable: Table {
             }
             return updatedMedia
         })
+    }
+    
+    private func keepingStoredGloballyUniqueId(_ message: InternalStoreMessage) -> InternalStoreMessage {
+        guard message.globallyUniqueId == nil, let stored = self.getMessage(message.index)?.globallyUniqueId else {
+            return message
+        }
+        return InternalStoreMessage(id: message.id, customStableId: message.customStableId, timestamp: message.timestamp, globallyUniqueId: stored, groupingKey: message.groupingKey, threadId: message.threadId, flags: message.flags, tags: message.tags, globalTags: message.globalTags, localTags: message.localTags, customTags: message.customTags, forwardInfo: message.forwardInfo, authorId: message.authorId, text: message.text, attributes: message.attributes, media: message.media)
     }
     
     private func justUpdate(_ index: MessageIndex, message: InternalStoreMessage, keepLocalTags: Bool, sharedKey: ValueBoxKey, sharedBuffer: WriteBuffer, sharedEncoder: PostboxEncoder, unsentMessageOperations: inout [IntermediateMessageHistoryUnsentOperation], updatedMessageTagSummaries: inout [MessageHistoryTagsSummaryKey: MessageHistoryTagNamespaceSummary], invalidateMessageTagSummaries: inout [InvalidatedMessageHistoryTagsSummaryEntryOperation], updatedGroupInfos: inout [MessageId: MessageGroupInfo], localTagsOperations: inout [IntermediateMessageHistoryLocalTagsOperation], timestampBasedMessageAttributesOperations: inout [TimestampBasedMessageAttributesOperation], updatedMedia: inout [MediaId: Media?], globalTagsOperations: inout [GlobalMessageHistoryTagsOperation]) -> (IntermediateMessage, MessageTags, Int64?)? {

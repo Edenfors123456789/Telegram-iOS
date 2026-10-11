@@ -69,6 +69,13 @@ the same facts. Changing the mirror bumps a version that makes the views re-filt
   stored the confirmed messages with `globallyUniqueId: nil`, so a B album dropped out of the
   transcript after a relaunch. The album path now keeps the random id as well
   (`testAConfirmedSendThatKeepsItsRandomIdIsAdmittedAfterARelaunch` pins the Postbox side).
+  That alone did not keep an album: `messages.sendMultiMedia` answers with full
+  `updateNewMessage`s, and the state manager stores them over the confirmed messages
+  (`InsertExistingMessage`), with no random id because the server never sends one. Found on the
+  simulator (the user's album vanished from B the moment it was sent). Postbox now keeps a stored
+  message's random id when a copy without one is stored over it
+  (`testAServerCopyOfABSendKeepsItsRandomId`, red → green). A single send in a private chat is
+  answered with `updateShortSentMessage` and never had this problem.
 - A send confirmed while the app was not running (the message arrives through `getDifference`
   instead of the send's own result) must still be matched to its recorded random id.
 
