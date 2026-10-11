@@ -228,7 +228,6 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private var modeCoordinator: AccessModeCoordinator?
     private var modeEnrollment: ModeEnrollment?
     private var modeEnrollmentStarting = false
-    private var modeEnrollmentCompleting = false
     private let modeEnrollmentDisposable = MetaDisposable()
     private let modeAccountPublication: AccessAccountPublicationGate
     private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
@@ -2239,7 +2238,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         assert(Queue.mainQueue().isCurrent())
         guard self.applicationBindings.isMainApp, let coordinator = self.modeCoordinator, let driver = self.modeRootPresentation,
               driver.hasActiveRoot, let origin = self.pendingModeRoot, self.modeEnrollment == nil, !self.modeEnrollmentStarting,
-              !self.modeEnrollmentCompleting, UIApplication.shared.applicationState == .active else { return }
+              UIApplication.shared.applicationState == .active else { return }
         self.modeEnrollmentStarting = true
         self.modeEnrollmentDisposable.set((AccountEnrollmentBridge.createProvisionalAccount(accountManager: self.accountManager,
             coordinator: coordinator, ticket: origin.ticket, environment: testingEnvironment ? .test : .production)
@@ -2282,7 +2281,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     }
 
     private func reconcileModeEnrollment(_ raw: (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?)) {
-        guard let enrollment = self.modeEnrollment, !self.modeEnrollmentCompleting else { return }
+        guard let enrollment = self.modeEnrollment else { return }
         if let promoted = raw.accounts.first(where: { $0.0 == enrollment.recordID && $0.0 == $0.1.account.id })?.1 {
             Logger.shared.log("AccessMode", "mode enrollment: promoted record loaded")
             self.completeModeEnrollment(enrollment, context: promoted)
@@ -2308,54 +2307,43 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     }
 
     private func completeModeEnrollment(_ enrollment: ModeEnrollment, context: AccountContext) {
-        self.modeEnrollmentCompleting = true
+        guard let driver = self.modeRootPresentation else { return }
         let account = context.account
+        // Cleared first: the transition below discards this flow's root.
+        self.modeEnrollment = nil
+        guard account.peerId.namespace == Namespaces.Peer.CloudUser else {
+            Logger.shared.log("AccessMode", "mode enrollment: account peer is not a user")
+            self.lockAfterModeEnrollmentFailure(driver)
+            self.startProvisionalCleanupRecovery()
+            return
+        }
         // The user is the account's own peer id, written by sign-in. Its peer
-        // record can still be on its way right after promotion; it is needed only
-        // for Premium, so wait briefly and otherwise assume none (the stricter limit).
-        let _ = (context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: account.peerId))
-        |> filter { $0 != nil }
-        |> take(1)
-        |> timeout(10.0, queue: Queue.mainQueue(), alternate: .single(nil))
-        |> deliverOnMainQueue).start(next: { [weak self] peer in
-            guard let self else { return }
-            self.modeEnrollmentCompleting = false
-            guard let current = self.modeEnrollment, current === enrollment, let driver = self.modeRootPresentation else { return }
-            // Cleared first: the transition below discards this flow's root.
-            self.modeEnrollment = nil
-            guard account.peerId.namespace == Namespaces.Peer.CloudUser else {
-                Logger.shared.log("AccessMode", "mode enrollment: account peer is not a user")
-                self.lockAfterModeEnrollmentFailure(driver)
-                self.startProvisionalCleanupRecovery()
-                return
+        // record never arrives here: a non-primary account runs no service tasks
+        // until it becomes the root. Like stock Telegram, whose account limit is
+        // checked before sign-in, the new account's own Premium is not counted.
+        let confirmed = AccountIdentity(installation: enrollment.origin.account.installation,
+            environment: account.testingEnvironment ? .test : .production, recordID: enrollment.recordID.int64,
+            userID: account.peerId.id._internalGetInt64Value())
+        do {
+            let (decision, preparation) = try driver.completeEnrollment(enrollment.permit, confirmedAccount: confirmed, isPremium: false)
+            let decisionName: String
+            switch decision {
+            case .new: decisionName = "new"
+            case .existingVisible: decisionName = "existingVisible"
+            case .unavailable: decisionName = "unavailable"
             }
-            var isPremium = false
-            if case let .user(user)? = peer { isPremium = user.isPremium }
-            if peer == nil { Logger.shared.log("AccessMode", "mode enrollment: user peer not loaded yet, completing without Premium") }
-            let confirmed = AccountIdentity(installation: enrollment.origin.account.installation,
-                environment: account.testingEnvironment ? .test : .production, recordID: enrollment.recordID.int64,
-                userID: account.peerId.id._internalGetInt64Value())
-            do {
-                let (decision, preparation) = try driver.completeEnrollment(enrollment.permit, confirmedAccount: confirmed, isPremium: isPremium)
-                let decisionName: String
-                switch decision {
-                case .new: decisionName = "new"
-                case .existingVisible: decisionName = "existingVisible"
-                case .unavailable: decisionName = "unavailable"
-                }
-                Logger.shared.log("AccessMode", "mode enrollment: completed, decision \(decisionName)")
-                if case .new = decision {} else {
-                    // Another mode's account, or one already here: remove only the new session.
-                    self.startProvisionalCleanupRecovery()
-                }
-                self.switchingData = (nil, nil, nil)
-                try self.prepareModeAccountRoot(preparation)
-            } catch {
-                Logger.shared.log("AccessMode", "mode enrollment: completion failed \(error)")
-                self.lockAfterModeEnrollmentFailure(driver)
+            Logger.shared.log("AccessMode", "mode enrollment: completed, decision \(decisionName)")
+            if case .new = decision {} else {
+                // Another mode's account, or one already here: remove only the new session.
                 self.startProvisionalCleanupRecovery()
             }
-        })
+            self.switchingData = (nil, nil, nil)
+            try self.prepareModeAccountRoot(preparation)
+        } catch {
+            Logger.shared.log("AccessMode", "mode enrollment: completion failed \(error)")
+            self.lockAfterModeEnrollmentFailure(driver)
+            self.startProvisionalCleanupRecovery()
+        }
     }
     
     public func switchToAccount(id: AccountRecordId, fromSettingsController settingsController: ViewController? = nil, withChatListController chatListController: ViewController? = nil) {
