@@ -382,6 +382,24 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         XCTAssertEqual(ids, [otherCall])
     }
 
+    func testARestrictionCanLeaveOutCallsInTheTranscript() {
+        // User decision 2026-10-12: a hidden chat's calls never show in B, not even inside its
+        // explicitly opened transcript, although a call after the boundary is a new incoming message.
+        self.seed()
+        let calls = GlobalMessageTags(rawValue: 1 << 0)
+        self.fixture.transaction { transaction in
+            let _ = transaction.addMessages([
+                MessageHistoryTableFixture.storeMessage(id: self.id(16), timestamp: 1600, flags: [.Incoming], globalTags: calls),
+                self.message(17, timestamp: 1700, incoming: true),
+            ], location: .Random)
+        }
+        var restriction = self.restriction()
+        restriction.excludedGlobalTags = calls
+        self.restrict(restriction)
+        let recorder = self.observe()
+        XCTAssertEqual(self.ids(recorder.waitForValues(count: 1).last), [12, 13, 17])
+    }
+
     func testReleasingTheRestrictionShowsTheFullHistory() {
         self.seed()
         let restriction = self.restrict()

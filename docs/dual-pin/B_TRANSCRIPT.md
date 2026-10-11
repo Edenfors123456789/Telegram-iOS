@@ -138,3 +138,14 @@ from user" count paths not via `getSearchMessageCount`.
 5a. Postbox restriction primitive and tests (this design's "Where Postbox applies it" 1–4).
 5b. Mirror object + Core/bridge adapter (boundary acquisition, sends, deletions, expiry).
 5c. Chat screen in B for a hidden chat, auxiliary features.
+
+## Decision: no calls of a hidden chat in B, not even in its transcript (user, 2026-10-12)
+
+A call after the boundary is a new incoming message, so the transcript admitted it ("Missed Call"
+inside Ton2's B transcript). Asked, the user chose "Скрывать в переписке": a hidden chat's calls
+never show in B. `MessageHistoryRestriction.excludedGlobalTags` drops messages carrying the given
+global tags; the app passes `[.Calls, .MissedCalls]` to every restriction it builds
+(`RestrictedTranscriptRestriction.historyRestriction(…, excludedGlobalTags:)` makes the caller
+choose). Tests: `testARestrictionCanLeaveOutCallsInTheTranscript` (mutation-checked),
+`testExcludedGlobalTagsAreCarriedOver`. The calls tab already leaves out every message of a
+chat hidden from lists (`GlobalMessageTagsView`).

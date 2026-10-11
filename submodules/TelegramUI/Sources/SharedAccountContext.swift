@@ -168,6 +168,10 @@ struct ModeAccountRoot: Equatable {
     }
 }
 
+/// Dual PIN: a hidden chat's calls never show in B, not even inside its explicitly opened
+/// transcript (user decision 2026-10-12, docs/dual-pin/B_TRANSCRIPT.md).
+private let modeTranscriptExcludedGlobalTags: GlobalMessageTags = [.Calls, .MissedCalls]
+
 public final class SharedAccountContextImpl: SharedAccountContext {
     public let mainWindow: Window1?
     public let applicationBindings: TelegramApplicationBindings
@@ -2102,7 +2106,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             let windowStart = Int32(max(0, Int64(Date().timeIntervalSince1970) - RestrictedTranscriptStore.window))
             for peerId in undiscoverable.keys {
                 self.modeHistoryRestrictions[peerId] = postbox.addHistoryRestriction(peerId: peerId, MessageHistoryRestriction(boundary: nil,
-                    windowStart: windowStart, outgoingGloballyUniqueIds: [], deletedMessageIds: []))
+                    windowStart: windowStart, outgoingGloballyUniqueIds: [], deletedMessageIds: [], excludedGlobalTags: modeTranscriptExcludedGlobalTags))
             }
             self.modeUndiscoverableChats = undiscoverable
         } else {
@@ -2729,13 +2733,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             var failed = false
             do {
                 let snapshot = try driver.restrictedTranscriptSnapshot(opened.handle, store: store, now: now)
-                guard let value = RestrictedTranscriptRestriction.historyRestriction(chat: opened.chat, snapshot: snapshot) else {
+                guard let value = RestrictedTranscriptRestriction.historyRestriction(chat: opened.chat, snapshot: snapshot, excludedGlobalTags: modeTranscriptExcludedGlobalTags) else {
                     throw AccessError.unavailable
                 }
                 restriction = value
             } catch {
                 failed = true
-                restriction = MessageHistoryRestriction(boundary: nil, windowStart: Int32(clamping: now), outgoingGloballyUniqueIds: [], deletedMessageIds: [])
+                restriction = MessageHistoryRestriction(boundary: nil, windowStart: Int32(clamping: now), outgoingGloballyUniqueIds: [], deletedMessageIds: [], excludedGlobalTags: modeTranscriptExcludedGlobalTags)
             }
             let _ = opened.postbox.transaction({ transaction -> Void in
                 transaction.updateHistoryRestriction(peerId: peerId) { current in
@@ -2794,7 +2798,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 let (handle, snapshot) = try driver.openRestrictedTranscript(chat, store: store, boundary: boundary.map {
                     TranscriptBoundary(maximumMessageIDs: $0.maximumMessageIds, serverTimestamp: Int64($0.serverTimestamp))
                 }, now: now)
-                guard let restriction = RestrictedTranscriptRestriction.historyRestriction(chat: chat, snapshot: snapshot) else {
+                guard let restriction = RestrictedTranscriptRestriction.historyRestriction(chat: chat, snapshot: snapshot, excludedGlobalTags: modeTranscriptExcludedGlobalTags) else {
                     throw AccessError.unavailable
                 }
                 let recorder = try driver.restrictedSendRecorder(handle, store: store)

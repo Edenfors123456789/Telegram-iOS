@@ -23,7 +23,7 @@ final class RestrictedTranscriptRestrictionTests: XCTestCase {
     }
 
     func testEveryFieldIsCarriedOver() throws {
-        let restriction = try XCTUnwrap(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot()))
+        let restriction = try XCTUnwrap(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(), excludedGlobalTags: []))
         XCTAssertEqual(restriction.boundary, MessageHistoryRestriction.Boundary(maximumMessageIds: [0: 100], serverTimestamp: 2_000))
         XCTAssertEqual(restriction.windowStart, 1_000)
         XCTAssertEqual(restriction.outgoingGloballyUniqueIds, [777])
@@ -37,18 +37,26 @@ final class RestrictedTranscriptRestrictionTests: XCTestCase {
         XCTAssertFalse(restriction.includes(id: self.messageId(130), timestamp: 2_100, flags: [.Incoming], globallyUniqueId: nil))
     }
 
+    func testExcludedGlobalTagsAreCarriedOver() throws {
+        let calls = GlobalMessageTags(rawValue: 1 << 0)
+        let restriction = try XCTUnwrap(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(), excludedGlobalTags: calls))
+        XCTAssertEqual(restriction.excludedGlobalTags, calls)
+        XCTAssertFalse(restriction.includes(id: self.messageId(101), timestamp: 2_100, flags: [.Incoming], globallyUniqueId: nil, globalTags: calls))
+        XCTAssertTrue(restriction.includes(id: self.messageId(101), timestamp: 2_100, flags: [.Incoming], globallyUniqueId: nil))
+    }
+
     func testAnOfflineTranscriptAdmitsNoIncoming() throws {
-        let restriction = try XCTUnwrap(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(boundary: nil)))
+        let restriction = try XCTUnwrap(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(boundary: nil), excludedGlobalTags: []))
         XCTAssertNil(restriction.boundary)
         XCTAssertFalse(restriction.includes(id: self.messageId(500), timestamp: 3_000, flags: [.Incoming], globallyUniqueId: nil))
     }
 
     func testValuesPostboxCannotHoldRefuseTheRestriction() {
         let other = ChatIdentity(account: self.account, peerNamespace: 0, peerID: 51)
-        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(windowStart: Int64(Int32.max) + 1)))
-        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(boundary: TranscriptBoundary(maximumMessageIDs: [0: 1], serverTimestamp: Int64(Int32.max) + 1))))
-        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(serverIDs: [self.id(5, chat: other)])))
-        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(deleted: [self.id(5, chat: other)])))
-        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: ChatIdentity(account: self.account, peerNamespace: 0, peerID: 0x0100_0000_0000_0000), snapshot: self.snapshot(serverIDs: [], deleted: [])))
+        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(windowStart: Int64(Int32.max) + 1), excludedGlobalTags: []))
+        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(boundary: TranscriptBoundary(maximumMessageIDs: [0: 1], serverTimestamp: Int64(Int32.max) + 1)), excludedGlobalTags: []))
+        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(serverIDs: [self.id(5, chat: other)]), excludedGlobalTags: []))
+        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: self.chat, snapshot: self.snapshot(deleted: [self.id(5, chat: other)]), excludedGlobalTags: []))
+        XCTAssertNil(RestrictedTranscriptRestriction.historyRestriction(chat: ChatIdentity(account: self.account, peerNamespace: 0, peerID: 0x0100_0000_0000_0000), snapshot: self.snapshot(serverIDs: [], deleted: []), excludedGlobalTags: []))
     }
 }

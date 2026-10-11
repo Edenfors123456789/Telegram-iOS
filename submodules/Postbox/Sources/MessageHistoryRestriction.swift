@@ -26,17 +26,20 @@ public struct MessageHistoryRestriction: Equatable {
     /// their random id (an album's confirmation does that), adopted when they replace one.
     public var outgoingMessageIds: Set<MessageId>
     public var deletedMessageIds: Set<MessageId>
+    /// Messages carrying any of these global tags are never shown (Dual PIN: calls).
+    public var excludedGlobalTags: GlobalMessageTags
 
-    public init(boundary: Boundary?, windowStart: Int32, outgoingGloballyUniqueIds: Set<Int64>, outgoingMessageIds: Set<MessageId> = [], deletedMessageIds: Set<MessageId>) {
+    public init(boundary: Boundary?, windowStart: Int32, outgoingGloballyUniqueIds: Set<Int64>, outgoingMessageIds: Set<MessageId> = [], deletedMessageIds: Set<MessageId>, excludedGlobalTags: GlobalMessageTags = []) {
         self.boundary = boundary
         self.windowStart = windowStart
         self.outgoingGloballyUniqueIds = outgoingGloballyUniqueIds
         self.outgoingMessageIds = outgoingMessageIds
         self.deletedMessageIds = deletedMessageIds
+        self.excludedGlobalTags = excludedGlobalTags
     }
 
-    public func includes(id: MessageId, timestamp: Int32, flags: MessageFlags, globallyUniqueId: Int64?) -> Bool {
-        if timestamp <= self.windowStart || self.deletedMessageIds.contains(id) {
+    public func includes(id: MessageId, timestamp: Int32, flags: MessageFlags, globallyUniqueId: Int64?, globalTags: GlobalMessageTags = []) -> Bool {
+        if timestamp <= self.windowStart || self.deletedMessageIds.contains(id) || !globalTags.intersection(self.excludedGlobalTags).isEmpty {
             return false
         }
         if flags.contains(.Incoming) {
@@ -56,11 +59,11 @@ public struct MessageHistoryRestriction: Equatable {
     }
 
     func includes(_ message: IntermediateMessage) -> Bool {
-        return self.includes(id: message.id, timestamp: message.timestamp, flags: message.flags, globallyUniqueId: message.globallyUniqueId)
+        return self.includes(id: message.id, timestamp: message.timestamp, flags: message.flags, globallyUniqueId: message.globallyUniqueId, globalTags: message.globalTags)
     }
 
     func includes(_ message: Message) -> Bool {
-        return self.includes(id: message.id, timestamp: message.timestamp, flags: message.flags, globallyUniqueId: message.globallyUniqueId)
+        return self.includes(id: message.id, timestamp: message.timestamp, flags: message.flags, globallyUniqueId: message.globallyUniqueId, globalTags: message.globalTags)
     }
 
     /// Holes at or below this id are never loaded for `namespace`: everything there is excluded.
