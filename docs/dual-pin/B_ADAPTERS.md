@@ -1,8 +1,15 @@
 # Stage 4: restricted-mode (B) data adapters
 
-The B root stays denied (`AppDelegate` `authorizeRoot` refuses `policy.mode == .b`) until
-every row below that can show a hidden chat or its history is implemented and verified.
+The B root is admitted since 2026-10-11 (`AppDelegate` `authorizeRoot` no longer refuses
+`policy.mode == .b`): `SharedAccountContext.publishModeRoot` registers the chat-list exclusion
+and an empty history restriction for every undiscoverable chat before a B root is published.
 This file is the working order and status; [SURFACES.md](SURFACES.md) stays the inventory.
+
+Remaining known gaps (not yet closed): reply threads/comments of a hidden channel (thread root
+fetched raw), the gallery opened from outside the chat, other recents (stickers, emoji, GIFs,
+inline bots), Core `acknowledge`/`applyDeletion` feed (a confirmed B album drops out of the
+transcript after a restart), secret-chat specifics, the profile's groups-in-common tab appearing
+from the server count, stage 5 (push, extensions, widgets, Spotlight, CallKit).
 
 Only the shared primary account can have hidden chats (`AccessConfiguration.validate`). In B,
 `AccessModePolicy.undiscoverableChats(of:)` names them for one account; it is empty in A and

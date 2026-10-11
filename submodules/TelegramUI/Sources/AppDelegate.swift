@@ -2109,10 +2109,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.modeCoordinator = coordinator
         do {
             let driver = try AccessRootPresentation(coordinator: coordinator, isApplicationActive: { [weak self] in self?.isActiveValue == true },
-                authorizeRoot: { policy in
-                    // This intermediate stage must never publish raw B history.
-                    // Remove this denial only with verified stage-4/5 adapters.
-                    guard policy.mode == .a else { throw AccessError.unavailable }
+                authorizeRoot: { _ in
+                    // Both modes are admitted. A B root never shows raw hidden history:
+                    // SharedAccountContext.publishModeRoot registers its chat-list exclusion
+                    // and an empty history restriction for every undiscoverable chat before
+                    // the root is published (docs/dual-pin/B_ADAPTERS.md).
                 }, showCover: { [weak self, weak appLock] in
                     guard let self else { return }
                     self.showModeNativeCover()
