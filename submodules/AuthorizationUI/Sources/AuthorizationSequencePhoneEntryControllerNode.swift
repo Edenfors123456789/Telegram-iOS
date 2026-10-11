@@ -702,6 +702,11 @@ final class AuthorizationSequencePhoneEntryControllerNode: ASDisplayNode {
     }
     
     @objc private func debugQrTap(_ recognizer: UITapGestureRecognizer) {
+        // A QR token is authorized by the scanning device, with no request this
+        // screen could prepare first. Not available in a Dual PIN mode enrollment.
+        if let account = self.account, self.sharedContext.modeEnrollmentAuthorizationGate(account: account) != nil {
+            return
+        }
         if self.qrNode == nil {
             let qrNode = ASImageNode()
             qrNode.frame = CGRect(origin: CGPoint(x: 16.0, y: 64.0 + 16.0), size: CGSize(width: 200.0, height: 200.0))
@@ -713,6 +718,9 @@ final class AuthorizationSequencePhoneEntryControllerNode: ASDisplayNode {
     }
     
     private func refreshQrToken() {
+        if let account = self.account, self.sharedContext.modeEnrollmentAuthorizationGate(account: account) != nil {
+            return
+        }
         guard let account = self.account else {
             return
         }

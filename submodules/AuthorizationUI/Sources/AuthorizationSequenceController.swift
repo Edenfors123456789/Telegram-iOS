@@ -62,6 +62,8 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
     }
     
     private var inAppPurchaseManager: InAppPurchaseManager!
+    /// Dual PIN mode enrollment only; see `SharedAccountContext.modeEnrollmentAuthorizationGate`.
+    private let authorizationAttemptGate: ((UnauthorizedAccount) -> Signal<Bool, NoError>)?
     
     public init(sharedContext: SharedAccountContext, account: UnauthorizedAccount, otherAccountPhoneNumbers: ((String, AccountRecordId, Bool)?, [(String, AccountRecordId, Bool)]), presentationData: PresentationData, openUrl: @escaping (String) -> Void, apiId: Int32, apiHash: String, authorizationCompleted: @escaping () -> Void) {
         self.sharedContext = sharedContext
@@ -72,6 +74,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         self.presentationData = presentationData
         self.openUrl = openUrl
         self.authorizationCompleted = authorizationCompleted
+        self.authorizationAttemptGate = sharedContext.modeEnrollmentAuthorizationGate(account: account)
         
         let navigationStatusBar: NavigationStatusBarStyle
         switch presentationData.theme.rootController.statusBarStyle {
@@ -158,6 +161,30 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         return controller
     }
     
+    /// In a mode enrollment, prepares the exact account's current key before a
+    /// request that may authorize it; a refusal fails locally and sends nothing.
+    private func authorizing<T, E>(_ refused: E, _ request: @escaping (UnauthorizedAccount) -> Signal<T, E>) -> Signal<T, E> {
+        let account = self.account
+        guard let gate = self.authorizationAttemptGate else { return request(account) }
+        return gate(account)
+        |> castError(E.self)
+        |> mapToSignal { allowed -> Signal<T, E> in
+            return allowed ? request(account) : .fail(refused)
+        }
+    }
+
+    /// Paid login and password recovery authorize the key through requests this
+    /// screen does not prepare, so a mode enrollment ends instead (the owned
+    /// cleanup then revokes and removes the provisional session).
+    private func endModeEnrollmentForUnsupportedStep() -> Bool {
+        guard self.authorizationAttemptGate != nil else { return false }
+        let id = self.account.id
+        let _ = (self.sharedContext.accountManager.transaction { transaction -> Void in
+            if transaction.getCurrentAuth()?.id == id { transaction.removeAuth() }
+        }).startStandalone()
+        return true
+    }
+
     private func phoneEntryController(countryCode: Int32, number: String, splashController: AuthorizationSequenceSplashController?) -> AuthorizationSequencePhoneEntryController {
         var currentController: AuthorizationSequencePhoneEntryController?
         for c in self.viewControllers {
@@ -200,7 +227,9 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 }
                 controller?.inProgress = true
                 
-                let disableAuthTokens = self.sharedContext.immediateExperimentalUISettings.disableReloginTokens
+                // A mode enrollment must not sign in through a stored logout token:
+                // sendCode is prepared as non-authorizing.
+                let disableAuthTokens = self.sharedContext.immediateExperimentalUISettings.disableReloginTokens || self.authorizationAttemptGate != nil
                 let authorizationPushConfiguration = self.sharedContext.authorizationPushConfiguration
                 |> take(1)
                 |> timeout(2.0, queue: .mainQueue(), alternate: .single(nil))
@@ -320,9 +349,13 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     return
                 }
                 
-                self.actionDisposable.set((authorizeWithPasskey(
+                // TelegramCore moves a passkey login to the passkey's datacenter
+                // itself, on a key this screen never prepared. Not in a mode enrollment.
+                let passkeyDatacenter = passkey.userHandle.components(separatedBy: ":").first.flatMap { Int32($0) }
+                let movesDatacenter = self.authorizationAttemptGate != nil && passkeyDatacenter != nil && passkeyDatacenter != self.account.masterDatacenterId
+                self.actionDisposable.set(((movesDatacenter ? Signal<AuthorizeWithPasskeyResult, AuthorizationCodeVerificationError>.fail(.generic) : self.authorizing(AuthorizationCodeVerificationError.generic) { account in authorizeWithPasskey(
                     accountManager: self.sharedContext.accountManager,
-                    account: self.account,
+                    account: account,
                     passkey: passkey,
                     foreignDatacenter: nil,
                     forcedPasswordSetupNotice: { value in
@@ -332,7 +365,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
                     },
                     syncContacts: syncContacts
-                )
+                ) })
                 |> deliverOnMainQueue).startStrict(next: { [weak self] result in
                     guard let self else {
                         return
@@ -387,7 +420,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             controller.retryResetEmail = { [weak self] in
                 if let self {
                     self.actionDisposable.set(
-                        resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash).startStandalone()
+                        self.authorizing(AuthorizationEmailResetError.generic) { account in resetLoginEmail(account: account, phoneNumber: number, phoneCodeHash: phoneCodeHash) }.startStandalone()
                     )
                 }
             }
@@ -397,7 +430,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     let bold = MarkdownAttributeSet(font: Font.semibold(self.presentationData.listsFontSize.baseDisplaySize * 13.0 / 17.0), textColor: self.presentationData.theme.actionSheet.primaryTextColor)
                     if let _ = resetPendingDate {
                         self.actionDisposable.set(
-                            (resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash)
+                            (self.authorizing(AuthorizationEmailResetError.generic) { account in resetLoginEmail(account: account, phoneNumber: number, phoneCodeHash: phoneCodeHash) }
                             |> deliverOnMainQueue).startStrict(error: { [weak self] error in
                                 if let self, case .alreadyInProgress = error {
                                     let formattedNumber = formatPhoneNumber(number)
@@ -412,7 +445,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     } else if let resetAvailablePeriod {
                         if resetAvailablePeriod == 0 {
                             self.actionDisposable.set(
-                                resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash).startStrict()
+                                self.authorizing(AuthorizationEmailResetError.generic) { account in resetLoginEmail(account: account, phoneNumber: number, phoneCodeHash: phoneCodeHash) }.startStrict()
                             )
                         } else {
                             let pattern = pattern.replacingOccurrences(of: "*", with: "#")
@@ -431,7 +464,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     return
                                 }
                                 self.actionDisposable.set(
-                                    (resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash)
+                                    (self.authorizing(AuthorizationEmailResetError.generic) { account in resetLoginEmail(account: account, phoneNumber: number, phoneCodeHash: phoneCodeHash) }
                                      |> deliverOnMainQueue).startStrict(error: { [weak self] error in
                                          Queue.mainQueue().async {
                                              guard let self, let controller = controller else {
@@ -474,7 +507,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     }
                     
                     if case let .email(_, _, _, _, _, setup) = type, setup, case let .emailVerification(emailCode) = authorizationCode {
-                        strongSelf.actionDisposable.set(((verifyLoginEmailSetup(account: strongSelf.account, code: emailCode))
+                        strongSelf.actionDisposable.set(((strongSelf.authorizing(AuthorizationEmailVerificationError.generic) { account in verifyLoginEmailSetup(account: account, code: emailCode) })
                         |> deliverOnMainQueue).startStrict(error: { error in
                             Queue.mainQueue().async {
                                 if let strongSelf = self, let controller = controller {
@@ -516,12 +549,12 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                             }
                         }))
                     } else {
-                        strongSelf.actionDisposable.set((authorizeWithCode(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, code: authorizationCode, termsOfService: termsOfService?.0, forcedPasswordSetupNotice: { value in
+                        strongSelf.actionDisposable.set((strongSelf.authorizing(AuthorizationCodeVerificationError.generic) { account in authorizeWithCode(accountManager: strongSelf.sharedContext.accountManager, account: account, code: authorizationCode, termsOfService: termsOfService?.0, forcedPasswordSetupNotice: { value in
                             guard let entry = EngineCodableEntry(ApplicationSpecificCounterNotice(value: value)) else {
                                 return nil
                             }
                             return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
-                        })
+                        }) }
                         |> deliverOnMainQueue).startStrict(next: { result in
                             guard let strongSelf = self else {
                                 return
@@ -649,7 +682,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     }
                 } else {
                     controller?.inProgress = true
-                    strongSelf.actionDisposable.set((resendAuthorizationCode(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, apiId: strongSelf.apiId, apiHash: strongSelf.apiHash, firebaseSecretStream: strongSelf.sharedContext.firebaseSecretStream)
+                    strongSelf.actionDisposable.set((strongSelf.authorizing(AuthorizationCodeRequestError.generic(info: nil)) { account in resendAuthorizationCode(accountManager: strongSelf.sharedContext.accountManager, account: account, apiId: strongSelf.apiId, apiHash: strongSelf.apiHash, firebaseSecretStream: strongSelf.sharedContext.firebaseSecretStream) }
                     |> deliverOnMainQueue).startStrict(next: { result in
                         controller?.inProgress = false
                     }, error: { error in
@@ -832,7 +865,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 }
             
             if self.signInWithAppleSetup {
-                self.actionDisposable.set((verifyLoginEmailSetup(account: self.account, code: .appleToken(token))
+                self.actionDisposable.set((self.authorizing(AuthorizationEmailVerificationError.generic) { account in verifyLoginEmailSetup(account: account, code: .appleToken(token)) }
                 |> deliverOnMainQueue).startStrict(error: { [weak self, weak lastController] error in
                     if let strongSelf = self, let lastController = lastController {
                         let text: String
@@ -855,12 +888,12 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 }))
             } else {
                 self.actionDisposable.set(
-                    authorizeWithCode(accountManager: self.sharedContext.accountManager, account: self.account, code: .emailVerification(.appleToken(token)), termsOfService: nil, forcedPasswordSetupNotice: { value in
+                    self.authorizing(AuthorizationCodeVerificationError.generic) { account in authorizeWithCode(accountManager: self.sharedContext.accountManager, account: account, code: .emailVerification(.appleToken(token)), termsOfService: nil, forcedPasswordSetupNotice: { value in
                         guard let entry = EngineCodableEntry(ApplicationSpecificCounterNotice(value: value)) else {
                             return nil
                         }
                         return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
-                    }).startStrict(next: { [weak self] result in
+                    }) }.startStrict(next: { [weak self] result in
                         guard let strongSelf = self else {
                             return
                         }
@@ -939,7 +972,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 if let strongSelf = self {
                     controller?.inProgress = true
                     
-                    strongSelf.actionDisposable.set((authorizeWithPassword(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, password: password, syncContacts: syncContacts) |> deliverOnMainQueue).startStrict(error: { error in
+                    strongSelf.actionDisposable.set((strongSelf.authorizing(AuthorizationPasswordVerificationError.generic) { account in authorizeWithPassword(accountManager: strongSelf.sharedContext.accountManager, account: account, password: password, syncContacts: syncContacts) } |> deliverOnMainQueue).startStrict(error: { error in
                         Queue.mainQueue().async {
                             if let strongSelf = self, let controller = controller {
                                 controller.inProgress = false
@@ -1206,12 +1239,12 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         avatarVideo = nil
                     }
                     
-                    strongSelf.actionDisposable.set((signUpWithName(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, firstName: firstName, lastName: lastName, avatarData: avatarData, avatarVideo: avatarVideo, videoStartTimestamp: videoStartTimestamp, disableJoinNotifications: !announceSignUp, forcedPasswordSetupNotice: { value in
+                    strongSelf.actionDisposable.set((strongSelf.authorizing(SignUpError.generic) { account in signUpWithName(accountManager: strongSelf.sharedContext.accountManager, account: account, firstName: firstName, lastName: lastName, avatarData: avatarData, avatarVideo: avatarVideo, videoStartTimestamp: videoStartTimestamp, disableJoinNotifications: !announceSignUp, forcedPasswordSetupNotice: { value in
                         guard let entry = EngineCodableEntry(ApplicationSpecificCounterNotice(value: value)) else {
                             return nil
                         }
                         return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
-                    })
+                    }) }
                     |> deliverOnMainQueue).startStrict(error: { error in
                         Queue.mainQueue().async {
                             if let strongSelf = self, let controller = controller {
@@ -1324,6 +1357,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     controllers.append(self.passwordEntryController(hint: hint, suggestReset: suggestReset, syncContacts: syncContacts))
                     self.setViewControllers(controllers, animated: !self.viewControllers.isEmpty)
                 case let .passwordRecovery(_, _, _, emailPattern, syncContacts):
+                    if self.endModeEnrollmentForUnsupportedStep() { return }
                     var controllers: [ViewController] = []
                     if !self.otherAccountPhoneNumbers.1.isEmpty {
                         controllers.append(self.splashController())
@@ -1348,6 +1382,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     controllers.append(self.signUpController(firstName: firstName, lastName: lastName, termsOfService: termsOfService, displayCancel: displayCancel))
                     self.setViewControllers(controllers, animated: !self.viewControllers.isEmpty)
                 case let .payment(number, codeHash, storeProduct, premiumDays, supportEmailAddress, supportEmailSubject, _):
+                    if self.endModeEnrollmentForUnsupportedStep() { return }
                     var controllers: [ViewController] = []
                     if !self.otherAccountPhoneNumbers.1.isEmpty {
                         controllers.append(self.splashController())

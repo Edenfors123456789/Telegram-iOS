@@ -215,6 +215,21 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     /// Opens a detached provisional account's directory, for its owned cleanup only.
     private var loadProvisionalCleanupAccount: ((AccountRecordId, Bool) -> Signal<AccountResult, NoError>)?
     private let provisionalCleanupRecoveryDisposable = MetaDisposable()
+    /// One add-account flow started from one ready mode root, in this process.
+    private final class ModeEnrollment {
+        let origin: AccessRootPreparation
+        let recordID: AccountRecordId
+        let permit: AccountEnrollmentPermit
+        var sawAuth = false
+        init(origin: AccessRootPreparation, recordID: AccountRecordId, permit: AccountEnrollmentPermit) {
+            self.origin = origin; self.recordID = recordID; self.permit = permit
+        }
+    }
+    private var modeCoordinator: AccessModeCoordinator?
+    private var modeEnrollment: ModeEnrollment?
+    private var modeEnrollmentStarting = false
+    private var modeEnrollmentCompleting = false
+    private let modeEnrollmentDisposable = MetaDisposable()
     private let modeAccountPublication: AccessAccountPublicationGate
     private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
     private var pendingModeRoot: AccessRootPreparation?
@@ -2063,9 +2078,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 let allowed = raw.accounts.filter { ids.contains($0.0.int64) }
                 let primary = projection.primary.flatMap { selected in allowed.first { $0.0.int64 == selected.recordID }?.1 }
                 guard primary != nil else { throw AccessError.unavailable }
-                // Unauthorized records are quarantined until the native durable
-                // enrollment adapter has bound their permit and current epoch.
-                return (primary, allowed, nil)
+                // Unauthorized records stay quarantined, except the provisional
+                // record this very root started (its sign-in screen).
+                let auth = self.modeEnrollment.flatMap { enrollment -> UnauthorizedAccount? in
+                    guard enrollment.origin == self.pendingModeRoot, let auth = raw.currentAuth, auth.id == enrollment.recordID else { return nil }
+                    return auth
+                }
+                return (primary, allowed, auth)
             }
         } catch {
             try? driver.lock()
@@ -2076,6 +2095,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private func publishAccountContexts() {
         assert(Queue.mainQueue().isCurrent())
         guard let raw = self.activeAccountsValue else { return }
+        self.reconcileModeEnrollment(raw)
         self.activeAccountsPromise.set(.single(self.visibleAccountContexts(raw)))
         if !self.modeAccountAccessRequired {
             self.modeAccountRootPromise.set(ModeAccountRoot(context: raw.primary, preparation: nil))
@@ -2093,16 +2113,20 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.modeRootPresentation = driver
         if self.applicationBindings.isMainApp {
             self.accountDirectoryCleanupGate.configure(coordinator)
-            self.startProvisionalCleanupRecovery(coordinator)
+            self.modeCoordinator = coordinator
+            self.startProvisionalCleanupRecovery()
         }
         self.clearModeAccountPresentation()
     }
 
-    /// Once per launch, before this process can start an enrollment: a pending
-    /// provisional owner belongs to a dead flow. Failure keeps it for the next
-    /// launch; nothing here retries or polls.
-    private func startProvisionalCleanupRecovery(_ coordinator: AccessModeCoordinator) {
-        guard let loadAccount = self.loadProvisionalCleanupAccount else { return }
+    /// At launch, and whenever this process's own flow has ended (cancelled,
+    /// locked, refused, superseded): a pending provisional owner then belongs to
+    /// no active flow. Failure keeps it for the next launch; nothing retries or polls.
+    private func startProvisionalCleanupRecovery() {
+        assert(Queue.mainQueue().isCurrent())
+        // Never claim the owner of this process's live flow.
+        guard self.modeEnrollment == nil, !self.modeEnrollmentStarting,
+              let coordinator = self.modeCoordinator, let loadAccount = self.loadProvisionalCleanupAccount else { return }
         let accountManager = self.accountManager
         self.provisionalCleanupRecoveryDisposable.set((AccountEnrollmentBridge.recoverProvisionalCleanup(accountManager: accountManager, coordinator: coordinator, revocation: { owner in
             return AccountEnrollmentBridge.nativeRevocation(accountManager: accountManager, coordinator: coordinator, cleanup: owner, loadAccount: {
@@ -2144,6 +2168,12 @@ public final class SharedAccountContextImpl: SharedAccountContext {
 
     func clearModeAccountPresentation() {
         assert(Queue.mainQueue().isCurrent())
+        // Any root discard (lock, switch, configuration change) ends a flow the
+        // old root started; completion clears the flow before its own transition.
+        if self.modeEnrollment != nil {
+            self.modeEnrollment = nil
+            self.startProvisionalCleanupRecovery()
+        }
         self.pendingModeRoot = nil
         self.switchingData = (nil, nil, nil)
         self.modeAccountRootPromise.set(ModeAccountRoot(context: nil, preparation: nil))
@@ -2193,10 +2223,107 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     public func beginNewAuth(testingEnvironment: Bool) {
         // The mode enrollment adapter must persist/bind a provisional owner first.
         // Never create an unowned record as a fallback while Dual PIN is configured.
-        guard !self.modeAccountAccessRequired else { return }
+        guard !self.modeAccountAccessRequired else {
+            self.beginModeEnrollment(testingEnvironment: testingEnvironment)
+            return
+        }
         let _ = self.accountManager.transaction({ transaction -> Void in
             let _ = transaction.createAuth([.environment(AccountEnvironmentAttribute(environment: testingEnvironment ? .test : .production))])
         }).start()
+    }
+
+    /// Add an account to the current mode: a provisional record owned by Core,
+    /// whose sign-in screen only this ready root shows.
+    private func beginModeEnrollment(testingEnvironment: Bool) {
+        assert(Queue.mainQueue().isCurrent())
+        guard self.applicationBindings.isMainApp, let coordinator = self.modeCoordinator, let driver = self.modeRootPresentation,
+              driver.hasActiveRoot, let origin = self.pendingModeRoot, self.modeEnrollment == nil, !self.modeEnrollmentStarting,
+              !self.modeEnrollmentCompleting, UIApplication.shared.applicationState == .active else { return }
+        self.modeEnrollmentStarting = true
+        self.modeEnrollmentDisposable.set((AccountEnrollmentBridge.createProvisionalAccount(accountManager: self.accountManager,
+            coordinator: coordinator, ticket: origin.ticket, environment: testingEnvironment ? .test : .production)
+        |> deliverOnMainQueue).start(next: { [weak self] result in
+            guard let self else { return }
+            self.modeEnrollmentStarting = false
+            guard case let .created(recordID, permit) = result else { return }
+            guard self.modeRootPresentation === driver, driver.hasActiveRoot, self.pendingModeRoot == origin else {
+                // The root changed meanwhile: never show this record's sign-in.
+                self.startProvisionalCleanupRecovery()
+                return
+            }
+            self.modeEnrollment = ModeEnrollment(origin: origin, recordID: recordID, permit: permit)
+            self.publishAccountContexts()
+        }))
+    }
+
+    public func modeEnrollmentAuthorizationGate(account: UnauthorizedAccount) -> ((UnauthorizedAccount) -> Signal<Bool, NoError>)? {
+        assert(Queue.mainQueue().isCurrent())
+        guard let enrollment = self.modeEnrollment, account.id == enrollment.recordID, let coordinator = self.modeCoordinator else { return nil }
+        let accountManager = self.accountManager
+        return { account in
+            // Core refuses once the flow's ticket is gone (lock, new root, claim).
+            guard account.id == enrollment.recordID else { return .single(false) }
+            return AccountEnrollmentBridge.prepareAuthorizationAttempt(account: account, accountManager: accountManager,
+                coordinator: coordinator, permit: enrollment.permit, ticket: enrollment.origin.ticket)
+        }
+    }
+
+    private func reconcileModeEnrollment(_ raw: (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?)) {
+        guard let enrollment = self.modeEnrollment, !self.modeEnrollmentCompleting else { return }
+        if let promoted = raw.accounts.first(where: { $0.0 == enrollment.recordID && $0.0 == $0.1.account.id })?.1 {
+            self.completeModeEnrollment(enrollment, context: promoted)
+            return
+        }
+        if raw.currentAuth?.id == enrollment.recordID {
+            enrollment.sawAuth = true
+            return
+        }
+        guard enrollment.sawAuth else { return }
+        // The auth is gone: promoted (its account still loading) or cancelled.
+        let id = enrollment.recordID
+        let _ = (self.accountManager.transaction { transaction -> Bool in
+            return transaction.getCurrentAuth()?.id == id || transaction.getRecords().contains(where: { $0.id == id })
+        }
+        |> deliverOnMainQueue).start(next: { [weak self] stillPresent in
+            guard let self, !stillPresent, let current = self.modeEnrollment, current === enrollment else { return }
+            self.modeEnrollment = nil
+            self.publishAccountContexts()
+            self.startProvisionalCleanupRecovery()
+        })
+    }
+
+    private func completeModeEnrollment(_ enrollment: ModeEnrollment, context: AccountContext) {
+        self.modeEnrollmentCompleting = true
+        let account = context.account
+        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: account.peerId))
+        |> take(1)
+        |> deliverOnMainQueue).start(next: { [weak self] peer in
+            guard let self else { return }
+            self.modeEnrollmentCompleting = false
+            guard let current = self.modeEnrollment, current === enrollment, let driver = self.modeRootPresentation else { return }
+            // Cleared first: the transition below discards this flow's root.
+            self.modeEnrollment = nil
+            guard account.peerId.namespace == Namespaces.Peer.CloudUser, case let .user(user) = peer else {
+                try? driver.lock()
+                self.startProvisionalCleanupRecovery()
+                return
+            }
+            let confirmed = AccountIdentity(installation: enrollment.origin.account.installation,
+                environment: account.testingEnvironment ? .test : .production, recordID: enrollment.recordID.int64,
+                userID: account.peerId.id._internalGetInt64Value())
+            do {
+                let (decision, preparation) = try driver.completeEnrollment(enrollment.permit, confirmedAccount: confirmed, isPremium: user.isPremium)
+                if case .new = decision {} else {
+                    // Another mode's account, or one already here: remove only the new session.
+                    self.startProvisionalCleanupRecovery()
+                }
+                self.switchingData = (nil, nil, nil)
+                try self.prepareModeAccountRoot(preparation)
+            } catch {
+                if driver.hasActiveRoot { try? driver.lock() }
+                self.startProvisionalCleanupRecovery()
+            }
+        })
     }
     
     public func switchToAccount(id: AccountRecordId, fromSettingsController settingsController: ViewController? = nil, withChatListController chatListController: ViewController? = nil) {
