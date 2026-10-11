@@ -40,7 +40,58 @@ public enum MessageHistoryInput: Equatable, Hashable {
 }
 
 private extension MessageHistoryInput {
+    /// For a chat under a `MessageHistoryRestriction`, only admitted messages, scanned in
+    /// batches until `limit` of them are found; the range is first clipped to the restriction's
+    /// window, which bounds the scan.
     func fetch(postbox: PostboxImpl, peerId: PeerId, namespace: MessageId.Namespace, from fromIndex: MessageIndex, includeFrom: Bool, to toIndex: MessageIndex, ignoreMessagesInTimestampRange: ClosedRange<Int32>?, ignoreMessageIds: Set<MessageId>, limit: Int) -> [IntermediateMessage] {
+        guard let restriction = postbox.historyRestriction(peerId: peerId) else {
+            return self.unrestrictedFetch(postbox: postbox, peerId: peerId, namespace: namespace, from: fromIndex, includeFrom: includeFrom, to: toIndex, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, limit: limit)
+        }
+        if limit <= 0 {
+            return []
+        }
+        // Every message at or before the window start is excluded.
+        let floor = MessageIndex(id: MessageId(peerId: peerId, namespace: namespace, id: Int32.max), timestamp: restriction.windowStart)
+        var cursor = fromIndex
+        var includeCursor = includeFrom
+        var end = toIndex
+        if fromIndex < toIndex {
+            if toIndex <= floor {
+                return []
+            }
+            if cursor <= floor {
+                cursor = floor
+                includeCursor = false
+            }
+        } else {
+            if fromIndex <= floor {
+                return []
+            }
+            if end < floor {
+                end = floor
+            }
+        }
+        var result: [IntermediateMessage] = []
+        while result.count < limit {
+            let batch = self.unrestrictedFetch(postbox: postbox, peerId: peerId, namespace: namespace, from: cursor, includeFrom: includeCursor, to: end, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, limit: limit)
+            for message in batch where restriction.includes(message) {
+                if !result.contains(where: { $0.id == message.id }) {
+                    result.append(message)
+                }
+            }
+            guard batch.count >= limit, let last = batch.last, last.index != cursor else {
+                break
+            }
+            cursor = last.index
+            includeCursor = false
+        }
+        if result.count > limit {
+            result.removeLast(result.count - limit)
+        }
+        return result
+    }
+    
+    func unrestrictedFetch(postbox: PostboxImpl, peerId: PeerId, namespace: MessageId.Namespace, from fromIndex: MessageIndex, includeFrom: Bool, to toIndex: MessageIndex, ignoreMessagesInTimestampRange: ClosedRange<Int32>?, ignoreMessageIds: Set<MessageId>, limit: Int) -> [IntermediateMessage] {
         switch self {
         case let .automatic(threadId, tagInfo):
             var tag: MessageTags?
@@ -904,8 +955,48 @@ private func sampleHoleRanges(input: MessageHistoryInput, orderedEntriesBySpace:
 
 struct HistoryViewHoles {
     var holesBySpace: [PeerIdAndNamespace: IndexSet]
+    /// Restrictions of the view's chats when it was built: their holes at or below the
+    /// boundary are dropped, so the excluded old history is never paged in.
+    var restrictions: [PeerId: MessageHistoryRestriction] = [:]
+    
+    init(holesBySpace: [PeerIdAndNamespace: IndexSet], restrictions: [PeerId: MessageHistoryRestriction] = [:]) {
+        self.holesBySpace = holesBySpace
+        self.restrictions = restrictions
+        for space in Array(self.holesBySpace.keys) {
+            if let floor = self.floor(space) {
+                self.holesBySpace[space]!.remove(integersIn: 0 ... Int(floor))
+            }
+        }
+    }
+    
+    init(postbox: PostboxImpl, locations: MessageHistoryViewInput, tag: HistoryViewInputTag?, namespaces: MessageIdNamespaces) {
+        self.init(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces), restrictions: postbox.historyRestrictions(peerIds: locations.restrictablePeerIds))
+    }
+    
+    private func floor(_ space: PeerIdAndNamespace) -> MessageId.Id? {
+        return self.restrictions[space.peerId]?.holeFloor(namespace: space.namespace)
+    }
+    
+    func admits(_ entry: MutableMessageHistoryEntry) -> Bool {
+        guard let restriction = self.restrictions[entry.index.id.peerId] else {
+            return true
+        }
+        switch entry {
+        case let .IntermediateMessageEntry(message, _, _):
+            return restriction.includes(message)
+        case let .MessageEntry(value, _, _):
+            return restriction.includes(value.message)
+        }
+    }
     
     mutating func insertHole(space: PeerIdAndNamespace, range: ClosedRange<MessageId.Id>) -> Bool {
+        var range = range
+        if let floor = self.floor(space) {
+            if range.upperBound <= floor {
+                return false
+            }
+            range = max(range.lowerBound, floor + 1) ... range.upperBound
+        }
         if self.holesBySpace[space] == nil {
             self.holesBySpace[space] = IndexSet()
         }
@@ -1714,6 +1805,9 @@ final class HistoryViewLoadedState {
     }
     
     func add(entry: MutableMessageHistoryEntry) -> Bool {
+        if !self.holes.admits(entry) {
+            return false
+        }
         if let ignoreMessagesInTimestampRange = self.ignoreMessagesInTimestampRange {
             if ignoreMessagesInTimestampRange.contains(entry.index.timestamp) {
                 return false
@@ -1946,6 +2040,16 @@ final class HistoryViewLoadedState {
         }
         
         //assert(Set(result.map({ $0.message.stableId })).count == result.count)
+        if postbox.hasHistoryRestrictions {
+            // Reply and quote sources a restriction excludes are not rendered either.
+            result = result.map { entry in
+                let message = postbox.strippingRestrictedAssociatedMessages(entry.message)
+                if message === entry.message {
+                    return entry
+                }
+                return MessageHistoryMessageEntry(message: message, location: entry.location, monthLocation: entry.monthLocation, attributes: entry.attributes)
+            }
+        }
         return HistoryViewLoadedSample(anchor: self.anchor, entries: result, holesToLower: holesToLower, holesToHigher: holesToHigher, hole: sampledHole)
     }
 }
@@ -2106,7 +2210,7 @@ final class HistoryViewLoadingState {
         self.tag = tag
         self.threadId = threadId
         self.halfLimit = halfLimit
-        self.holes = HistoryViewHoles(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces))
+        self.holes = HistoryViewHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces)
     }
     
     func insertHole(space: PeerIdAndNamespace, range: ClosedRange<MessageId.Id>) -> Bool {
@@ -2149,24 +2253,24 @@ enum HistoryViewState {
     init(postbox: PostboxImpl, inputAnchor: HistoryViewInputAnchor, tag: HistoryViewInputTag?, appendMessagesFromTheSameGroup: Bool, namespaces: MessageIdNamespaces, statistics: MessageHistoryViewOrderStatistics, ignoreMessagesInTimestampRange: ClosedRange<Int32>?, ignoreMessageIds: Set<MessageId>, halfLimit: Int, locations: MessageHistoryViewInput) {
         switch inputAnchor {
         case let .index(index):
-            self = .loaded(HistoryViewLoadedState(anchor: .index(index), tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces))))
+            self = .loaded(HistoryViewLoadedState(anchor: .index(index), tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces)))
         case .lowerBound:
-            self = .loaded(HistoryViewLoadedState(anchor: .lowerBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces))))
+            self = .loaded(HistoryViewLoadedState(anchor: .lowerBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces)))
         case .upperBound:
-            self = .loaded(HistoryViewLoadedState(anchor: .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces))))
+            self = .loaded(HistoryViewLoadedState(anchor: .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces)))
         case .unread:
             let anchorPeerId: PeerId
             switch locations {
             case let .single(peerId, threadId):
                 anchorPeerId = peerId
                 if threadId != nil {
-                    self = .loaded(HistoryViewLoadedState(anchor: .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces))))
+                    self = .loaded(HistoryViewLoadedState(anchor: .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces)))
                     return
                 }
             case let .associated(peerId, _):
                 anchorPeerId = peerId
             case .external:
-                self = .loaded(HistoryViewLoadedState(anchor: .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces))))
+                self = .loaded(HistoryViewLoadedState(anchor: .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces)))
                 return
             }
             if postbox.chatListIndexTable.get(peerId: anchorPeerId).includedIndex(peerId: anchorPeerId) != nil, let combinedState = postbox.readStateTable.getCombinedState(anchorPeerId) {
@@ -2202,7 +2306,7 @@ enum HistoryViewState {
                         self = .loading(loadingState)
                     }
                 } else {
-                    self = .loaded(HistoryViewLoadedState(anchor: anchor ?? .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(holesBySpace: fetchHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces))))
+                    self = .loaded(HistoryViewLoadedState(anchor: anchor ?? .upperBound, tag: tag, appendMessagesFromTheSameGroup: appendMessagesFromTheSameGroup, namespaces: namespaces, statistics: statistics, ignoreMessagesInTimestampRange: ignoreMessagesInTimestampRange, ignoreMessageIds: ignoreMessageIds, halfLimit: halfLimit, locations: locations, postbox: postbox, holes: HistoryViewHoles(postbox: postbox, locations: locations, tag: tag, namespaces: namespaces)))
                 }
             } else {
                 preconditionFailure()

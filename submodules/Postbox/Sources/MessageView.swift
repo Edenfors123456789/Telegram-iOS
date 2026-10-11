@@ -30,7 +30,7 @@ final class MutableMessageView {
                     }
                 case let .InsertMessage(message):
                     if message.id == self.messageId || message.stableId == self.stableId {
-                        self.message = postbox.renderIntermediateMessage(message)
+                        self.message = postbox.visibleUnderHistoryRestrictions(postbox.renderIntermediateMessage(message))
                         self.stableId = message.stableId
                         updated = true
                         reloadForMedia = false
@@ -54,10 +54,21 @@ final class MutableMessageView {
         // Re-read the message this view currently holds (it may have followed an id
         // change through its stable id); the table already has the new media.
         if reloadForMedia, let current = self.message, let reloaded = postbox.getMessage(current.id) {
-            self.message = reloaded
+            self.message = postbox.visibleUnderHistoryRestrictions(reloaded)
             updated = true
         }
         return updated
+    }
+    
+    /// The chat's history restriction changed: show the message again, or no longer.
+    func reloadForHistoryRestriction(postbox: PostboxImpl) -> Bool {
+        let updated = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(self.messageId))
+        if updated?.stableId != self.message?.stableId || updated !== self.message {
+            self.message = updated
+            self.stableId = updated?.stableId ?? self.stableId
+            return true
+        }
+        return false
     }
 }
 

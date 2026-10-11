@@ -1,0 +1,80 @@
+# B restricted transcript: design (stage 4, row 5)
+
+Approved behaviour: plan §5 "Пустая переписка B для скрытого чата" and ARCHITECTURE.md
+"Restricted transcript semantics". This file records how it is built on Telegram's data layer.
+
+## Why a Postbox-level restriction
+
+A chat is read through many independent message-history views: the chat itself, shared
+media tabs, the gallery, music/voice playlists, the pinned-message bar, in-chat search,
+"scroll to date", reply and quote previews (`associatedMessages` embedded in every rendered
+message). Filtering one view leaves the others open. So, like the chat-list exclusion
+(`Postbox.addHiddenChatIds`), the restriction lives in Postbox and applies to every view of
+the chat while the B root holds it:
+
+    postbox.addHistoryRestriction(peerId:, restriction:) -> Disposable
+
+Raw storage, network processing and `Transaction` reads are unchanged: the server dialog and
+the full local history stay intact (plan: "Серверные сообщения и полная история A
+сохраняются").
+
+## The predicate
+
+`restriction.includes(message)` is evaluated on the Postbox queue from the stored message
+header (`IntermediateMessage`: id, timestamp, flags, `globallyUniqueId`), never from content:
+
+- excluded: anything in `deleted`;
+- excluded: anything with `timestamp <= windowStart` (`highWaterTime - 604800`; the high-water
+  time is persisted by `RestrictedTranscriptStore`, so a clock rollback cannot revive it);
+- included: an incoming message with `id > boundary.maximumMessageIDs[namespace]` and
+  `timestamp >= boundary.serverTimestamp` — new incoming after the boundary;
+- included: an outgoing message whose `globallyUniqueId` is a recorded B send (the random id
+  is persisted before enqueue and survives the local-to-server id replacement);
+- everything else is excluded: pre-boundary history, A-originated and unknown outgoing.
+
+Without a boundary (first open offline) no incoming message passes; B's own sends do.
+
+The predicate reads an in-memory mirror (`boundary`, `windowStart`, B random ids, deletions)
+owned by the native adapter and kept in step with `RestrictedTranscriptStore`, which persists
+the same facts. Changing the mirror bumps a version that makes the views re-filter.
+
+## Where Postbox applies it
+
+1. History views: initial fill and every later insertion (the same two places that already
+   honour `ignoreMessagesInTimestampRange`/`ignoreMessageIds`), for every tag/thread view of
+   the chat.
+2. Holes below the boundary are not requested: a restricted view must not page the old
+   history in from the server just to discard it.
+3. Rendered messages drop `associatedMessages` (reply/quote sources) that the restriction
+   excludes, so a permitted reply never shows an old quoted message.
+4. Single-message views (`messageView`) of an excluded message report no message.
+5. Unread counters of the chat come from admitted messages only (the raw read state includes
+   old unread history) — to settle while integrating the chat screen.
+
+## Native adapter (later steps)
+
+- Explicit open in B (`explicitOpen == .restrictedTranscript`): `RestrictedTranscriptStore.begin`,
+  then the authoritative boundary from the server (the chat's current top message id and
+  server time); register the restriction before the chat controller is built.
+- Sending: generate the random id, `recordOutgoing`, add it to the mirror, then enqueue with that
+  random id; `.alreadyRecorded` reconciles the existing queue instead of enqueueing again.
+- Server deletions: `applyDeletion` and the mirror.
+- The chat screen's auxiliary features that read raw history directly (not through a view) are
+  inventoried and closed or filtered one by one.
+
+## Known gaps for 5b
+
+- Server confirmation of a single send keeps the message's `globallyUniqueId`
+  (`applyUpdateMessage`), but the album path (`applyUpdateGroupMessages`) stores the confirmed
+  messages with `globallyUniqueId: nil`, so a B album would drop out of the transcript once
+  sent. Either keep the random id there too, or let the restriction also admit the server ids
+  that `RestrictedTranscriptStore.acknowledge` records (written in the same transaction as the
+  replacement, so there is no frame without it).
+- A send confirmed while the app was not running (the message arrives through `getDifference`
+  instead of the send's own result) must still be matched to its recorded random id.
+
+## Steps
+
+5a. Postbox restriction primitive and tests (this design's "Where Postbox applies it" 1–4).
+5b. Mirror object + Core/bridge adapter (boundary acquisition, sends, deletions, expiry).
+5c. Chat screen in B for a hidden chat, auxiliary features.

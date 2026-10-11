@@ -1302,6 +1302,24 @@ public final class Transaction {
         return self.postbox!.addChatHidden(peerId: peerId)
     }
     
+    /// The restriction every history view of `peerId` applies, if one is held.
+    public func historyRestriction(peerId: PeerId) -> MessageHistoryRestriction? {
+        assert(!self.disposed)
+        return self.postbox?.historyRestriction(peerId: peerId)
+    }
+    
+    /// Changes a held restriction (no-op without one); views of the chat re-filter in this
+    /// transaction, so a send recorded here shows as soon as its message is stored.
+    public func updateHistoryRestriction(peerId: PeerId, _ f: (MessageHistoryRestriction) -> MessageHistoryRestriction) {
+        assert(!self.disposed)
+        self.postbox?.updateHistoryRestriction(peerId: peerId, f)
+    }
+    
+    func setHistoryRestriction(peerId: PeerId, token: Int, restriction: MessageHistoryRestriction?) {
+        assert(!self.disposed)
+        self.postbox?.setHistoryRestriction(peerId: peerId, token: token, restriction: restriction)
+    }
+    
     func removeChatHidden(peerId: PeerId, index: Int) {
         assert(!self.disposed)
         return self.postbox!.removeChatHidden(peerId: peerId, index: index)
@@ -1668,6 +1686,10 @@ final class PostboxImpl {
     
     private var currentHiddenChatIds: [PeerId: Bag<Void>] = [:]
     private var currentUpdatedHiddenPeerIds: Bool = false
+    
+    private var currentHistoryRestrictions: [PeerId: (token: Int, restriction: MessageHistoryRestriction)] = [:]
+    private var nextHistoryRestrictionToken: Int = 0
+    private var currentUpdatedHistoryRestrictionPeerIds = Set<PeerId>()
     
     private var currentStoryGeneralStatesEvents: [StoryGeneralStatesTable.Event] = []
     private var currentStoryPeerStatesEvents: [StoryPeerStatesTable.Event] = []
@@ -2770,6 +2792,7 @@ final class PostboxImpl {
             updatedPeerThreadInfos: updatedPeerThreadInfos,
             updatedPinnedThreads: self.currentUpdatedPinnedThreads,
             updatedHiddenPeerIds: self.currentUpdatedHiddenPeerIds,
+            updatedHistoryRestrictionPeerIds: self.currentUpdatedHistoryRestrictionPeerIds,
             storyGeneralStatesEvents: self.currentStoryGeneralStatesEvents,
             storyPeerStatesEvents: self.currentStoryPeerStatesEvents,
             storySubscriptionsEvents: self.currentStorySubscriptionsEvents,
@@ -2832,6 +2855,7 @@ final class PostboxImpl {
         self.currentGroupIdsWithUpdatedReadStats.removeAll()
         self.currentUpdatedPinnedThreads.removeAll()
         self.currentUpdatedHiddenPeerIds = false
+        self.currentUpdatedHistoryRestrictionPeerIds.removeAll()
         self.currentNeedsReindexUnreadCounters = false
         self.currentStoryGeneralStatesEvents.removeAll()
         self.currentStoryPeerStatesEvents.removeAll()
@@ -4242,7 +4266,7 @@ final class PostboxImpl {
     
     public func messageView(_ messageId: MessageId) -> Signal<MessageView, NoError> {
         return self.transactionSignal { [self] subscriber, transaction in
-            let view = MutableMessageView(messageId: messageId, message: transaction.getMessage(messageId))
+            let view = MutableMessageView(messageId: messageId, message: self.visibleUnderHistoryRestrictions(transaction.getMessage(messageId)))
             
             subscriber.putNext(MessageView(view))
             
@@ -4641,6 +4665,64 @@ final class PostboxImpl {
     fileprivate func setPeerPinnedThreads(peerId: PeerId, threadIds: [Int64]) {
         self.currentUpdatedPinnedThreads.insert(peerId)
         self.messageHistoryThreadPinnedTable.set(peerId: peerId, threadIds: threadIds)
+    }
+    
+    func historyRestriction(peerId: PeerId) -> MessageHistoryRestriction? {
+        return self.currentHistoryRestrictions[peerId]?.restriction
+    }
+    
+    var hasHistoryRestrictions: Bool {
+        return !self.currentHistoryRestrictions.isEmpty
+    }
+    
+    fileprivate func makeHistoryRestrictionToken() -> Int {
+        self.nextHistoryRestrictionToken += 1
+        return self.nextHistoryRestrictionToken
+    }
+    
+    /// A nil `restriction` removes the one registered under `token` only, so a released
+    /// registration never removes a newer one.
+    fileprivate func setHistoryRestriction(peerId: PeerId, token: Int, restriction: MessageHistoryRestriction?) {
+        if let restriction {
+            self.currentHistoryRestrictions[peerId] = (token, restriction)
+        } else if self.currentHistoryRestrictions[peerId]?.token == token {
+            self.currentHistoryRestrictions.removeValue(forKey: peerId)
+        } else {
+            return
+        }
+        self.currentUpdatedHistoryRestrictionPeerIds.insert(peerId)
+    }
+    
+    fileprivate func updateHistoryRestriction(peerId: PeerId, _ f: (MessageHistoryRestriction) -> MessageHistoryRestriction) {
+        guard let current = self.currentHistoryRestrictions[peerId] else {
+            return
+        }
+        let updated = f(current.restriction)
+        if updated != current.restriction {
+            self.currentHistoryRestrictions[peerId] = (current.token, updated)
+            self.currentUpdatedHistoryRestrictionPeerIds.insert(peerId)
+        }
+    }
+    
+    public func addHistoryRestriction(peerId: PeerId, restriction: MessageHistoryRestriction) -> Disposable {
+        let disposable = MetaDisposable()
+        let token = self.makeHistoryRestrictionToken()
+        let queue = self.queue
+        let _ = (self.transaction { transaction -> Void in
+            transaction.setHistoryRestriction(peerId: peerId, token: token, restriction: restriction)
+        }).start(completed: { [weak self] in
+            disposable.set(ActionDisposable {
+                queue.async {
+                    guard let self else {
+                        return
+                    }
+                    let _ = (self.transaction { transaction -> Void in
+                        transaction.setHistoryRestriction(peerId: peerId, token: token, restriction: nil)
+                    }).start()
+                }
+            })
+        })
+        return disposable
     }
     
     fileprivate func addChatHidden(peerId: PeerId) -> Int {
@@ -5300,6 +5382,19 @@ public class Postbox {
         return self.transaction { transaction -> Set<PeerId> in
             return transaction.chatIdsHiddenFromLists
         }
+    }
+    
+    /// Every history view of `peerId` shows only what `restriction` admits until the returned
+    /// disposable is disposed (Dual PIN's restricted transcript). Change it with
+    /// `Transaction.updateHistoryRestriction`.
+    public func addHistoryRestriction(peerId: PeerId, _ restriction: MessageHistoryRestriction) -> Disposable {
+        let disposable = MetaDisposable()
+
+        self.impl.with { impl in
+            disposable.set(impl.addHistoryRestriction(peerId: peerId, restriction: restriction))
+        }
+
+        return disposable
     }
     
     public func addHiddenChatIds(peerIds: [PeerId]) -> Disposable {

@@ -471,6 +471,11 @@ final class MutableMessageHistoryView: MutablePostboxView {
     }
     
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
+        if !transaction.updatedHistoryRestrictionPeerIds.isEmpty, self.peerIds.restrictablePeerIds.contains(where: transaction.updatedHistoryRestrictionPeerIds.contains) {
+            // The chat's restriction changed: rebuild under the new one.
+            self.reset(postbox: postbox)
+            return true
+        }
         var operations: [[MessageHistoryOperation]] = []
         var holePeerIdsSet = Set<PeerId>()
         

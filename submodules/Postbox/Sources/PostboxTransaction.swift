@@ -50,6 +50,7 @@ final class PostboxTransaction {
     let updatedPeerThreadInfos: Set<MessageHistoryThreadsTable.ItemId>
     let updatedPinnedThreads: Set<PeerId>
     let updatedHiddenPeerIds: Bool
+    let updatedHistoryRestrictionPeerIds: Set<PeerId>
     let storyGeneralStatesEvents: [StoryGeneralStatesTable.Event]
     let storyPeerStatesEvents: [StoryPeerStatesTable.Event]
     let storySubscriptionsEvents: [StorySubscriptionsTable.Event]
@@ -206,6 +207,9 @@ final class PostboxTransaction {
         if self.updatedHiddenPeerIds {
             return false
         }
+        if !self.updatedHistoryRestrictionPeerIds.isEmpty {
+            return false
+        }
         if !self.storyGeneralStatesEvents.isEmpty {
             return false
         }
@@ -280,6 +284,7 @@ final class PostboxTransaction {
         updatedPeerThreadInfos: Set<MessageHistoryThreadsTable.ItemId>,
         updatedPinnedThreads: Set<PeerId>,
         updatedHiddenPeerIds: Bool,
+        updatedHistoryRestrictionPeerIds: Set<PeerId>,
         storyGeneralStatesEvents: [StoryGeneralStatesTable.Event],
         storyPeerStatesEvents: [StoryPeerStatesTable.Event],
         storySubscriptionsEvents: [StorySubscriptionsTable.Event],
@@ -336,6 +341,7 @@ final class PostboxTransaction {
         self.updatedPeerThreadInfos = updatedPeerThreadInfos
         self.updatedPinnedThreads = updatedPinnedThreads
         self.updatedHiddenPeerIds = updatedHiddenPeerIds
+        self.updatedHistoryRestrictionPeerIds = updatedHistoryRestrictionPeerIds
         self.storyGeneralStatesEvents = storyGeneralStatesEvents
         self.storyPeerStatesEvents = storyPeerStatesEvents
         self.storySubscriptionsEvents = storySubscriptionsEvents

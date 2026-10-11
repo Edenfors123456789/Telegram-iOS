@@ -6,6 +6,7 @@ final class FixturePeer: Peer {
     static let register: Void = {
         declareEncodable(FixturePeer.self, f: { FixturePeer(decoder: $0) })
         declareEncodable(FixtureCachedPeerData.self, f: { FixtureCachedPeerData(decoder: $0) })
+        declareEncodable(FixtureReplyAttribute.self, f: { FixtureReplyAttribute(decoder: $0) })
     }()
 
     let id: PeerId
@@ -93,4 +94,25 @@ final class FixtureCachedPeerData: CachedPeerData {
         guard let other = other as? FixtureCachedPeerData else { return false }
         return other.peerIds == self.peerIds && other.associatedHistoryMessageId == self.associatedHistoryMessageId
     }
+}
+
+/// A reply: the message it names is rendered into `associatedMessages`, as a reply quote is.
+final class FixtureReplyAttribute: MessageAttribute {
+    let messageId: MessageId
+
+    init(messageId: MessageId) {
+        self.messageId = messageId
+    }
+
+    init(decoder: PostboxDecoder) {
+        self.messageId = MessageId(peerId: PeerId(decoder.decodeInt64ForKey("p", orElse: 0)), namespace: decoder.decodeInt32ForKey("n", orElse: 0), id: decoder.decodeInt32ForKey("i", orElse: 0))
+    }
+
+    func encode(_ encoder: PostboxEncoder) {
+        encoder.encodeInt64(self.messageId.peerId.toInt64(), forKey: "p")
+        encoder.encodeInt32(self.messageId.namespace, forKey: "n")
+        encoder.encodeInt32(self.messageId.id, forKey: "i")
+    }
+
+    var associatedMessageIds: [MessageId] { return [self.messageId] }
 }

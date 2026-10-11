@@ -332,6 +332,12 @@ final class ViewTracker {
         }
         
         for (mutableView, pipe) in self.messageViews.copyItems() {
+            if transaction.updatedHistoryRestrictionPeerIds.contains(mutableView.messageId.peerId) {
+                if mutableView.reloadForHistoryRestriction(postbox: postbox) {
+                    pipe.putNext(MessageView(mutableView))
+                }
+                continue
+            }
             let operations = transaction.currentOperationsByPeerId[mutableView.messageId.peerId]
             if operations != nil || !transaction.updatedMedia.isEmpty || !transaction.currentUpdatedCachedPeerData.isEmpty {
                 if mutableView.replay(postbox: postbox, operations: operations ?? [], updatedMedia: transaction.updatedMedia) {
