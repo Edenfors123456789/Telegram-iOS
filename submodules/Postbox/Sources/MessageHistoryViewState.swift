@@ -300,7 +300,32 @@ private extension MessageHistoryInput {
         }
     }
     
+    /// For a restricted chat, the admitted messages in `lowerBound ... upperBound` (both ends
+    /// included, as the raw tables count), so positions ("N of M") never reveal the rest.
     func getMessageCountInRange(postbox: PostboxImpl, peerId: PeerId, namespace: MessageId.Namespace, lowerBound: MessageIndex, upperBound: MessageIndex) -> Int {
+        guard postbox.historyRestriction(peerId: peerId) != nil else {
+            return self.unrestrictedGetMessageCountInRange(postbox: postbox, peerId: peerId, namespace: namespace, lowerBound: lowerBound, upperBound: upperBound)
+        }
+        // Scanned to the end of the history (the fetch clips it to the window), so the
+        // range's own end is counted like any other message.
+        let end = MessageIndex.upperBound(peerId: peerId, namespace: namespace)
+        let batchSize = 64
+        var count = 0
+        var cursor = lowerBound
+        var includeCursor = true
+        while true {
+            let batch = self.fetch(postbox: postbox, peerId: peerId, namespace: namespace, from: cursor, includeFrom: includeCursor, to: end, ignoreMessagesInTimestampRange: nil, ignoreMessageIds: [], limit: batchSize)
+            count += batch.filter { $0.index >= lowerBound && $0.index <= upperBound }.count
+            guard batch.count >= batchSize, let last = batch.last, last.index != cursor, last.index <= upperBound else {
+                break
+            }
+            cursor = last.index
+            includeCursor = false
+        }
+        return count
+    }
+    
+    func unrestrictedGetMessageCountInRange(postbox: PostboxImpl, peerId: PeerId, namespace: MessageId.Namespace, lowerBound: MessageIndex, upperBound: MessageIndex) -> Int {
         switch self {
         case let .automatic(threadId, tagInfo):
             if let tagInfo {
@@ -2344,5 +2369,13 @@ enum HistoryViewState {
         case let .loaded(loadedState):
             return .loaded(loadedState.completeAndSample(postbox: postbox, clipHoles: clipHoles))
         }
+    }
+}
+
+extension PostboxImpl {
+    /// The admitted messages of a restricted chat carrying `tag` (its tag summary's count).
+    func restrictedTaggedMessageCount(peerId: PeerId, threadId: Int64?, namespace: MessageId.Namespace, tag: MessageTags) -> Int32 {
+        let input = MessageHistoryInput.automatic(threadId: threadId, tagInfo: .tag(MessageHistoryInput.Tagged(tag: tag, appendMessagesFromTheSameGroup: false)))
+        return Int32(clamping: input.getMessageCountInRange(postbox: self, peerId: peerId, namespace: namespace, lowerBound: MessageIndex.lowerBound(peerId: peerId, namespace: namespace), upperBound: MessageIndex.upperBound(peerId: peerId, namespace: namespace)))
     }
 }

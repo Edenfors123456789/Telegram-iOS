@@ -64,16 +64,19 @@ final class FixturePeer: Peer {
 /// group, the group's last message (which makes the channel's history views `.associated`).
 final class FixtureCachedPeerData: CachedPeerData {
     let peerIds: Set<PeerId>
-    let messageIds: Set<MessageId> = []
+    /// Messages the data refers to (a pinned message, a bot keyboard), kept in memory only.
+    let messageIds: Set<MessageId>
     let associatedHistoryMessageId: MessageId?
 
-    init(peerIds: Set<PeerId>, associatedHistoryMessageId: MessageId? = nil) {
+    init(peerIds: Set<PeerId>, associatedHistoryMessageId: MessageId? = nil, messageIds: Set<MessageId> = []) {
         self.peerIds = peerIds
         self.associatedHistoryMessageId = associatedHistoryMessageId
+        self.messageIds = messageIds
     }
 
     init(decoder: PostboxDecoder) {
         self.peerIds = Set(decoder.decodeInt64ArrayForKey("p").map(PeerId.init))
+        self.messageIds = []
         if let peerId = decoder.decodeOptionalInt64ForKey("ap") {
             self.associatedHistoryMessageId = MessageId(peerId: PeerId(peerId), namespace: decoder.decodeInt32ForKey("an", orElse: 0), id: decoder.decodeInt32ForKey("ai", orElse: 0))
         } else {

@@ -240,6 +240,17 @@ private func mergedResult(_ state: SearchMessagesState) -> SearchMessagesResult 
 }
 
 func _internal_getSearchMessageCount(account: Account, location: SearchMessagesLocation, query: String) -> Signal<Int?, NoError> {
+    guard case let .peer(peerId, _, _, _, _, _, _) = location else {
+        return .single(nil)
+    }
+    // Dual PIN: a restricted chat's server-side counts are not reported.
+    return isUnderHistoryRestriction(postbox: account.postbox, peerId: peerId)
+    |> mapToSignal { restricted -> Signal<Int?, NoError> in
+        return restricted ? .single(nil) : _internal_unrestrictedSearchMessageCount(account: account, location: location, query: query)
+    }
+}
+
+private func _internal_unrestrictedSearchMessageCount(account: Account, location: SearchMessagesLocation, query: String) -> Signal<Int?, NoError> {
     guard case let .peer(peerId, fromId, _, _, threadId, _, _) = location else {
         return .single(nil)
     }
@@ -875,6 +886,10 @@ func fetchRemoteMessage(accountPeerId: PeerId, postbox: Postbox, source: FetchMe
 
 func _internal_searchMessageIdByTimestamp(account: Account, peerId: PeerId, threadId: Int64?, timestamp: Int32) -> Signal<MessageId?, NoError> {
     return account.postbox.transaction { transaction -> Signal<MessageId?, NoError> in
+        // Dual PIN: jumping to a date never lands on a restricted chat's excluded history.
+        if transaction.historyRestriction(peerId: peerId) != nil {
+            return .single(nil)
+        }
         if peerId.namespace == Namespaces.Peer.SecretChat {
             return .single(transaction.findClosestMessageIdByTimestamp(peerId: peerId, timestamp: timestamp))
         } else if let peer = transaction.getPeer(peerId), let inputPeer = apiInputPeer(peer) {

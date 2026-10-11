@@ -12,7 +12,7 @@ final class MutableCachedPeerDataView: MutablePostboxView {
         self.cachedPeerData = postbox.cachedPeerDataTable.get(peerId)
         if let cachedPeerData = self.cachedPeerData {
             for id in cachedPeerData.messageIds {
-                if let message = postbox.getMessage(id) {
+                if let message = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(id)) {
                     self.associatedMessages[message.id] = message
                 }
             }
@@ -20,12 +20,22 @@ final class MutableCachedPeerDataView: MutablePostboxView {
     }
     
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
+        if self.trackAssociatedMessages, let cachedPeerData = self.cachedPeerData, transaction.currentUpdatedCachedPeerData[self.peerId] == nil,
+           cachedPeerData.messageIds.contains(where: { transaction.updatedHistoryRestrictionPeerIds.contains($0.peerId) }) {
+            self.associatedMessages.removeAll()
+            for id in cachedPeerData.messageIds {
+                if let message = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(id)) {
+                    self.associatedMessages[message.id] = message
+                }
+            }
+            return true
+        }
         if let cachedPeerData = transaction.currentUpdatedCachedPeerData[self.peerId]?.updated {
             self.cachedPeerData = cachedPeerData
             if self.trackAssociatedMessages {
                 self.associatedMessages.removeAll()
                 for id in cachedPeerData.messageIds {
-                    if let message = postbox.getMessage(id) {
+                    if let message = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(id)) {
                         self.associatedMessages[message.id] = message
                     }
                 }
@@ -60,7 +70,7 @@ final class MutableCachedPeerDataView: MutablePostboxView {
             }
             if !updatedIds.isEmpty {
                 for id in updatedIds {
-                    if let message = postbox.getMessage(id) {
+                    if let message = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(id)) {
                         self.associatedMessages[message.id] = message
                     } else {
                         self.associatedMessages.removeValue(forKey: id)

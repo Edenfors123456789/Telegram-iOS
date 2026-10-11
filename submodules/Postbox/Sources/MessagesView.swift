@@ -9,7 +9,7 @@ final class MutableMessagesView: MutablePostboxView {
         self.ids = ids
         self.peerIds = Set(ids.map { $0.peerId })
         for id in ids {
-            if let message = postbox.getMessage(id) {
+            if let message = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(id)) {
                 self.messages[message.id] = message
             }
         }
@@ -17,6 +17,9 @@ final class MutableMessagesView: MutablePostboxView {
     
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
         var updatedIds = Set<MessageId>()
+        if !transaction.updatedHistoryRestrictionPeerIds.isEmpty {
+            updatedIds.formUnion(self.ids.filter { transaction.updatedHistoryRestrictionPeerIds.contains($0.peerId) })
+        }
         for peerId in self.peerIds {
             if let operations = transaction.currentOperationsByPeerId[peerId] {
                 for operation in operations {
@@ -48,7 +51,7 @@ final class MutableMessagesView: MutablePostboxView {
         }
         if !updatedIds.isEmpty {
             for id in updatedIds {
-                if let message = postbox.getMessage(id) {
+                if let message = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(id)) {
                     self.messages[message.id] = message
                 } else {
                     self.messages.removeValue(forKey: id)

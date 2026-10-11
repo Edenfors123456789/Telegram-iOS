@@ -7,13 +7,13 @@ final class MutableMessageGroupView: MutablePostboxView {
     
     init(postbox: PostboxImpl, id: MessageId) {
         self.id = id
-        self.messages = postbox.getMessageGroup(at: id) ?? []
+        self.messages = postbox.visibleUnderHistoryRestrictions(group: postbox.getMessageGroup(at: id) ?? [])
         self.groupingKey = self.messages.first?.groupingKey
     }
     
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
-        var updated = false
-        if let operations = transaction.currentOperationsByPeerId[self.id.peerId] {
+        var updated = transaction.updatedHistoryRestrictionPeerIds.contains(self.id.peerId)
+        if !updated, let operations = transaction.currentOperationsByPeerId[self.id.peerId] {
             outer: for operation in operations {
                 switch operation {
                 case let .InsertMessage(message):
@@ -49,7 +49,7 @@ final class MutableMessageGroupView: MutablePostboxView {
             updated = true
         }
         if updated {
-            self.messages = postbox.getMessageGroup(at: self.id) ?? []
+            self.messages = postbox.visibleUnderHistoryRestrictions(group: postbox.getMessageGroup(at: self.id) ?? [])
             
             return true
         } else {

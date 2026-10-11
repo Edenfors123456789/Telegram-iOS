@@ -474,6 +474,9 @@ final class MutableMessageHistoryView: MutablePostboxView {
         if !transaction.updatedHistoryRestrictionPeerIds.isEmpty, self.peerIds.restrictablePeerIds.contains(where: transaction.updatedHistoryRestrictionPeerIds.contains) {
             // The chat's restriction changed: rebuild under the new one.
             self.reset(postbox: postbox)
+            if self.peerIds.restrictablePeerIds.contains(where: { postbox.historyRestriction(peerId: $0) != nil }) {
+                self.transientReadStates = nil
+            }
             return true
         }
         var operations: [[MessageHistoryOperation]] = []
@@ -816,7 +819,7 @@ final class MutableMessageHistoryView: MutablePostboxView {
             for operation in operationSet {
                 switch operation {
                 case let .InsertMessage(message):
-                    if message.flags.contains(.TopIndexable) {
+                    if message.flags.contains(.TopIndexable), postbox.historyRestriction(peerId: message.id.peerId)?.includes(message) ?? true {
                         if let currentTopMessage = self.topTaggedMessages[message.id.namespace] {
                             if currentTopMessage == nil || currentTopMessage!.id < message.id {
                                 self.topTaggedMessages[message.id.namespace] = MessageHistoryTopTaggedMessage.intermediate(message)

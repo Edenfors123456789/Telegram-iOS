@@ -294,7 +294,23 @@ final class AuthorizedApplicationContext {
         }))
 
         let engine = context.engine
+        let postbox = context.account.postbox
         self.notificationMessagesDisposable.set((context.account.stateManager.notificationMessages
+        |> mapToSignal { messageList -> Signal<[([Message], PeerGroupId, Bool, MessageHistoryThreadData?)], NoError> in
+            // Dual PIN: a chat kept out of the lists never surfaces as a banner either.
+            return postbox.chatIdsHiddenFromLists()
+            |> map { hidden -> [([Message], PeerGroupId, Bool, MessageHistoryThreadData?)] in
+                if hidden.isEmpty {
+                    return messageList
+                }
+                return messageList.filter { item in
+                    guard let message = item.0.first else {
+                        return false
+                    }
+                    return !hidden.contains(message.id.peerId)
+                }
+            }
+        }
         |> mapToSignal { messageList -> Signal<[([Message], PeerGroupId, Bool, MessageHistoryThreadData?)], NoError> in
             return engine.data.get(EngineDataMap(
                 messageList.compactMap { item -> TelegramEngine.EngineData.Item.Messages.ChatListIndex? in

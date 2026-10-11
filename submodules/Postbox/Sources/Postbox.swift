@@ -3628,6 +3628,11 @@ final class PostboxImpl {
                 if let messageId {
                     if let index = self.messageHistoryIndexTable.getIndex(messageId) {
                         if let message = self.messageHistoryTable.getMessage(index) {
+                            if let restriction = self.historyRestriction(peerId: message.id.peerId), !restriction.includes(message) {
+                                // A restricted chat's excluded keyboard (or other top message) is not shown.
+                                topTaggedMessages[namespace] = Optional<MessageHistoryTopTaggedMessage>.none
+                                continue
+                            }
                             topTaggedMessages[namespace] = MessageHistoryTopTaggedMessage.intermediate(message)
                         } else {
                             assertionFailure()
@@ -3651,7 +3656,7 @@ final class PostboxImpl {
                     var messages: [MessageId: Message] = [:]
                     if let messageIds = self.cachedPeerDataTable.get(peerId)?.messageIds {
                         for id in messageIds {
-                            if let message = self.getMessage(id) {
+                            if let message = self.visibleUnderHistoryRestrictions(self.getMessage(id)) {
                                 messages[id] = message
                             }
                         }
@@ -3660,8 +3665,8 @@ final class PostboxImpl {
                 case let .cachedPeerDataPeers(peerId):
                     additionalDataEntries.append(.cachedPeerDataPeers(peerId, self.cachedPeerDataPeers(peerId: peerId, cachedData: self.cachedPeerDataTable.get(peerId))))
                 case let .message(id):
-                    let messages = self.getMessageGroup(at: id)
-                    additionalDataEntries.append(.message(id, messages ?? []))
+                    let messages = self.visibleUnderHistoryRestrictions(group: self.getMessageGroup(at: id) ?? [])
+                    additionalDataEntries.append(.message(id, messages))
                 case let .peerChatState(peerId):
                     additionalDataEntries.append(.peerChatState(peerId, self.peerChatStateTable.get(peerId)?.getLegacy() as? PeerChatState))
                 case .totalUnreadState:
@@ -3710,6 +3715,10 @@ final class PostboxImpl {
                 transientReadStates = nil
         }
         
+        if peerIds.restrictablePeerIds.contains(where: { self.historyRestriction(peerId: $0) != nil }) {
+            // A restricted chat's read state counts its whole raw history.
+            transientReadStates = nil
+        }
         if let fixedCombinedReadStates = fixedCombinedReadStates {
             readStates = fixedCombinedReadStates
         } else {

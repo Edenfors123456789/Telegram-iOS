@@ -100,6 +100,14 @@ extension PostboxImpl {
         }
     }
 
+    /// A message group (album) without the members the restriction excludes.
+    func visibleUnderHistoryRestrictions(group: [Message]) -> [Message] {
+        guard self.hasHistoryRestrictions else {
+            return group
+        }
+        return group.compactMap { self.visibleUnderHistoryRestrictions($0) }
+    }
+
     func strippingRestrictedAssociatedMessages(_ message: Message) -> Message {
         guard self.hasHistoryRestrictions, !message.associatedMessages.isEmpty else {
             return message

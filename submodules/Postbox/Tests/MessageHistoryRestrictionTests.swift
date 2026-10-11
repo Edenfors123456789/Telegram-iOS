@@ -224,6 +224,57 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         XCTAssertFalse(requestsThisChat(restrictedHoles.values.last), "the old history is not paged in")
     }
 
+    // MARK: - Views beside the history view
+
+    func testMessageByIdViewsHideExcludedMessages() {
+        self.seed()
+        self.restrict()
+        let messages = self.fixture.observe(.messages([self.id(10), self.id(12)]), as: MessagesView.self)
+        XCTAssertEqual(Set(messages.waitForValues(count: 1).last?.messages.keys ?? [:].keys), [self.id(12)])
+        let group = self.fixture.observe(.messageGroup(id: self.id(10)), as: MessageGroupView.self)
+        XCTAssertEqual(group.waitForValues(count: 1).last?.messages.count, 0)
+        let top = self.fixture.observe(.topChatMessage(peerIds: [self.chat]), as: TopChatMessageView.self)
+        XCTAssertNil(top.waitForValues(count: 1).last?.messages[self.chat], "the top message is A's send")
+    }
+
+    func testCountsAndPositionsCountOnlyAdmittedMessages() {
+        self.seed()
+        self.restrict()
+        let summary = self.fixture.observe(.historyTagSummaryView(tag: self.mediaTag, peerId: self.chat, threadId: nil, namespace: self.namespace, customTag: nil), as: MessageHistoryTagSummaryView.self)
+        XCTAssertEqual(summary.waitForValues(count: 1).last?.count, 1)
+        let positioned = self.fixture.observe(self.fixture.postbox.aroundMessageHistoryViewForLocation(.peer(peerId: self.chat, threadId: nil), anchor: .upperBound, ignoreMessagesInTimestampRange: nil, ignoreMessageIds: [], count: 20, fixedCombinedReadStates: nil, topTaggedMessageIdNamespaces: [], tag: .tag(self.mediaTag), appendMessagesFromTheSameGroup: false, namespaces: .all, orderStatistics: .combinedLocation) |> map { $0.0 })
+        let entry = positioned.waitForValues(count: 1).last?.entries.first
+        XCTAssertEqual(entry?.message.id, self.id(12))
+        XCTAssertEqual(entry?.location?.index, 0)
+        XCTAssertEqual(entry?.location?.count, 1, "the gallery's N of M counts admitted media only")
+    }
+
+    func testDataBesideTheHistoryIsFiltered() {
+        self.seed()
+        self.fixture.transaction { transaction in
+            transaction.updatePeerCachedData(peerIds: [self.chat], update: { _, _ in FixtureCachedPeerData(peerIds: [], messageIds: [self.id(10), self.id(12)]) })
+            let _ = transaction.addMessages([StoreMessage(id: self.id(9), customStableId: nil, globallyUniqueId: nil, groupingKey: nil, threadId: nil, timestamp: 900, flags: [.Incoming, .TopIndexable], tags: [], globalTags: [], localTags: [], forwardInfo: nil, authorId: nil, text: "keyboard", attributes: [], media: [])], location: .Random)
+            transaction.resetIncomingReadStates([self.chat: [self.namespace: .idBased(maxIncomingReadId: 0, maxOutgoingReadId: 0, maxKnownId: 14, count: 5, markedUnread: false)]])
+        }
+        self.restrict()
+        let cached = self.fixture.observe(.cachedPeerDataWithMessages(peerId: self.chat), as: CachedPeerDataView.self)
+        XCTAssertEqual(Set(cached.waitForValues(count: 1).last?.associatedMessages.keys ?? [:].keys), [self.id(12)], "a pinned old message is not rendered")
+        let history = self.fixture.observe(self.fixture.postbox.aroundMessageHistoryViewForLocation(.peer(peerId: self.chat, threadId: nil), anchor: .upperBound, ignoreMessagesInTimestampRange: nil, ignoreMessageIds: [], count: 20, fixedCombinedReadStates: nil, topTaggedMessageIdNamespaces: [self.namespace], tag: nil, appendMessagesFromTheSameGroup: false, namespaces: .all, orderStatistics: [], additionalData: [.cachedPeerDataMessages(self.chat), .message(self.id(10))]) |> map { $0.0 })
+        let view = history.waitForValues(count: 1).last
+        XCTAssertEqual(view?.topTaggedMessages.map(\.id), [], "an old bot keyboard is not shown")
+        XCTAssertNil(view?.transientReadStates, "the raw unread count of the old history is withheld")
+        for entry in view?.additionalData ?? [] {
+            switch entry {
+            case let .cachedPeerDataMessages(_, messages):
+                XCTAssertEqual(Set(messages?.keys ?? [:].keys), [self.id(12)])
+            case let .message(_, messages):
+                XCTAssertEqual(messages.count, 0)
+            default:
+                break
+            }
+        }
+    }
+
     func testReleasingTheRestrictionShowsTheFullHistory() {
         self.seed()
         let restriction = self.restrict()

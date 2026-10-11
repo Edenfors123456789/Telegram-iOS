@@ -9,7 +9,7 @@ final class MutableTopChatMessageView: MutablePostboxView {
         
         for peerId in self.peerIds {
             if let index = postbox.chatListIndexTable.get(peerId: peerId).topMessageIndex {
-                self.messages[peerId] = postbox.getMessage(index.id)
+                self.messages[peerId] = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(index.id))
             }
         }
     }
@@ -17,9 +17,9 @@ final class MutableTopChatMessageView: MutablePostboxView {
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
         var updated = false
         for peerId in self.peerIds {
-            if transaction.currentOperationsByPeerId[peerId] != nil {
+            if transaction.currentOperationsByPeerId[peerId] != nil || transaction.updatedHistoryRestrictionPeerIds.contains(peerId) {
                 if let index = postbox.chatListIndexTable.get(peerId: peerId).topMessageIndex {
-                    self.messages[peerId] = postbox.getMessage(index.id)
+                    self.messages[peerId] = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(index.id))
                 } else {
                     self.messages.removeValue(forKey: peerId)
                 }

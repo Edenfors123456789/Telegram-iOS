@@ -629,6 +629,8 @@ public final class SparseMessageList {
 
     private let queue: Queue
     private let impl: QueueLocalObject<Impl>
+    private let postbox: Postbox
+    private let peerId: PeerId
 
     /// The shared media of a peer and, for a channel migrated from a basic group, of that group
     /// after it: one `PeerSegment` per peer, published as one list (`mergedSparseMessageListState`).
@@ -764,18 +766,26 @@ public final class SparseMessageList {
     }
 
     public var state: Signal<State, NoError> {
-        return Signal { subscriber in
+        let impl = self.impl
+        let unrestricted = Signal<State, NoError> { subscriber in
             let disposable = MetaDisposable()
 
-            self.impl.with { impl in
+            impl.with { impl in
                 disposable.set(impl.statePromise.get().start(next: subscriber.putNext))
             }
 
             return disposable
         }
+        // Dual PIN: a chat under a history restriction lists nothing from the server.
+        return isUnderHistoryRestriction(postbox: self.postbox, peerId: self.peerId)
+        |> mapToSignal { restricted -> Signal<State, NoError> in
+            return restricted ? .single(State(items: [], totalCount: 0, isLoading: false)) : unrestricted
+        }
     }
 
     init(account: Account, peerId: PeerId, threadId: Int64?, messageTag: MessageTags, initialMessageIndex: MessageIndex?) {
+        self.postbox = account.postbox
+        self.peerId = peerId
         self.queue = Queue()
         let queue = self.queue
         self.impl = QueueLocalObject(queue: queue, generate: {
@@ -991,11 +1001,15 @@ public final class SparseMessageCalendar {
 
     private let queue: Queue
     private let impl: QueueLocalObject<Impl>
+    private let postbox: Postbox
+    private let peerId: PeerId
 
     public var minTimestamp: Int32?
     private var disposable: Disposable?
 
     init(account: Account, peerId: PeerId, threadId: Int64?, messageTag: MessageTags, displayMedia: Bool) {
+        self.postbox = account.postbox
+        self.peerId = peerId
         let queue = Queue()
         self.queue = queue
         self.impl = QueueLocalObject(queue: queue, generate: {
@@ -1012,10 +1026,11 @@ public final class SparseMessageCalendar {
     }
 
     public var state: Signal<State, NoError> {
-        return Signal { subscriber in
+        let impl = self.impl
+        let unrestricted = Signal<State, NoError> { subscriber in
             let disposable = MetaDisposable()
 
-            self.impl.with { impl in
+            impl.with { impl in
                 disposable.set(impl.statePromise.get().start(next: { state in
                     subscriber.putNext(State(
                         messagesByDay: state.messagesByDay,
@@ -1026,6 +1041,11 @@ public final class SparseMessageCalendar {
             }
 
             return disposable
+        }
+        // Dual PIN: a chat under a history restriction shows no days from the server.
+        return isUnderHistoryRestriction(postbox: self.postbox, peerId: self.peerId)
+        |> mapToSignal { restricted -> Signal<State, NoError> in
+            return restricted ? .single(State(messagesByDay: [:], minTimestamp: nil, hasMore: false)) : unrestricted
         }
     }
 
@@ -1055,5 +1075,13 @@ public final class SparseMessageCalendar {
         }
 
         return disposable
+    }
+}
+
+/// Dual PIN: whether `peerId` is under a Postbox history restriction now (its restricted
+/// transcript); server-built lists of its history then show nothing.
+func isUnderHistoryRestriction(postbox: Postbox, peerId: PeerId) -> Signal<Bool, NoError> {
+    return postbox.transaction { transaction -> Bool in
+        return transaction.historyRestriction(peerId: peerId) != nil
     }
 }

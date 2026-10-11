@@ -98,6 +98,26 @@ the same facts. Changing the mirror bumps a version that makes the views re-filt
 - Server deletions remove the messages from Postbox, so they leave every view; Core's
   `applyDeletion` ledger is not fed yet.
 
+## Beside the history views (5c, first pass)
+
+An inventory of the chat screen, profile, gallery and calendar found ~40 reads that bypass the
+history views. Closed centrally:
+
+- Postbox views by id (`.messages`, `.messageGroup`, `.topChatMessage`) and `CachedPeerDataView`
+  report excluded messages as absent; restriction changes refresh them.
+- In a restricted history view: the top tagged message (bot keyboard), `.cachedPeerDataMessages`
+  (the first pinned panel) and `.message(id)` extra data are filtered; the raw read state (whole
+  history's unread count) is withheld; `.combinedLocation` positions ("N of M") count admitted
+  messages only.
+- `historyTagSummaryView` counts (profile media counts, @/reaction badges) count admitted messages.
+- TelegramCore: `SparseMessageList` and `SparseMessageCalendar` (profile media grid, calendar)
+  publish an empty state, `getSearchMessageCount` reports nothing and
+  `searchMessageIdByTimestamp` finds nothing for a restricted chat.
+
+Still open from the inventory: drafts and their reply (next), reply threads/comments of a hidden
+channel (thread root fetched raw), gallery anchor opened from outside the chat, admin "delete all
+from user" count paths not via `getSearchMessageCount`.
+
 ## Steps
 
 5a. Postbox restriction primitive and tests (this design's "Where Postbox applies it" 1–4).
