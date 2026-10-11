@@ -38,6 +38,7 @@ import ContextMenuScreen
 import NavigationBarImpl
 import ContextUI
 import ContextControllerImpl
+import AccessModeCore
 
 private var installedSharedLogger = false
 
@@ -193,6 +194,8 @@ public class ShareRootControllerImpl {
     
     private let disposable = MetaDisposable()
     private let passcodeDisposable = MetaDisposable()
+    /// Dual PIN: the mode's hidden-chat and recent-search registrations, held while the sheet lives.
+    private let modeAccessRegistrations = DisposableSet()
     private var observer1: AnyObject?
     private var observer2: AnyObject?
     
@@ -301,6 +304,9 @@ public class ShareRootControllerImpl {
             
             let accountManager: AccountManager<TelegramAccountManagerTypes> = setupAccountManager(basePath: rootPath + "/accounts-metadata", isTemporary: true, isReadOnly: false, useCaches: false, removeDatabaseOnError: false)
             initializeAccountManagement()
+            // Dual PIN: decided before anything is shown; a vault that exists but cannot be read
+            // refuses the share rather than falling back to the legacy passcode.
+            let modeBootstrap = ShareExtensionModeAccess.inspect(rootPath: rootPath, baseAppBundleId: self.initializationData.appBundleId)
             
             do {
                 let semaphore = DispatchSemaphore(value: 0)
@@ -522,8 +528,13 @@ public class ShareRootControllerImpl {
                 }
             }
             |> deliverOnMainQueue
-            |> afterNext { [weak self] environment, context, accessChallengeData, otherAccounts in
-                (environment as? ShareControllerEnvironmentExtension)?.accounts = otherAccounts.compactMap { $0.account as? ShareControllerAccountContextExtension }
+            |> afterNext { [weak self] environment, rawContext, accessChallengeData, rawOtherAccounts in
+                // Replaced by the PIN's mode before `displayShare` runs when Dual PIN is configured.
+                var context = rawContext
+                var otherAccounts = rawOtherAccounts
+                if !modeBootstrap.requiresModeAuthentication {
+                    (environment as? ShareControllerEnvironmentExtension)?.accounts = otherAccounts.compactMap { $0.account as? ShareControllerAccountContextExtension }
+                }
                 
                 initializeLegacyComponents(application: nil, currentSizeClassGetter: { return .compact }, currentHorizontalClassGetter: { return .compact }, documentsPath: "", currentApplicationBounds: { return CGRect() }, canOpenUrl: { _ in return false}, openUrl: { _ in })
                 setContextMenuControllerProvider { arguments in
@@ -926,6 +937,63 @@ public class ShareRootControllerImpl {
                     modalPresentation = true
                 } else {
                     modalPresentation = false
+                }
+                
+                if modeBootstrap.requiresModeAuthentication {
+                    guard let self, !self.isDismissed else {
+                        return
+                    }
+                    guard case let .configured(store) = modeBootstrap else {
+                        Logger.shared.log("ShareExtension", "access vault unavailable, share refused")
+                        self.getExtensionContext()?.completeRequest(returningItems: nil, completionHandler: nil)
+                        return
+                    }
+                    let records = accountManager._internalAccountRecordsSync()
+                    let rawAccounts = rawOtherAccounts.compactMap { $0.account as? ShareControllerAccountContextExtension }
+                    let observed = rawAccounts.map { ShareExtensionModeAccess.observedAccount(recordId: $0.accountId, accountPeerId: $0.stateManager.accountPeerId, records: records) }
+                    let coordinator = AccessModeCoordinator(store: store, process: .shareExtension)
+                    // Removing the PIN screen reports a cancellation; after a PIN it must not end the share.
+                    var modeAuthenticated = false
+                    let authentication = ModePINEntryAuthentication(coordinator: coordinator, prepareRoot: { [weak self] ticket in
+                        guard let self, !self.isDismissed else {
+                            throw AccessError.unavailable
+                        }
+                        let scope = try coordinator.withPolicy(ticket, requireReady: false) { try $0.shareScope(observed: observed) }
+                        let allowed = rawOtherAccounts.filter { item in
+                            guard let account = item.account as? ShareControllerAccountContextExtension else {
+                                return false
+                            }
+                            return scope.recordIDs.contains(account.accountId.int64)
+                        }
+                        guard let primary = allowed.first(where: { ($0.account as? ShareControllerAccountContextExtension)?.accountId.int64 == scope.primaryRecordID }) else {
+                            throw AccessError.unavailable
+                        }
+                        try coordinator.completePreparation(ticket)
+                        // Registered before any list of the sheet exists.
+                        for item in allowed {
+                            if let account = item.account as? ShareControllerAccountContextExtension {
+                                self.modeAccessRegistrations.add(ShareExtensionModeAccess.register(scope: scope, recordId: account.accountId, postbox: account.stateManager.postbox))
+                            }
+                        }
+                        modeAuthenticated = true
+                        context = primary.account
+                        otherAccounts = allowed
+                        (environment as? ShareControllerEnvironmentExtension)?.accounts = allowed.compactMap { $0.account as? ShareControllerAccountContextExtension }
+                        self.currentPasscodeController?.dismiss()
+                        self.currentPasscodeController = nil
+                        displayShare()
+                    })
+                    let controller = PasscodeEntryController(applicationBindings: applicationBindings, accountManager: accountManager, appLockContext: appLockContext, presentationData: environment.presentationData, presentationDataSignal: .single(environment.presentationData), statusBarHost: nil, challengeData: .none, biometrics: .none, arguments: PasscodeEntryControllerPresentationArguments(animated: false, fadeIn: true, cancel: { [weak self] in
+                        if !modeAuthenticated {
+                            self?.getExtensionContext()?.completeRequest(returningItems: nil, completionHandler: nil)
+                        }
+                    }, modalPresentation: modalPresentation), modeAuthentication: authentication)
+                    if let currentPasscodeController = self.currentPasscodeController {
+                        currentPasscodeController.dismiss()
+                    }
+                    self.currentPasscodeController = controller
+                    self.mainWindow?.present(controller, on: .root)
+                    return
                 }
                 
                 self?.passcodeDisposable.set(passcodeEntryController(
