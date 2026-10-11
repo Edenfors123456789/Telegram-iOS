@@ -4,7 +4,8 @@ import XCTest
 import SwiftSignalKit
 
 private final class PromotionFixture {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("dual-pin-promotion-tests-\(UUID())")
+    static let directoryPrefix = "dual-pin-promotion-tests-"
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("\(PromotionFixture.directoryPrefix)\(UUID())")
     let manager: AccountManager<TelegramAccountManagerTypes>
     init() throws {
         guard !FileManager.default.fileExists(atPath: directory.path) else { throw CocoaError(.fileWriteFileExists) }
@@ -12,10 +13,20 @@ private final class PromotionFixture {
             useCaches: false, removeDatabaseOnError: true,
             accessChallenge: AccountManagerAccessChallenge(prepare: { _ in }, resolve: { _, _ in .some(.none) }, finishInitialization: {}))
     }
-    deinit { try? FileManager.default.removeItem(at: directory) }
+    // No removal here: the manager closes its database on its own queue after this
+    // object is gone, and removing the directory first made that close fail with a
+    // disk I/O error assertion. The class tear-down removes the directories instead.
 }
 
 final class AccountAuthorizationPromotionTests: XCTestCase {
+    override class func tearDown() {
+        let temporary = FileManager.default.temporaryDirectory
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: temporary.path)) ?? [] where name.hasPrefix(PromotionFixture.directoryPrefix) {
+            try? FileManager.default.removeItem(at: temporary.appendingPathComponent(name))
+        }
+        super.tearDown()
+    }
+
     private func value<T>(_ signal: Signal<T, NoError>) throws -> T {
         let done = expectation(description: "Promotion metadata result")
         var result: T?

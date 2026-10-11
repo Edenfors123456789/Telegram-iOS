@@ -55,6 +55,12 @@ public enum UnreadMessageCountsItemEntry {
 /// its most recent ones (the peer-threads summary looks at twenty), wrapped in a synthetic
 /// state.
 private func peerCombinedReadState(postbox: PostboxImpl, peerId: PeerId, handleThreads: Bool) -> CombinedPeerReadState? {
+    return postbox.visibleCombinedReadState(peerId: peerId) {
+        return storedPeerCombinedReadState(postbox: postbox, peerId: peerId, handleThreads: handleThreads)
+    }
+}
+
+private func storedPeerCombinedReadState(postbox: PostboxImpl, peerId: PeerId, handleThreads: Bool) -> CombinedPeerReadState? {
     if handleThreads, let peer = postbox.peerTable.get(peerId), postbox.seedConfiguration.peerSummaryIsThreadBased(peer, peer.associatedPeerId.flatMap(postbox.peerTable.get)).value {
         var count: Int32 = 0
         if let summary = postbox.peerThreadsSummaryTable.get(peerId: peerId) {
@@ -101,9 +107,9 @@ final class MutableUnreadMessageCountsView: MutablePostboxView {
         self.entries = items.map { item in
             switch item {
             case let .total(preferencesKey):
-                return .total(preferencesKey.flatMap({ ($0, postbox.preferencesTable.get(key: $0)) }), postbox.messageHistoryMetadataTable.getTotalUnreadState(groupId: .root))
+                return .total(preferencesKey.flatMap({ ($0, postbox.preferencesTable.get(key: $0)) }), postbox.visibleTotalUnreadState(groupId: .root))
             case let .totalInGroup(groupId):
-                return .totalInGroup(groupId, postbox.messageHistoryMetadataTable.getTotalUnreadState(groupId: groupId))
+                return .totalInGroup(groupId, postbox.visibleTotalUnreadState(groupId: groupId))
             case let .peer(peerId, handleThreads):
                 return .peer(peerId, handleThreads, peerCombinedReadState(postbox: postbox, peerId: peerId, handleThreads: handleThreads))
             }
@@ -111,6 +117,10 @@ final class MutableUnreadMessageCountsView: MutablePostboxView {
     }
     
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
+        if transaction.updatedHiddenPeerIds {
+            // Every entry may count a chat that was just hidden or shown.
+            return self.refreshDueToExternalTransaction(postbox: postbox)
+        }
         var updated = false
         
         var updatedPreferencesEntry: PreferencesEntry?
@@ -132,14 +142,16 @@ final class MutableUnreadMessageCountsView: MutablePostboxView {
             for i in 0 ..< self.entries.count {
                 switch self.entries[i] {
                 case let .total(keyAndEntry, state):
-                    if let updatedState = transaction.currentUpdatedTotalUnreadStates[.root] {
+                    if transaction.currentUpdatedTotalUnreadStates[.root] != nil {
+                        let updatedState = postbox.visibleTotalUnreadState(groupId: .root)
                         if updatedState != state {
                             self.entries[i] = .total(keyAndEntry.flatMap({ ($0.0, updatedPreferencesEntry ?? $0.1) }), updatedState)
                             updated = true
                         }
                     }
                 case let .totalInGroup(groupId, state):
-                    if let updatedState = transaction.currentUpdatedTotalUnreadStates[groupId] {
+                    if transaction.currentUpdatedTotalUnreadStates[groupId] != nil {
+                        let updatedState = postbox.visibleTotalUnreadState(groupId: groupId)
                         if updatedState != state {
                             self.entries[i] = .totalInGroup(groupId, updatedState)
                             updated = true
@@ -164,9 +176,9 @@ final class MutableUnreadMessageCountsView: MutablePostboxView {
         let entries: [MutableUnreadMessageCountsItemEntry] = self.items.map { item -> MutableUnreadMessageCountsItemEntry in
             switch item {
             case let .total(preferencesKey):
-                return .total(preferencesKey.flatMap({ ($0, postbox.preferencesTable.get(key: $0)) }), postbox.messageHistoryMetadataTable.getTotalUnreadState(groupId: .root))
+                return .total(preferencesKey.flatMap({ ($0, postbox.preferencesTable.get(key: $0)) }), postbox.visibleTotalUnreadState(groupId: .root))
             case let .totalInGroup(groupId):
-                return .totalInGroup(groupId, postbox.messageHistoryMetadataTable.getTotalUnreadState(groupId: groupId))
+                return .totalInGroup(groupId, postbox.visibleTotalUnreadState(groupId: groupId))
             case let .peer(peerId, handleThreads):
                 return .peer(peerId, handleThreads, peerCombinedReadState(postbox: postbox, peerId: peerId, handleThreads: handleThreads))
             }

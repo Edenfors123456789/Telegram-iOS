@@ -3631,7 +3631,7 @@ final class PostboxImpl {
                 case let .peerChatState(peerId):
                     additionalDataEntries.append(.peerChatState(peerId, self.peerChatStateTable.get(peerId)?.getLegacy() as? PeerChatState))
                 case .totalUnreadState:
-                    additionalDataEntries.append(.totalUnreadState(self.messageHistoryMetadataTable.getTotalUnreadState(groupId: .root)))
+                    additionalDataEntries.append(.totalUnreadState(self.visibleTotalUnreadState(groupId: .root)))
                 case let .peerNotificationSettings(peerId):
                     var notificationPeerId = peerId
                     if let peer = self.peerTable.get(peerId), let associatedPeerId = peer.associatedPeerId, peer.associatedPeerOverridesIdentity {
@@ -4551,6 +4551,12 @@ final class PostboxImpl {
     
     func getGlobalNotificationSettings(transaction: Transaction) -> PostboxGlobalNotificationSettings {
         return self.seedConfiguration.getGlobalNotificationSettings(transaction) ?? self.seedConfiguration.defaultGlobalNotificationSettings
+    }
+    
+    /// For a view replaying on the queue, which has no `Transaction` of its own: a read-only
+    /// one over the same tables.
+    func globalNotificationSettingsOutsideTransaction() -> PostboxGlobalNotificationSettings {
+        return self.getGlobalNotificationSettings(transaction: Transaction(queue: self.queue, postbox: self))
     }
     
     public func isMasterClient() -> Signal<Bool, NoError> {

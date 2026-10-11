@@ -119,7 +119,10 @@ final class MessageHistoryTableFixture {
 
     static let messageNamespace: MessageId.Namespace = 0
 
-    static func makeSeedConfiguration() -> SeedConfiguration {
+    /// `counterTags` files every peer into those unread counter buckets; empty (the
+    /// default) leaves the chat list totals empty.
+    /// `textIndexNamespaces` get a local full-text index (the app indexes secret chats only).
+    static func makeSeedConfiguration(counterTags: PeerSummaryCounterTags = [], textIndexNamespaces: Set<PeerId.Namespace> = []) -> SeedConfiguration {
         return SeedConfiguration(
             globalMessageIdsPeerIdNamespaces: [],
             initializeChatListWithHole: (topLevel: nil, groups: nil),
@@ -132,8 +135,8 @@ final class MessageHistoryTableFixture {
             messageTagsWithSummary: [],
             messageTagsWithThreadSummary: [],
             existingGlobalMessageTags: [],
-            peerNamespacesRequiringMessageTextIndex: [],
-            peerSummaryCounterTags: { _, _ in PeerSummaryCounterTags() },
+            peerNamespacesRequiringMessageTextIndex: Array(textIndexNamespaces),
+            peerSummaryCounterTags: { _, _ in counterTags },
             peerSummaryIsThreadBased: { peer, _ in ((peer as? FixturePeer)?.isForum ?? false, false) },
             additionalChatListIndexNamespace: nil,
             messageNamespacesRequiringGroupStatsValidation: [],

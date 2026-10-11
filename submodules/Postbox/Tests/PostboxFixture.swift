@@ -22,7 +22,7 @@ final class PostboxFixture {
     private var storage: Storage?
     private var disposables: [Disposable] = []
 
-    init(name: String) {
+    init(name: String, counterTags: PeerSummaryCounterTags = [], textIndexNamespaces: Set<PeerId.Namespace> = []) {
         let _ = FixtureMedia.register
         let _ = FixturePeer.register
         self.queue = Queue(name: name)
@@ -37,7 +37,7 @@ final class PostboxFixture {
         self.postbox = Postbox(
             queue: queue,
             basePath: basePath,
-            seedConfiguration: MessageHistoryTableFixture.makeSeedConfiguration(),
+            seedConfiguration: MessageHistoryTableFixture.makeSeedConfiguration(counterTags: counterTags, textIndexNamespaces: textIndexNamespaces),
             valueBox: valueBox!,
             timestampForAbsoluteTimeBasedOperations: Int32(Date().timeIntervalSince1970),
             isMainProcess: true,

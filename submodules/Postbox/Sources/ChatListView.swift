@@ -731,7 +731,7 @@ final class MutableChatListView {
                         }
                     }
                     
-                    self.groupEntries.append(ChatListGroupReferenceEntry(groupId: groupId, message: message, renderedPeers: renderedPeers, unreadState: postbox.groupMessageStatsTable.get(groupId: groupId)))
+                    self.groupEntries.append(ChatListGroupReferenceEntry(groupId: groupId, message: message, renderedPeers: renderedPeers, unreadState: postbox.visibleGroupUnreadSummary(groupId: groupId)))
                 }
             }
         }
@@ -830,7 +830,8 @@ final class MutableChatListView {
                 hasChanges = true
             } else {
                 for i in 0 ..< self.groupEntries.count {
-                    if let updatedState = transaction.currentUpdatedTotalUnreadSummaries[self.groupEntries[i].groupId] {
+                    if transaction.currentUpdatedTotalUnreadSummaries[self.groupEntries[i].groupId] != nil {
+                        let updatedState = postbox.visibleGroupUnreadSummary(groupId: self.groupEntries[i].groupId)
                         self.groupEntries[i] = ChatListGroupReferenceEntry(groupId: self.groupEntries[i].groupId, message: self.groupEntries[i].message, renderedPeers: self.groupEntries[i].renderedPeers, unreadState: updatedState)
                         hasChanges = true
                     }
