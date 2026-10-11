@@ -15,16 +15,11 @@ private let sharedProviderDelegate: CallKitProviderDelegate? = {
 }()
 
 public final class CallKitIntegration {
+    /// Dual PIN v1: off (plan §7, docs/dual-pin/EXTERNAL.md). CallKit would publish calls and the
+    /// other party to the system interface (recents, lock screen); the app takes the path upstream
+    /// uses where CallKit is not allowed.
     public static var isAvailable: Bool {
-        #if targetEnvironment(simulator)
         return false
-        #else
-        if #available(iOSApplicationExtension 10.0, iOS 10.0, *) {
-            return Locale.current.regionCode?.lowercased() != "cn"
-        } else {
-            return false
-        }
-        #endif
     }
     
     private let audioSessionActivePromise = ValuePromise<Bool>(false, ignoreRepeated: true)

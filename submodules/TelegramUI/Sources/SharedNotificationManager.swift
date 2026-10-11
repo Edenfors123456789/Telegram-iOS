@@ -30,6 +30,9 @@ private final class NotificationInfo {
 }
 
 public final class SharedNotificationManager {
+    /// Dual PIN v1: incoming calls are never announced through a local notification.
+    private static let postsCallNotifications = false
+    
     private let episodeId: UInt32
     private let application: UIApplication
     
@@ -428,6 +431,12 @@ public final class SharedNotificationManager {
             }
         }
         self.currentNotificationCall = call
+        
+        // Dual PIN v1: no notification names a caller outside the app (plan §7,
+        // docs/dual-pin/EXTERNAL.md); an incoming call shows only in the app.
+        if !SharedNotificationManager.postsCallNotifications {
+            return
+        }
         
         if let notificationCall = call {
             let rawText = strings.PUSH_PHONE_CALL_REQUEST(notificationCall.peer?.displayTitle(strings: strings, displayOrder: nameOrder) ?? "").string

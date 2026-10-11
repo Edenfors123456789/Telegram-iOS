@@ -181,9 +181,12 @@ public final class PresentationCallManagerImpl: PresentationCallManager {
         let ringingStatesByAccount: Signal<[(AccountContext, CallSessionRingingState, NetworkType)], NoError> = activeAccounts
         |> mapToSignal { accounts -> Signal<[(AccountContext, CallSessionRingingState, NetworkType)], NoError> in
             return combineLatest(accounts.map { context -> Signal<(AccountContext, [CallSessionRingingState], NetworkType), NoError> in
-                return combineLatest(context.account.callSessionManager.ringingStates(), context.account.networkType)
-                |> map { ringingStates, networkType -> (AccountContext, [CallSessionRingingState], NetworkType) in
-                    return (context, ringingStates, networkType)
+                // Dual PIN: a call from a chat kept out of the lists (B's hidden chats) gets no UI or
+                // ringtone; it is neither answered nor declined from here, so it rings out and
+                // stays a missed call in the full history.
+                return combineLatest(context.account.callSessionManager.ringingStates(), context.account.networkType, context.account.postbox.chatIdsHiddenFromLists())
+                |> map { ringingStates, networkType, hidden -> (AccountContext, [CallSessionRingingState], NetworkType) in
+                    return (context, ringingStates.filter { !hidden.contains($0.peerId) }, networkType)
                 }
             })
             |> map { ringingStatesByAccount -> [(AccountContext, CallSessionRingingState, NetworkType)] in
