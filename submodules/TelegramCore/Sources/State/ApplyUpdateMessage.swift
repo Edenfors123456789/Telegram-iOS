@@ -660,7 +660,9 @@ func applyUpdateGroupMessages(postbox: Postbox, stateManager: AccountStateManage
                 
                 let (tags, globalTags) = tagsForStoreMessage(incoming: currentMessage.flags.contains(.Incoming), attributes: attributes, media: media, textEntities: entitiesAttribute?.entities, isPinned: currentMessage.tags.contains(.pinned))
                 
-                return .update(StoreMessage(id: updatedId, customStableId: nil, globallyUniqueId: nil, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: updatedMessage.timestamp, flags: [], tags: tags, globalTags: globalTags, localTags: currentMessage.localTags, forwardInfo: storeForwardInfo, authorId: currentMessage.author?.id, text: text, attributes: attributes, media: media))
+                // Keeps the random id, as a single message's confirmation does: Dual PIN's
+                // restricted transcript admits a B send by it, also after a relaunch.
+                return .update(StoreMessage(id: updatedId, customStableId: nil, globallyUniqueId: currentMessage.globallyUniqueId, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: updatedMessage.timestamp, flags: [], tags: tags, globalTags: globalTags, localTags: currentMessage.localTags, forwardInfo: storeForwardInfo, authorId: currentMessage.author?.id, text: text, attributes: attributes, media: media))
             })
         }
         

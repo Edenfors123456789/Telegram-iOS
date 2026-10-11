@@ -64,12 +64,11 @@ the same facts. Changing the mirror bumps a version that makes the views re-filt
 
 ## Known gaps for 5b
 
-- Server confirmation of a single send keeps the message's `globallyUniqueId`
-  (`applyUpdateMessage`), but the album path (`applyUpdateGroupMessages`) stores the confirmed
-  messages with `globallyUniqueId: nil`, so a B album would drop out of the transcript once
-  sent. Either keep the random id there too, or let the restriction also admit the server ids
-  that `RestrictedTranscriptStore.acknowledge` records (written in the same transaction as the
-  replacement, so there is no frame without it).
+- Closed 2026-10-11: server confirmation of a single send kept the message's
+  `globallyUniqueId` (`applyUpdateMessage`) but the album path (`applyUpdateGroupMessages`)
+  stored the confirmed messages with `globallyUniqueId: nil`, so a B album dropped out of the
+  transcript after a relaunch. The album path now keeps the random id as well
+  (`testAConfirmedSendThatKeepsItsRandomIdIsAdmittedAfterARelaunch` pins the Postbox side).
 - A send confirmed while the app was not running (the message arrives through `getDifference`
   instead of the send's own result) must still be matched to its recorded random id.
 
@@ -101,9 +100,9 @@ projection" to "lists never include it".
 
 - Expiry while viewing: once a minute each opened transcript's snapshot replaces its
   restriction (`refreshModeTranscriptExpiry`); a failed snapshot closes the chat to everything.
-- Confirmations are not written back to Core yet (`acknowledge`): a confirmed single send keeps
-  its random id and stays admitted after a restart; a confirmed album is admitted by id only in
-  memory, so after a restart it drops out of the transcript (hidden, never revealed).
+- Confirmations are not written back to Core (`acknowledge`). Visibility does not need them:
+  both confirmation paths keep the random id, so a confirmed send, album included, stays
+  admitted after a restart. Core's server-id ledger stays empty (bookkeeping only).
 - Server deletions remove the messages from Postbox, so they leave every view; Core's
   `applyDeletion` ledger is not fed yet.
 

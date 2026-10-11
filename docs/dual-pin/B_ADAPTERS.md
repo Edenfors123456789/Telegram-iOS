@@ -7,8 +7,8 @@ This file is the working order and status; [SURFACES.md](SURFACES.md) stays the 
 
 Remaining known gaps (not yet closed): reply threads/comments of a hidden channel (thread root
 fetched raw), the gallery opened from outside the chat, other recents (stickers, emoji, GIFs,
-inline bots), Core `acknowledge`/`applyDeletion` feed (a confirmed B album drops out of the
-transcript after a restart), secret-chat specifics, the profile's groups-in-common tab appearing
+inline bots), Core `acknowledge`/`applyDeletion` ledger (not fed; bookkeeping only, visibility
+comes from Postbox, and confirmed B albums keep their random id since 2026-10-11), secret-chat specifics, the profile's groups-in-common tab appearing
 from the server count, stage 5 (push, extensions, widgets, Spotlight, CallKit).
 
 Only the shared primary account can have hidden chats (`AccessConfiguration.validate`). In B,

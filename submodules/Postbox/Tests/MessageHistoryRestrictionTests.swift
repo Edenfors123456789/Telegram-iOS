@@ -170,6 +170,19 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         XCTAssertEqual(admitted ?? nil, [self.id(20)], "A's replaced message is not adopted")
     }
 
+    func testAConfirmedSendThatKeepsItsRandomIdIsAdmittedAfterARelaunch() {
+        // Both confirmation paths keep the random id (TelegramCore `applyUpdateMessage` and
+        // `applyUpdateGroupMessages`), so a relaunched B, whose restriction knows the send only by
+        // its random id, still shows the confirmed message under its server id.
+        self.seed()
+        self.fixture.transaction { transaction in
+            transaction.updateMessage(self.id(13)) { _ in .update(self.message(20, timestamp: 1450, incoming: false, randomId: self.bSendRandomId)) }
+        }
+        self.restrict()
+        let recorder = self.observe()
+        XCTAssertEqual(self.ids(recorder.waitForValues(count: 1).last), [12, 20])
+    }
+
     func testATaggedViewIsRestrictedToo() {
         self.seed()
         self.restrict()
