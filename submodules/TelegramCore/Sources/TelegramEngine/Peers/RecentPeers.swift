@@ -16,7 +16,7 @@ func cachedRecentAppsEntryId() -> ItemCacheEntryId {
     return ItemCacheEntryId(collectionId: 102, key: CachedRecentPeers.cacheKey())
 }
 
-public func _internal_recentPeers(accountPeerId: EnginePeer.Id, postbox: Postbox) -> Signal<RecentPeers, NoError> {
+private func _internal_recentPeersUnfiltered(accountPeerId: EnginePeer.Id, postbox: Postbox) -> Signal<RecentPeers, NoError> {
     let key = PostboxViewKey.cachedItem(cachedRecentPeersEntryId())
     return postbox.combinedView(keys: [key])
     |> mapToSignal { views -> Signal<RecentPeers, NoError> in
@@ -342,4 +342,9 @@ func _internal_removeRecentlyUsedApp(account: Account, peerId: PeerId) -> Signal
             return .complete()
         }
     } |> switchToLatest
+}
+
+/// Dual PIN: leaves out chats hidden from lists (`Postbox.addHiddenChatIds`).
+public func _internal_recentPeers(accountPeerId: EnginePeer.Id, postbox: Postbox) -> Signal<RecentPeers, NoError> {
+    return withChatsHiddenFromLists(postbox, _internal_recentPeersUnfiltered(accountPeerId: accountPeerId, postbox: postbox), excludingChatsHiddenFromLists)
 }

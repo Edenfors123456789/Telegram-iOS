@@ -27,7 +27,7 @@ public enum TelegramSearchPeersScope: Equatable, Hashable {
     case globalPosts(allowPaidStars: Int?)
 }
 
-public func _internal_searchPeers(accountPeerId: PeerId, postbox: Postbox, network: Network, query: String, scope: TelegramSearchPeersScope) -> Signal<([FoundPeer], [FoundPeer]), NoError> {
+private func _internal_searchPeersUnfiltered(accountPeerId: PeerId, postbox: Postbox, network: Network, query: String, scope: TelegramSearchPeersScope) -> Signal<([FoundPeer], [FoundPeer]), NoError> {
     var flags: Int32 = 0
     switch scope {
     case .channels:
@@ -214,4 +214,12 @@ func _internal_requestMessageAuthor(account: Account, id: EngineMessage.Id) -> S
             }
         }
     }
+}
+
+/// Dual PIN: the account's own matches leave out chats hidden from lists
+/// (`Postbox.addHiddenChatIds`); public matches are kept, opening one is an explicit route.
+public func _internal_searchPeers(accountPeerId: PeerId, postbox: Postbox, network: Network, query: String, scope: TelegramSearchPeersScope) -> Signal<([FoundPeer], [FoundPeer]), NoError> {
+    return withChatsHiddenFromLists(postbox, _internal_searchPeersUnfiltered(accountPeerId: accountPeerId, postbox: postbox, network: network, query: query, scope: scope), { value, hidden in
+        return (excludingChatsHiddenFromLists(myResults: value.0, hidden), value.1)
+    })
 }

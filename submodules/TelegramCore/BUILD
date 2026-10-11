@@ -91,3 +91,26 @@ ios_unit_test(
     deps = [":NetworkAuthKeyScopeTestsLib"],
     visibility = ["//visibility:public"],
 )
+
+# Dual PIN: search results that leave out chats hidden from lists.
+swift_library(
+    name = "HiddenChatSearchResultsTestsLib",
+    testonly = True,
+    srcs = [
+        "Tests/HiddenChatSearchResultsTests.swift",
+        "Tests/SparseMessageFixtures.swift",
+    ],
+    deps = [
+        ":TelegramCore",
+        "//submodules/Postbox:Postbox",
+        "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+    ],
+)
+
+ios_unit_test(
+    name = "HiddenChatSearchResultsTests",
+    minimum_os_version = "15.0",
+    runner = ":TelegramCoreTestRunner",
+    deps = [":HiddenChatSearchResultsTestsLib"],
+    visibility = ["//visibility:public"],
+)

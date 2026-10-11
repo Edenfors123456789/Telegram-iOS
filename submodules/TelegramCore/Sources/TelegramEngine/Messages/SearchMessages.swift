@@ -305,7 +305,7 @@ func _internal_getSearchMessageCount(account: Account, location: SearchMessagesL
     }
 }
 
-func _internal_searchMessages(account: Account, location: SearchMessagesLocation, query: String, state: SearchMessagesState?, centerId: MessageId?, limit: Int32 = 100) -> Signal<(SearchMessagesResult, SearchMessagesState), NoError> {
+private func _internal_searchMessagesUnfiltered(account: Account, location: SearchMessagesLocation, query: String, state: SearchMessagesState?, centerId: MessageId?, limit: Int32 = 100) -> Signal<(SearchMessagesResult, SearchMessagesState), NoError> {
     if case let .peer(peerId, fromId, tags, reactions, threadId, minDate, maxDate) = location, fromId == nil, tags == nil, peerId == account.peerId, let reactions, let reaction = reactions.first, (minDate == nil || minDate == 0), (maxDate == nil || maxDate == 0) {
         return account.postbox.transaction { transaction -> (SearchMessagesResult, SearchMessagesState) in
             let messages = transaction.getMessagesWithCustomTag(peerId: peerId, namespace: Namespaces.Message.Cloud, threadId: threadId, customTag: ReactionsMessageAttribute.messageTag(reaction: reaction), from: MessageIndex.upperBound(peerId: peerId, namespace: Namespaces.Message.Cloud), includeFrom: false, to: MessageIndex.lowerBound(peerId: peerId, namespace: Namespaces.Message.Cloud), limit: 500)
@@ -1163,4 +1163,11 @@ func _internal_refreshGlobalPostSearchState(account: Account) -> Signal<Never, N
         }
         |> ignoreValues
     }
+}
+
+/// Dual PIN: leaves out messages of chats hidden from lists (`Postbox.addHiddenChatIds`).
+func _internal_searchMessages(account: Account, location: SearchMessagesLocation, query: String, state: SearchMessagesState?, centerId: MessageId?, limit: Int32 = 100) -> Signal<(SearchMessagesResult, SearchMessagesState), NoError> {
+    return withChatsHiddenFromLists(account.postbox, _internal_searchMessagesUnfiltered(account: account, location: location, query: query, state: state, centerId: centerId, limit: limit), { value, hidden in
+        return (excludingChatsHiddenFromLists(value.0, hidden), value.1)
+    })
 }

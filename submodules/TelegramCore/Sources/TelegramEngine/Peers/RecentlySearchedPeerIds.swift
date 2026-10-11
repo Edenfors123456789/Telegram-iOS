@@ -47,7 +47,7 @@ public struct RecentlySearchedPeer: Equatable {
     }
 }
 
-public func _internal_recentlySearchedPeers(postbox: Postbox) -> Signal<[RecentlySearchedPeer], NoError> {
+private func _internal_recentlySearchedPeersUnfiltered(postbox: Postbox) -> Signal<[RecentlySearchedPeer], NoError> {
     return postbox.combinedView(keys: [.orderedItemList(id: Namespaces.OrderedItemList.RecentlySearchedPeerIds)])
     |> mapToSignal { view -> Signal<[RecentlySearchedPeer], NoError> in
         var peerIds: [PeerId] = []
@@ -134,4 +134,9 @@ public func _internal_recentlySearchedPeers(postbox: Postbox) -> Signal<[Recentl
             }
         }
     }
+}
+
+/// Dual PIN: leaves out chats hidden from lists (`Postbox.addHiddenChatIds`).
+public func _internal_recentlySearchedPeers(postbox: Postbox) -> Signal<[RecentlySearchedPeer], NoError> {
+    return withChatsHiddenFromLists(postbox, _internal_recentlySearchedPeersUnfiltered(postbox: postbox), excludingChatsHiddenFromLists)
 }

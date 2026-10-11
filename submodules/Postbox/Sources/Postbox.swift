@@ -891,6 +891,12 @@ public final class Transaction {
         }
     }
     
+    /// The chats `Postbox.addHiddenChatIds` currently keeps out of lists.
+    public var chatIdsHiddenFromLists: Set<PeerId> {
+        assert(!self.disposed)
+        return self.postbox?.hiddenChatIds ?? Set()
+    }
+    
     public func getTotalUnreadState(groupId: PeerGroupId) -> ChatListTotalUnreadState {
         assert(!self.disposed)
         if let postbox = self.postbox {
@@ -3257,6 +3263,9 @@ final class PostboxImpl {
     fileprivate func searchMessages(peerId: PeerId?, query: String, tags: MessageTags?) -> [Message] {
         var result: [Message] = []
         for messageId in self.textIndexTable.search(peerId: peerId, text: query, tags: tags) {
+            if self.isChatHidden(peerId: messageId.peerId) {
+                continue
+            }
             if let index = self.messageHistoryIndexTable.getIndex(messageId), let message = self.messageHistoryTable.getMessage(index) {
                 result.append(self.messageHistoryTable.renderMessage(message, peerTable: self.peerTable, threadIndexTable: self.messageHistoryThreadIndexTable, storyTable: self.storyTable))
             } else {
@@ -3892,6 +3901,16 @@ final class PostboxImpl {
             }
         }
         chatPeerIds.append(contentsOf: additionalChatPeerIds)
+        if self.hasHiddenChatIds {
+            // Hidden chats are not found as chats; one with a contact is still found as
+            // that contact (no history), as in the contact list.
+            // `matchingPeerIds` lists a peer in one category only, chats first.
+            let hiddenMatches = chatPeerIds.filter { self.isChatHidden(peerId: $0) }
+            chatPeerIds = chatPeerIds.filter { !self.isChatHidden(peerId: $0) }
+            for peerId in hiddenMatches where self.contactsTable.isContact(peerId: peerId) && !contactPeerIds.contains(peerId) {
+                contactPeerIds.append(peerId)
+            }
+        }
         
         if let predicate {
             let globalNotificationSettings = self.getGlobalNotificationSettings(transaction: transaction)
@@ -5273,6 +5292,14 @@ public class Postbox {
         }
 
         return disposable
+    }
+    
+    /// A snapshot of the chats kept out of lists, taken in a transaction (so after every
+    /// registration made before the call).
+    public func chatIdsHiddenFromLists() -> Signal<Set<PeerId>, NoError> {
+        return self.transaction { transaction -> Set<PeerId> in
+            return transaction.chatIdsHiddenFromLists
+        }
     }
     
     public func addHiddenChatIds(peerIds: [PeerId]) -> Disposable {
