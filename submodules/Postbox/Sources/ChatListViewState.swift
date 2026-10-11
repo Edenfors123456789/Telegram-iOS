@@ -360,6 +360,9 @@ private final class ChatListViewSpaceState {
                 var loadedMessages: [MutableChatListEntry] = []
                 for i in 0 ..< peerIds.count {
                     let peerId = peerIds[i]
+                    if postbox.isChatHidden(peerId: peerId) {
+                        continue
+                    }
                     if let entry = postbox.chatListTable.getEntry(peerId: peerId, messageHistoryTable: postbox.messageHistoryTable, peerChatInterfaceStateTable: postbox.peerChatInterfaceStateTable) {
                         loadedMessages.append(mapEntry(entry, pinningIndex: asPinned ? UInt16(i) : nil))
                     }
@@ -421,6 +424,10 @@ private final class ChatListViewSpaceState {
             inner: for operation in operations {
                 switch operation {
                 case let .InsertEntry(index, messageIndex):
+                    // A hidden chat stays out of every space, not only when one is filled.
+                    if postbox.isChatHidden(peerId: index.messageIndex.id.peerId) {
+                        continue inner
+                    }
                     switch self.space {
                     case let .group(spaceGroupId, pinned, filterPredicate):
                         let matchesGroup = groupId == spaceGroupId && (index.pinningIndex != nil) == pinned.include
@@ -1093,7 +1100,7 @@ private final class ChatListViewSpaceState {
     /// removal for the next message, which arrives mapped, misses the row and a second row
     /// for the same chat is inserted beside it.
     private func readdEntryFromTable(postbox: PostboxImpl, groupId: PeerGroupId, pinned: ChatListViewSpacePinned, peerId: PeerId, hasUpdates: inout Bool, hadRemovals: inout Bool) {
-        guard self.orderedEntries.indicesForPeerId(peerId) == nil else {
+        guard self.orderedEntries.indicesForPeerId(peerId) == nil, !postbox.isChatHidden(peerId: peerId) else {
             return
         }
         guard let entry = postbox.chatListTable.getEntry(groupId: groupId, peerId: peerId, messageHistoryTable: postbox.messageHistoryTable, peerChatInterfaceStateTable: postbox.peerChatInterfaceStateTable) else {

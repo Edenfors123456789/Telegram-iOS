@@ -38,6 +38,24 @@ final class PolicyTests: XCTestCase {
         XCTAssertFalse(b.allowsBiometrics)
     }
 
+    func testListsInBExcludeExactlyTheChatsDiscoveryRefuses() throws {
+        let primary = identity(1)
+        let hidden = [ChatIdentity(account: primary, peerNamespace: 0, peerID: 100), ChatIdentity(account: primary, peerNamespace: 2, peerID: 7)]
+        let config = try AccessConfiguration(installation: installation, accounts: [
+            AccountMembership(identity: primary, ownership: .shared),
+            AccountMembership(identity: identity(2), ownership: .a),
+            AccountMembership(identity: identity(3), ownership: .b)
+        ], hiddenChats: Set(hidden), selectedA: primary, selectedB: primary)
+        let a = AccessModePolicy(mode: .a, configuration: config)
+        let b = AccessModePolicy(mode: .b, configuration: config)
+        XCTAssertEqual(Set(b.undiscoverableChats(of: primary)), Set(hidden))
+        XCTAssertTrue(b.undiscoverableChats(of: primary).allSatisfy { !b.discover($0) })
+        XCTAssertEqual(a.undiscoverableChats(of: primary), [], "A lists every chat")
+        XCTAssertEqual(b.undiscoverableChats(of: identity(3)), [], "B's own account has no hidden chats")
+        XCTAssertEqual(b.undiscoverableChats(of: identity(2)), [], "an account B cannot see has no lists in B")
+        XCTAssertEqual(b.undiscoverableChats(of: identity(1, user: 999)), [], "a replaced account matches nothing")
+    }
+
     func testUnknownOrReplacedAccountAndNamespaceAreDenied() throws {
         let b = AccessModePolicy(mode: .b, configuration: try configuration())
         for account in [identity(2), identity(99), identity(1, user: 999)] {

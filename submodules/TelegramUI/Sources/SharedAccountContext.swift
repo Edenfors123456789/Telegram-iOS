@@ -229,6 +229,9 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private var modeEnrollment: ModeEnrollment?
     private var modeEnrollmentStarting = false
     private let modeEnrollmentDisposable = MetaDisposable()
+    /// Keeps the current root's undiscoverable chats out of its account's chat
+    /// lists (Postbox drops them before pagination); released with the root.
+    private let modeChatListExclusion = MetaDisposable()
     private let modeAccountPublication: AccessAccountPublicationGate
     private var modeAccountAccessRequired: Bool { self.modeAccountPublication.requiresModePolicy }
     private var pendingModeRoot: AccessRootPreparation?
@@ -2176,6 +2179,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
         self.pendingModeRoot = nil
         self.switchingData = (nil, nil, nil)
+        self.modeChatListExclusion.set(nil)
         self.modeAccountRootPromise.set(ModeAccountRoot(context: nil, preparation: nil))
         self.activeAccountsPromise.set(.single((nil, [], nil)))
     }
@@ -2189,9 +2193,22 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private func publishModeRoot(_ preparation: AccessRootPreparation) throws {
         guard let driver = self.modeRootPresentation else { throw AccessError.authenticationRequired }
         let raw = self.activeAccountsValue?.accounts ?? []
-        let context: AccountContext? = try driver.withPreparingPolicy(preparation) { policy in
+        let (context, excluded): (AccountContext?, [EnginePeer.Id]) = try driver.withPreparingPolicy(preparation) { policy in
             let projection = try policy.projectAccounts(raw.map { self.observedAccount($0.1.account) })
-            return projection.primary.flatMap { selected in raw.first { $0.0.int64 == selected.recordID && $0.0 == $0.1.account.id }?.1 }
+            let context = projection.primary.flatMap { selected in raw.first { $0.0.int64 == selected.recordID && $0.0 == $0.1.account.id }?.1 }
+            let excluded = try (projection.primary.map { policy.undiscoverableChats(of: $0) } ?? []).map { chat -> EnginePeer.Id in
+                // A chat that cannot be named here cannot be excluded: no root.
+                guard chat.peerID <= 0x00ff_ffff_ffff_ffff else { throw AccessError.unavailable }
+                return EnginePeer.Id(namespace: ._internalFromInt32Value(chat.peerNamespace), id: ._internalFromInt64Value(chat.peerID))
+            }
+            return (context, excluded)
+        }
+        // Registered before the root is published: its views are created later on
+        // the same Postbox queue, so none of them is ever filled without it.
+        if let context, !excluded.isEmpty {
+            self.modeChatListExclusion.set(context.account.postbox.addHiddenChatIds(peerIds: excluded))
+        } else {
+            self.modeChatListExclusion.set(nil)
         }
         self.modeAccountRootPromise.set(ModeAccountRoot(context: context, preparation: context == nil ? nil : preparation))
     }

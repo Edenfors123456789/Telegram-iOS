@@ -154,6 +154,15 @@ public struct AccessModePolicy {
     public func discover(_ chat: ChatIdentity) -> Bool {
         chat.supported && allowsAccount(chat.account) && (mode == .a || !configuration.hiddenChats.contains(chat))
     }
+    /// The chats of `account` that `discover` refuses, for list filters that must
+    /// drop them before pagination. Empty in A and for an account this mode cannot see.
+    public func undiscoverableChats(of account: AccountIdentity) -> [ChatIdentity] {
+        guard mode == .b, allowsAccount(account) else { return [] }
+        return configuration.hiddenChats.filter { $0.account == account && !discover($0) }.sorted {
+            if $0.peerNamespace != $1.peerNamespace { return $0.peerNamespace < $1.peerNamespace }
+            return $0.peerID < $1.peerID
+        }
+    }
     public func explicitOpen(_ chat: ChatIdentity) -> HistoryAccess {
         guard chat.supported, allowsAccount(chat.account) else { return .denied }
         return mode == .b && configuration.hiddenChats.contains(chat) ? .restrictedTranscript : .ordinary
