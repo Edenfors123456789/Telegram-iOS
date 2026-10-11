@@ -232,6 +232,8 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     /// Keeps the current root's undiscoverable chats out of its account's chat
     /// lists (Postbox drops them before pagination); released with the root.
     private let modeChatListExclusion = MetaDisposable()
+    /// B only: the mode's own recent searches, kept apart from A's.
+    private let modeRecentSearchesRedirection = MetaDisposable()
     /// B only: the current root's undiscoverable chats, each under a Postbox history
     /// restriction (empty until explicitly opened) and, once opened, a send recorder.
     private var modeTranscriptStore: RestrictedTranscriptStore?
@@ -2189,6 +2191,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.pendingModeRoot = nil
         self.switchingData = (nil, nil, nil)
         self.modeChatListExclusion.set(nil)
+        self.modeRecentSearchesRedirection.set(nil)
         self.releaseModeTranscripts()
         self.modeAccountRootPromise.set(ModeAccountRoot(context: nil, preparation: nil))
         self.activeAccountsPromise.set(.single((nil, [], nil)))
@@ -2217,6 +2220,11 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         // Registered before the root is published: its views are created later on
         // the same Postbox queue, so none of them is ever filled without it.
         self.releaseModeTranscripts()
+        if let context, preparation.mode == .b {
+            self.modeRecentSearchesRedirection.set(context.account.postbox.addOrderedItemListRedirection(from: Namespaces.OrderedItemList.RecentlySearchedPeerIds, to: Namespaces.OrderedItemList.RestrictedModeRecentlySearchedPeerIds))
+        } else {
+            self.modeRecentSearchesRedirection.set(nil)
+        }
         if let context, !undiscoverable.isEmpty {
             let postbox = context.account.postbox
             self.modeChatListExclusion.set(postbox.addHiddenChatIds(peerIds: Array(undiscoverable.keys)))

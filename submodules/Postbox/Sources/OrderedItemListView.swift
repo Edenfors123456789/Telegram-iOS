@@ -2,17 +2,20 @@ import Foundation
 
 final class MutableOrderedItemListView: MutablePostboxView {
     let collectionId: Int32
+    /// The list actually read: `collectionId`, or where a redirection held at creation sends it.
+    private let storedCollectionId: Int32
     var items: [OrderedItemListEntry]
     
     init(postbox: PostboxImpl, collectionId: Int32) {
         self.collectionId = collectionId
-        self.items = postbox.orderedItemListTable.getItems(collectionId: collectionId)
+        self.storedCollectionId = postbox.resolvedOrderedItemListId(collectionId)
+        self.items = postbox.orderedItemListTable.getItems(collectionId: self.storedCollectionId)
     }
     
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
         var updated = false
         
-        if let operations = transaction.currentOrderedItemListOperations[self.collectionId] {
+        if let operations = transaction.currentOrderedItemListOperations[self.storedCollectionId] {
             for operation in operations {
                 switch operation {
                     case let .replace(items):

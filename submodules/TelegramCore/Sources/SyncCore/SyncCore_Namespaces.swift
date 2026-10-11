@@ -78,6 +78,9 @@ public struct Namespaces {
         public static let CloudRecentStickers: Int32 = 0
         public static let CloudRecentGifs: Int32 = 1
         public static let RecentlySearchedPeerIds: Int32 = 2
+        /// Dual PIN: the restricted mode's own recent searches (`RecentlySearchedPeerIds` is
+        /// redirected here while that mode's root is shown).
+        public static let RestrictedModeRecentlySearchedPeerIds: Int32 = 1002
         public static let CloudRecentInlineBots: Int32 = 3
         public static let CloudFeaturedStickerPacks: Int32 = 4
         public static let CloudArchivedStickerPacks: Int32 = 5

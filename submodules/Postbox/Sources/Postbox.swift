@@ -686,7 +686,7 @@ public final class Transaction {
     public func getOrderedListItems(collectionId: Int32) -> [OrderedItemListEntry] {
         assert(!self.disposed)
         if let postbox = postbox {
-            return postbox.orderedItemListTable.getItems(collectionId: collectionId)
+            return postbox.orderedItemListTable.getItems(collectionId: postbox.resolvedOrderedItemListId(collectionId))
         } else {
             return []
         }
@@ -1686,6 +1686,8 @@ final class PostboxImpl {
     
     private var currentHiddenChatIds: [PeerId: Bag<Void>] = [:]
     private var currentUpdatedHiddenPeerIds: Bool = false
+    
+    private var currentOrderedItemListRedirections: [Int32: (token: Int, to: Int32)] = [:]
     
     private var currentHistoryRestrictions: [PeerId: (token: Int, restriction: MessageHistoryRestriction)] = [:]
     private var nextHistoryRestrictionToken: Int = 0
@@ -4367,26 +4369,30 @@ final class PostboxImpl {
     }
     
     fileprivate func replaceOrderedItemListItems(collectionId: Int32, items: [OrderedItemListEntry]) {
+        let collectionId = self.resolvedOrderedItemListId(collectionId)
         self.orderedItemListTable.replaceItems(collectionId: collectionId, items: items, operations: &self.currentOrderedItemListOperations)
     }
     
     fileprivate func addOrMoveToFirstPositionOrderedItemListItem(collectionId: Int32, item: OrderedItemListEntry, removeTailIfCountExceeds: Int?) {
+        let collectionId = self.resolvedOrderedItemListId(collectionId)
         self.orderedItemListTable.addItemOrMoveToFirstPosition(collectionId: collectionId, item: item, removeTailIfCountExceeds: removeTailIfCountExceeds, operations: &self.currentOrderedItemListOperations)
     }
     
     fileprivate func removeOrderedItemListItem(collectionId: Int32, itemId: MemoryBuffer) {
+        let collectionId = self.resolvedOrderedItemListId(collectionId)
         self.orderedItemListTable.remove(collectionId: collectionId, itemId: itemId, operations: &self.currentOrderedItemListOperations)
     }
     
     fileprivate func getOrderedListItemIds(collectionId: Int32) -> [MemoryBuffer] {
-        return self.orderedItemListTable.getItemIds(collectionId: collectionId)
+        return self.orderedItemListTable.getItemIds(collectionId: self.resolvedOrderedItemListId(collectionId))
     }
     
     fileprivate func getOrderedItemListItem(collectionId: Int32, itemId: MemoryBuffer) -> OrderedItemListEntry? {
-        return self.orderedItemListTable.getItem(collectionId: collectionId, itemId: itemId)
+        return self.orderedItemListTable.getItem(collectionId: self.resolvedOrderedItemListId(collectionId), itemId: itemId)
     }
     
     fileprivate func updateOrderedItemListItem(collectionId: Int32, itemId: MemoryBuffer, item: CodableEntry) {
+        let collectionId = self.resolvedOrderedItemListId(collectionId)
         self.orderedItemListTable.updateItem(collectionId: collectionId, itemId: itemId, item: item, operations: &self.currentOrderedItemListOperations)
     }
     
@@ -4680,6 +4686,34 @@ final class PostboxImpl {
     fileprivate func setPeerPinnedThreads(peerId: PeerId, threadIds: [Int64]) {
         self.currentUpdatedPinnedThreads.insert(peerId)
         self.messageHistoryThreadPinnedTable.set(peerId: peerId, threadIds: threadIds)
+    }
+    
+    /// The list `collectionId` reads and writes go to while a redirection is held.
+    func resolvedOrderedItemListId(_ collectionId: Int32) -> Int32 {
+        return self.currentOrderedItemListRedirections[collectionId]?.to ?? collectionId
+    }
+    
+    func addOrderedItemListRedirection(from: Int32, to: Int32) -> Disposable {
+        let disposable = MetaDisposable()
+        let token = self.makeHistoryRestrictionToken()
+        let queue = self.queue
+        let _ = (self.transaction { _ -> Void in
+            self.currentOrderedItemListRedirections[from] = (token, to)
+        }).start(completed: { [weak self] in
+            disposable.set(ActionDisposable {
+                queue.async {
+                    guard let self else {
+                        return
+                    }
+                    let _ = (self.transaction { _ -> Void in
+                        if self.currentOrderedItemListRedirections[from]?.token == token {
+                            self.currentOrderedItemListRedirections.removeValue(forKey: from)
+                        }
+                    }).start()
+                }
+            })
+        })
+        return disposable
     }
     
     func historyRestriction(peerId: PeerId) -> MessageHistoryRestriction? {
@@ -5407,6 +5441,19 @@ public class Postbox {
 
         self.impl.with { impl in
             disposable.set(impl.addHistoryRestriction(peerId: peerId, restriction: restriction))
+        }
+
+        return disposable
+    }
+    
+    /// Every read and write of ordered item list `from` goes to list `to` until the returned
+    /// disposable is disposed (Dual PIN: the restricted mode's own recent searches).
+    /// Views created while it is held follow it; the original list is untouched.
+    public func addOrderedItemListRedirection(from: Int32, to: Int32) -> Disposable {
+        let disposable = MetaDisposable()
+
+        self.impl.with { impl in
+            disposable.set(impl.addOrderedItemListRedirection(from: from, to: to))
         }
 
         return disposable
