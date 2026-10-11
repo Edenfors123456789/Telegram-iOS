@@ -348,6 +348,40 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         XCTAssertEqual(callIds(), [otherCall], "an old call with a hidden chat is not listed")
     }
 
+    func testTheCallsListLeavesOutEveryCallOfAChatHiddenFromLists() {
+        // After an explicit open the restriction admits a new incoming call (it is shown in the
+        // transcript), but the chat never gets a row in a list, the calls tab included.
+        self.seed()
+        let calls = GlobalMessageTags(rawValue: 1 << 0)
+        let other = MessageHistoryTableFixture.peerId(931)
+        let otherCall = MessageId(peerId: other, namespace: self.namespace, id: 1)
+        self.fixture.transaction { transaction in
+            transaction.updatePeersInternal([FixturePeer(id: other, title: "Other")], update: { _, updated in updated })
+            transaction.replaceGlobalMessageTagsHole(globalTags: calls, index: MessageIndex.absoluteUpperBound(), with: nil, messages: [
+                MessageHistoryTableFixture.storeMessage(id: self.id(16), timestamp: 1600, flags: [.Incoming], globalTags: calls),
+                MessageHistoryTableFixture.storeMessage(id: otherCall, timestamp: 900, flags: [.Incoming], globalTags: calls),
+            ])
+        }
+        let hidden = self.fixture.postbox.addHiddenChatIds(peerIds: [self.chat])
+        defer { hidden.dispose() }
+        self.restrict()
+        let admitted = self.fixture.transaction { transaction -> Bool in
+            guard let restriction = transaction.historyRestriction(peerId: self.chat), let call = transaction.getMessage(self.id(16)) else {
+                return false
+            }
+            return restriction.includes(id: call.id, timestamp: call.timestamp, flags: call.flags, globallyUniqueId: call.globallyUniqueId)
+        }
+        XCTAssertEqual(admitted, true, "control: the transcript shows the call")
+        let recorder = self.fixture.observe(.globalMessageTags(globalTag: calls, position: MessageIndex.absoluteUpperBound(), count: 20, groupingPredicate: nil), as: GlobalMessageTagsView.self)
+        let ids = (recorder.waitForValues(count: 1).last?.entries ?? []).compactMap { entry -> MessageId? in
+            if case let .message(message) = entry {
+                return message.id
+            }
+            return nil
+        }
+        XCTAssertEqual(ids, [otherCall])
+    }
+
     func testReleasingTheRestrictionShowsTheFullHistory() {
         self.seed()
         let restriction = self.restrict()

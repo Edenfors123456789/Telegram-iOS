@@ -487,9 +487,17 @@ final class MutableGlobalMessageTagsView: MutablePostboxView {
             }
         }
         self.excludedMessageIds.removeAll()
-        if postbox.hasHistoryRestrictions {
+        if postbox.hasHistoryRestrictions || postbox.hasHiddenChatIds {
+            // A global-tag view is a list across chats (the calls tab): a chat hidden from lists
+            // has no entry there at all, even for messages its transcript restriction admits.
+            let hiddenChatIds = postbox.hiddenChatIds
             for entry in self.entries {
-                if case let .message(message) = entry, let restriction = postbox.historyRestriction(peerId: message.id.peerId), !restriction.includes(message) {
+                guard case let .message(message) = entry else {
+                    continue
+                }
+                if hiddenChatIds.contains(message.id.peerId) {
+                    self.excludedMessageIds.insert(message.id)
+                } else if let restriction = postbox.historyRestriction(peerId: message.id.peerId), !restriction.includes(message) {
                     self.excludedMessageIds.insert(message.id)
                 }
             }
