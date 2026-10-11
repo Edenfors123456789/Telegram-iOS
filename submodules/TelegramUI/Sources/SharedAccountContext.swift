@@ -2171,6 +2171,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         // Any root discard (lock, switch, configuration change) ends a flow the
         // old root started; completion clears the flow before its own transition.
         if self.modeEnrollment != nil {
+            Logger.shared.log("AccessMode", "mode enrollment: ended by root discard")
             self.modeEnrollment = nil
             self.startProvisionalCleanupRecovery()
         }
@@ -2245,13 +2246,18 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         |> deliverOnMainQueue).start(next: { [weak self] result in
             guard let self else { return }
             self.modeEnrollmentStarting = false
-            guard case let .created(recordID, permit) = result else { return }
+            guard case let .created(recordID, permit) = result else {
+                Logger.shared.log("AccessMode", "mode enrollment: creation refused")
+                return
+            }
             guard self.modeRootPresentation === driver, driver.hasActiveRoot, self.pendingModeRoot == origin else {
+                Logger.shared.log("AccessMode", "mode enrollment: root changed during creation")
                 // The root changed meanwhile: never show this record's sign-in.
                 self.startProvisionalCleanupRecovery()
                 return
             }
             self.modeEnrollment = ModeEnrollment(origin: origin, recordID: recordID, permit: permit)
+            Logger.shared.log("AccessMode", "mode enrollment: started")
             self.publishAccountContexts()
         }))
     }
@@ -2271,6 +2277,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private func reconcileModeEnrollment(_ raw: (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?)) {
         guard let enrollment = self.modeEnrollment, !self.modeEnrollmentCompleting else { return }
         if let promoted = raw.accounts.first(where: { $0.0 == enrollment.recordID && $0.0 == $0.1.account.id })?.1 {
+            Logger.shared.log("AccessMode", "mode enrollment: promoted record loaded")
             self.completeModeEnrollment(enrollment, context: promoted)
             return
         }
@@ -2286,6 +2293,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
         |> deliverOnMainQueue).start(next: { [weak self] stillPresent in
             guard let self, !stillPresent, let current = self.modeEnrollment, current === enrollment else { return }
+            Logger.shared.log("AccessMode", "mode enrollment: cancelled (auth gone without a record)")
             self.modeEnrollment = nil
             self.publishAccountContexts()
             self.startProvisionalCleanupRecovery()
@@ -2304,6 +2312,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             // Cleared first: the transition below discards this flow's root.
             self.modeEnrollment = nil
             guard account.peerId.namespace == Namespaces.Peer.CloudUser, case let .user(user) = peer else {
+                Logger.shared.log("AccessMode", "mode enrollment: no confirmed user")
                 try? driver.lock()
                 self.startProvisionalCleanupRecovery()
                 return
@@ -2313,6 +2322,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 userID: account.peerId.id._internalGetInt64Value())
             do {
                 let (decision, preparation) = try driver.completeEnrollment(enrollment.permit, confirmedAccount: confirmed, isPremium: user.isPremium)
+                let decisionName: String
+                switch decision {
+                case .new: decisionName = "new"
+                case .existingVisible: decisionName = "existingVisible"
+                case .unavailable: decisionName = "unavailable"
+                }
+                Logger.shared.log("AccessMode", "mode enrollment: completed, decision \(decisionName)")
                 if case .new = decision {} else {
                     // Another mode's account, or one already here: remove only the new session.
                     self.startProvisionalCleanupRecovery()
@@ -2320,7 +2336,10 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 self.switchingData = (nil, nil, nil)
                 try self.prepareModeAccountRoot(preparation)
             } catch {
-                if driver.hasActiveRoot { try? driver.lock() }
+                Logger.shared.log("AccessMode", "mode enrollment: completion failed \(error)")
+                // Also after a failed transition: a covered, root-less state must
+                // fall back to the PIN screen, never stay a bare cover.
+                try? driver.lock()
                 self.startProvisionalCleanupRecovery()
             }
         })

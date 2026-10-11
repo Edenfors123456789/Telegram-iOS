@@ -48,8 +48,16 @@ extension AccountEnrollmentBridge {
         let stopServiceTasks: () -> Void
         switch account {
         case .upgrading: return .single(.unavailable)
-        case let .authorized(value): stopServiceTasks = { value.shouldBeServiceTaskMaster.set(.single(.never)) }
-        case let .unauthorized(value): stopServiceTasks = { value.shouldBeServiceTaskMaster.set(.single(.never)) }
+        // Stop the account's own work but keep its connection: without it the
+        // logout is never sent (stock cleanup keeps it through `.always`).
+        case let .authorized(value): stopServiceTasks = {
+            value.shouldBeServiceTaskMaster.set(.single(.never))
+            value.network.shouldKeepConnection.set(.single(true))
+        }
+        case let .unauthorized(value): stopServiceTasks = {
+            value.shouldBeServiceTaskMaster.set(.single(.never))
+            value.network.shouldKeepConnection.set(.single(true))
+        }
         }
         let transport = ScopedEnrollmentLogoutTransport(source: source, accountManager: accountManager,
             coordinator: coordinator, cleanup: cleanup, engineKind: { source.network.engineKind }, stopServiceTasks: stopServiceTasks,
