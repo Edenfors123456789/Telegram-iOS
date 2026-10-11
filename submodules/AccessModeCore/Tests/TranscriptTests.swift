@@ -25,6 +25,30 @@ final class TranscriptFixture {
 }
 
 final class TranscriptTests: XCTestCase {
+    func testSnapshotNamesWhatTheHistoryRestrictionNeeds() throws {
+        let f = try TranscriptFixture()
+        let b = try f.b()
+        let handle = try f.store.begin(chat: f.chat, boundary: f.boundary(), now: f.now, grant: b)
+        let first = f.message(-10, namespace: 1), second = f.message(-11, namespace: 1)
+        guard case let .recorded(receipt) = try f.store.recordOutgoing(randomID: 777, localID: first, timestamp: f.now, now: f.now, handle: handle, grant: b) else {
+            return XCTFail("recorded")
+        }
+        _ = try f.store.recordOutgoing(randomID: 778, localID: second, timestamp: f.now, now: f.now, handle: handle, grant: b)
+        try f.store.acknowledge(receipt, serverID: f.message(120))
+        try f.store.applyDeletion(second)
+        try f.store.applyDeletion(f.message(130))
+        let snapshot = try f.store.snapshot(handle: handle, now: f.now + 10, grant: b)
+        XCTAssertEqual(snapshot.boundary, f.boundary())
+        XCTAssertEqual(snapshot.windowStart, f.now + 10 - RestrictedTranscriptStore.window)
+        XCTAssertEqual(snapshot.sendRandomIDs, [777], "a deleted send is not shown again")
+        XCTAssertEqual(snapshot.sendServerIDs, [f.message(120)])
+        XCTAssertEqual(snapshot.deleted, [f.message(130), second], "deletions include a deleted send")
+        XCTAssertEqual(try f.store.snapshot(handle: handle, now: f.now - 1_000, grant: b).windowStart, f.now + 10 - RestrictedTranscriptStore.window,
+            "a clock moved back does not reopen the window")
+        let a = try f.vault.store.authenticate(pin: "123456")
+        XCTAssertThrowsError(try f.store.snapshot(handle: handle, now: f.now, grant: a))
+    }
+
     func testBoundaryExcludesOldHistoryAndAOrUnknownOutgoing() throws {
         let f = try TranscriptFixture()
         let b = try f.b()

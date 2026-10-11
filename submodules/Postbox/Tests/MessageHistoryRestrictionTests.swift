@@ -155,6 +155,21 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         self.eventually(recorder) { self.ids($0) == [12, 13, 17] }
     }
 
+    func testABSendStaysAdmittedWhenTheServerReplacesItWithoutItsRandomId() {
+        // An album's confirmation stores the server messages without the random id.
+        self.seed()
+        self.restrict()
+        let recorder = self.observe()
+        XCTAssertEqual(self.ids(recorder.waitForValues(count: 1).last), [12, 13])
+        self.fixture.transaction { transaction in
+            transaction.updateMessage(self.id(13)) { _ in .update(self.message(20, timestamp: 1450, incoming: false)) }
+            transaction.updateMessage(self.id(14)) { _ in .update(self.message(21, timestamp: 1550, incoming: false)) }
+        }
+        self.eventually(recorder) { self.ids($0) == [12, 20] }
+        let admitted = self.fixture.transaction { $0.historyRestriction(peerId: self.chat)?.outgoingMessageIds }
+        XCTAssertEqual(admitted ?? nil, [self.id(20)], "A's replaced message is not adopted")
+    }
+
     func testATaggedViewIsRestrictedToo() {
         self.seed()
         self.restrict()

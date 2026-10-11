@@ -22,12 +22,16 @@ public struct MessageHistoryRestriction: Equatable {
     public var windowStart: Int32
     /// Random ids of the sends made from the restricted mode.
     public var outgoingGloballyUniqueIds: Set<Int64>
+    /// Sends from the restricted mode that are known by id: confirmed messages stored without
+    /// their random id (an album's confirmation does that), adopted when they replace one.
+    public var outgoingMessageIds: Set<MessageId>
     public var deletedMessageIds: Set<MessageId>
 
-    public init(boundary: Boundary?, windowStart: Int32, outgoingGloballyUniqueIds: Set<Int64>, deletedMessageIds: Set<MessageId>) {
+    public init(boundary: Boundary?, windowStart: Int32, outgoingGloballyUniqueIds: Set<Int64>, outgoingMessageIds: Set<MessageId> = [], deletedMessageIds: Set<MessageId>) {
         self.boundary = boundary
         self.windowStart = windowStart
         self.outgoingGloballyUniqueIds = outgoingGloballyUniqueIds
+        self.outgoingMessageIds = outgoingMessageIds
         self.deletedMessageIds = deletedMessageIds
     }
 
@@ -41,6 +45,9 @@ public struct MessageHistoryRestriction: Equatable {
             }
             return id.id > maximumId && timestamp >= boundary.serverTimestamp
         } else {
+            if self.outgoingMessageIds.contains(id) {
+                return true
+            }
             guard let globallyUniqueId else {
                 return false
             }
@@ -73,6 +80,24 @@ extension PostboxImpl {
             return nil
         }
         return self.strippingRestrictedAssociatedMessages(message)
+    }
+
+    /// A send the restriction admits stays admitted when it is replaced, even if the replacement
+    /// (a confirmed album message) no longer carries the random id it was admitted by.
+    func adoptRestrictedSendReplacement(previous: IntermediateMessage, updated: StoreMessage) {
+        guard self.hasHistoryRestrictions, !previous.flags.contains(.Incoming),
+              case let .Id(updatedId) = updated.id, updatedId.peerId == previous.id.peerId,
+              let restriction = self.historyRestriction(peerId: previous.id.peerId), restriction.includes(previous) else {
+            return
+        }
+        if let globallyUniqueId = updated.globallyUniqueId, restriction.outgoingGloballyUniqueIds.contains(globallyUniqueId) {
+            return
+        }
+        self.updateHistoryRestriction(peerId: previous.id.peerId) { restriction in
+            var restriction = restriction
+            restriction.outgoingMessageIds.insert(updatedId)
+            return restriction
+        }
     }
 
     func strippingRestrictedAssociatedMessages(_ message: Message) -> Message {

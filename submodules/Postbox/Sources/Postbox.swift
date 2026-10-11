@@ -3108,6 +3108,7 @@ final class PostboxImpl {
         if let index = self.messageHistoryIndexTable.getIndex(id), let intermediateMessage = self.messageHistoryTable.getMessage(index) {
             let message = self.renderIntermediateMessage(intermediateMessage)
             if case let .update(updatedMessage) = update(message) {
+                self.adoptRestrictedSendReplacement(previous: intermediateMessage, updated: updatedMessage)
                 self.messageHistoryTable.updateMessage(id, message: updatedMessage, operationsByPeerId: &self.currentOperationsByPeerId, updatedMedia: &self.currentUpdatedMedia, unsentMessageOperations: &self.currentUnsentOperations, updatedPeerReadStateOperations: &self.currentUpdatedSynchronizeReadStateOperations, globalTagsOperations: &self.currentGlobalTagsOperations, pendingActionsOperations: &self.currentPendingMessageActionsOperations, updatedMessageActionsSummaries: &self.currentUpdatedMessageActionsSummaries, updatedMessageTagSummaries: &self.currentUpdatedMessageTagSummaries, invalidateMessageTagSummaries: &self.currentInvalidateMessageTagSummaries, localTagsOperations: &self.currentLocalTagsOperations, timestampBasedMessageAttributesOperations: &self.currentTimestampBasedMessageAttributesOperations)
                 
                 if let bag = self.installedStoreOrUpdateMessageActionsByPeerId[id.peerId] {
@@ -4693,7 +4694,7 @@ final class PostboxImpl {
         self.currentUpdatedHistoryRestrictionPeerIds.insert(peerId)
     }
     
-    fileprivate func updateHistoryRestriction(peerId: PeerId, _ f: (MessageHistoryRestriction) -> MessageHistoryRestriction) {
+    func updateHistoryRestriction(peerId: PeerId, _ f: (MessageHistoryRestriction) -> MessageHistoryRestriction) {
         guard let current = self.currentHistoryRestrictions[peerId] else {
             return
         }

@@ -43,6 +43,17 @@ public struct BSendReceipt: Codable, Equatable {
     let generation: UUID
 }
 
+/// What a history view needs to show this transcript (the Postbox history restriction):
+/// the boundary, the window start (from the persisted high-water time, so a clock moved back
+/// cannot reopen it), the B sends by random id and by acknowledged server id, and deletions.
+public struct RestrictedTranscriptSnapshot: Equatable {
+    public let boundary: TranscriptBoundary?
+    public let windowStart: Int64
+    public let sendRandomIDs: Set<Int64>
+    public let sendServerIDs: Set<TranscriptMessageID>
+    public let deleted: Set<TranscriptMessageID>
+}
+
 public enum BSendRegistration: Equatable {
     case recorded(BSendReceipt)
     case alreadyRecorded(BSendReceipt)
@@ -213,6 +224,22 @@ public final class RestrictedTranscriptStore {
                 }
             }
             return result
+        }
+    }
+
+    public func snapshot(handle: RestrictedTranscriptHandle, now: Int64,
+                         grant: AuthenticatedModeGrant) throws -> RestrictedTranscriptSnapshot {
+        try mutate(handle, grant: grant) { state, index in
+            try state.projections[index].advance(to: now)
+            let projection = state.projections[index]
+            let sends = state.sends.filter {
+                $0.receipt.chat == handle.chat && $0.receipt.generation == handle.generation && !$0.deleted
+            }
+            return RestrictedTranscriptSnapshot(boundary: projection.boundary,
+                windowStart: projection.highWaterTime - Self.window,
+                sendRandomIDs: Set(sends.map(\.receipt.randomID)),
+                sendServerIDs: Set(sends.compactMap(\.serverID)),
+                deleted: projection.deleted)
         }
     }
 
