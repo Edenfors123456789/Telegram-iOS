@@ -246,6 +246,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     var nativeWindow: (SnapshotProtectedWindow & WindowHost)?
     private let nativeSnapshotCover = NativeSnapshotCover()
     private var nativeSnapshotTicket: NativeSnapshotTicket?
+    /// The cover a brief loss of activity installed (paste prompt, Control Center,
+    /// notification shade). Returning without entering the background removes it
+    /// with no PIN, as stock Telegram does; entering the background locks.
+    private var inactiveCoverTicket: NativeSnapshotTicket?
+    private var enteredBackgroundSinceResign = false
     var mainWindow: Window1!
     private var statusBarHost: ApplicationStatusBarHost?
     private var dataImportSplash: LegacyDataImportSplash?
@@ -2492,6 +2497,20 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
     }
 
+    /// Returning from a brief overlay: remove its cover if it is still the
+    /// current one and the mode root (when configured) is still active.
+    /// Anything else falls back to the locked reveal path.
+    private func revealAfterBriefInactivity(_ ticket: NativeSnapshotTicket) {
+        assert(Thread.isMainThread)
+        guard self.isActiveValue, self.nativeSnapshotCover.isCurrent(ticket),
+              self.modeInitialSetupRun == nil, self.modeRecoveryRun == nil, !self.modePINManagementFeedback.isPending,
+              self.modeCoordinator == nil || self.modeRootPresentation?.hasActiveRoot == true else {
+            self.revealNativeLockScreenIfSafe()
+            return
+        }
+        if self.nativeSnapshotCover.hide(ticket) { self.nativeSnapshotTicket = nil }
+    }
+
     private func revealNativeLockScreenIfSafe() {
         assert(Thread.isMainThread)
         guard self.isActiveValue, let ticket = self.nativeSnapshotTicket,
@@ -2513,13 +2532,17 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
 
     func handleWillResignActive() {
         // SceneDelegate calls synchronously before iOS captures the app snapshot.
+        // Cover only: a system overlay must not end editing (a paste would be
+        // lost) or lock; handleDidEnterBackground does both.
+        self.enteredBackgroundSinceResign = false
+        self.inactiveCoverTicket = nil
         if let window = self.nativeWindow {
-            self.nativeSnapshotTicket = self.nativeSnapshotCover.show(on: window)
-            window.endEditing(true)
+            let ticket = self.nativeSnapshotCover.show(on: window)
+            self.nativeSnapshotTicket = ticket
+            self.inactiveCoverTicket = ticket
         }
         _ = self.modeInitialSetupCancellation?.swap(true)
         self.modePINManagementFeedback.invalidate()
-        self.appLockContextImpl?.lock()
         self.isActiveValue = false
         self.isActivePromise.set(false)
         self.clearNotificationsManager?.commitNow()
@@ -2547,6 +2570,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func handleDidEnterBackground() {
+        // Leaving the foreground ends editing and locks before anything else.
+        self.enteredBackgroundSinceResign = true
+        self.inactiveCoverTicket = nil
+        self.nativeWindow?.endEditing(true)
+        self.appLockContextImpl?.lock()
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
@@ -2626,7 +2654,14 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func handleDidBecomeActive() {
-        if self.nativeSnapshotTicket != nil {
+        // Only the cover of a brief overlay, untouched since (no mode transition
+        // rotated it, no background visit), may leave without a new PIN.
+        let briefCover = self.inactiveCoverTicket.flatMap { ticket -> NativeSnapshotTicket? in
+            guard !self.enteredBackgroundSinceResign, self.nativeSnapshotCover.isCurrent(ticket) else { return nil }
+            return ticket
+        }
+        self.inactiveCoverTicket = nil
+        if self.nativeSnapshotTicket != nil && briefCover == nil {
             // Establish the internal lock barrier before the native cover can leave.
             self.appLockContextImpl?.lock()
         }
@@ -2638,7 +2673,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.retryModeRuntimeIfNeeded()
         self.resumeModeJournalIfNeeded()
 
-        Queue.mainQueue().async { [weak self] in self?.revealNativeLockScreenIfSafe() }
+        if let briefCover {
+            Queue.mainQueue().async { [weak self] in self?.revealAfterBriefInactivity(briefCover) }
+        } else {
+            Queue.mainQueue().async { [weak self] in self?.revealNativeLockScreenIfSafe() }
+        }
 
         self.resetBadge()
         
