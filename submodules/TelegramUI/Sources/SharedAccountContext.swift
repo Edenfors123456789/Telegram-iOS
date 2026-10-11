@@ -2274,6 +2274,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
     }
 
+    /// The full lock (the one leaving the foreground takes): the stock PIN screen
+    /// appears. Locking only the root driver leaves a bare cover with no input.
+    private func lockAfterModeEnrollmentFailure(_ driver: AccessRootPresentation) {
+        self.appLockContext.lock()
+        try? driver.lock()
+    }
+
     private func reconcileModeEnrollment(_ raw: (primary: AccountContext?, accounts: [(AccountRecordId, AccountContext, Int32)], currentAuth: UnauthorizedAccount?)) {
         guard let enrollment = self.modeEnrollment, !self.modeEnrollmentCompleting else { return }
         if let promoted = raw.accounts.first(where: { $0.0 == enrollment.recordID && $0.0 == $0.1.account.id })?.1 {
@@ -2303,25 +2310,33 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private func completeModeEnrollment(_ enrollment: ModeEnrollment, context: AccountContext) {
         self.modeEnrollmentCompleting = true
         let account = context.account
-        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: account.peerId))
+        // The user is the account's own peer id, written by sign-in. Its peer
+        // record can still be on its way right after promotion; it is needed only
+        // for Premium, so wait briefly and otherwise assume none (the stricter limit).
+        let _ = (context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: account.peerId))
+        |> filter { $0 != nil }
         |> take(1)
+        |> timeout(10.0, queue: Queue.mainQueue(), alternate: .single(nil))
         |> deliverOnMainQueue).start(next: { [weak self] peer in
             guard let self else { return }
             self.modeEnrollmentCompleting = false
             guard let current = self.modeEnrollment, current === enrollment, let driver = self.modeRootPresentation else { return }
             // Cleared first: the transition below discards this flow's root.
             self.modeEnrollment = nil
-            guard account.peerId.namespace == Namespaces.Peer.CloudUser, case let .user(user) = peer else {
-                Logger.shared.log("AccessMode", "mode enrollment: no confirmed user")
-                try? driver.lock()
+            guard account.peerId.namespace == Namespaces.Peer.CloudUser else {
+                Logger.shared.log("AccessMode", "mode enrollment: account peer is not a user")
+                self.lockAfterModeEnrollmentFailure(driver)
                 self.startProvisionalCleanupRecovery()
                 return
             }
+            var isPremium = false
+            if case let .user(user)? = peer { isPremium = user.isPremium }
+            if peer == nil { Logger.shared.log("AccessMode", "mode enrollment: user peer not loaded yet, completing without Premium") }
             let confirmed = AccountIdentity(installation: enrollment.origin.account.installation,
                 environment: account.testingEnvironment ? .test : .production, recordID: enrollment.recordID.int64,
                 userID: account.peerId.id._internalGetInt64Value())
             do {
-                let (decision, preparation) = try driver.completeEnrollment(enrollment.permit, confirmedAccount: confirmed, isPremium: user.isPremium)
+                let (decision, preparation) = try driver.completeEnrollment(enrollment.permit, confirmedAccount: confirmed, isPremium: isPremium)
                 let decisionName: String
                 switch decision {
                 case .new: decisionName = "new"
@@ -2337,9 +2352,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 try self.prepareModeAccountRoot(preparation)
             } catch {
                 Logger.shared.log("AccessMode", "mode enrollment: completion failed \(error)")
-                // Also after a failed transition: a covered, root-less state must
-                // fall back to the PIN screen, never stay a bare cover.
-                try? driver.lock()
+                self.lockAfterModeEnrollmentFailure(driver)
                 self.startProvisionalCleanupRecovery()
             }
         })
