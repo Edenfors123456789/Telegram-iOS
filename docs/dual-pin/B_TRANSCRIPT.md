@@ -73,6 +73,21 @@ the same facts. Changing the mirror bumps a version that makes the views re-filt
 - A send confirmed while the app was not running (the message arrives through `getDifference`
   instead of the send's own result) must still be matched to its recorded random id.
 
+## Native wiring decisions (5c)
+
+- The B root registers a history restriction for **every** undiscoverable chat when it is
+  published, next to the chat-list exclusion. Before an explicit open there is no Core
+  projection, so the restriction has no boundary and no sends: any route that reaches the chat
+  without going through the explicit open shows an empty conversation (fail-safe default).
+- The explicit open (contact, profile, search result, link) fetches the boundary
+  (`engine.messages.restrictedTranscriptBoundary`), calls `openRestrictedTranscript` on the
+  active root and replaces the chat's restriction with the snapshot (one transaction), then
+  pushes the ordinary chat controller.
+- Sends: Core must record the random id durably before the message is enqueued. The local
+  message id is assigned by Postbox only when the message is stored, so Core's
+  `recordOutgoing(localID:)` precondition does not fit the engine; the record should be keyed by
+  random id, with the local id optional. To settle before wiring the composer.
+
 ## Steps
 
 5a. Postbox restriction primitive and tests (this design's "Where Postbox applies it" 1–4).

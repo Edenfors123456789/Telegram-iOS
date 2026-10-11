@@ -109,6 +109,38 @@ public final class AccessRootPresentation {
         }
     }
 
+    /// Explicit open of a hidden chat in B: begins its transcript (or resumes the current
+    /// generation's, keeping its first boundary) and returns what history views may show.
+    /// A nil `boundary` (offline) admits no incoming message until a later open supplies one.
+    public func openRestrictedTranscript(_ chat: ChatIdentity, store: RestrictedTranscriptStore, boundary: TranscriptBoundary?,
+                                         now: Int64) throws -> (RestrictedTranscriptHandle, RestrictedTranscriptSnapshot) {
+        precondition(Thread.isMainThread)
+        guard let active else { throw AccessError.staleAuthorization }
+        return try coordinator.withRestrictedTranscriptGrant(active.ticket) { grant in
+            let handle = try store.begin(chat: chat, boundary: boundary, now: now, grant: grant)
+            return (handle, try store.snapshot(handle: handle, now: now, grant: grant))
+        }
+    }
+
+    public func restrictedTranscriptSnapshot(_ handle: RestrictedTranscriptHandle, store: RestrictedTranscriptStore,
+                                             now: Int64) throws -> RestrictedTranscriptSnapshot {
+        precondition(Thread.isMainThread)
+        guard let active else { throw AccessError.staleAuthorization }
+        return try coordinator.withRestrictedTranscriptGrant(active.ticket) { grant in
+            try store.snapshot(handle: handle, now: now, grant: grant)
+        }
+    }
+
+    /// Record a B send before it is enqueued; enqueue only on `.recorded`.
+    public func recordRestrictedSend(_ handle: RestrictedTranscriptHandle, store: RestrictedTranscriptStore, randomID: Int64,
+                                     localID: TranscriptMessageID, timestamp: Int64, now: Int64) throws -> BSendRegistration {
+        precondition(Thread.isMainThread)
+        guard let active else { throw AccessError.staleAuthorization }
+        return try coordinator.withRestrictedTranscriptGrant(active.ticket) { grant in
+            try store.recordOutgoing(randomID: randomID, localID: localID, timestamp: timestamp, now: now, handle: handle, grant: grant)
+        }
+    }
+
     public func withActivePolicy<T>(_ body: (AccessModePolicy) throws -> T) throws -> T {
         precondition(Thread.isMainThread)
         guard let active else { throw AccessError.staleAuthorization }

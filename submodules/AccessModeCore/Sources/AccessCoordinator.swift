@@ -181,6 +181,15 @@ public final class AccessModeCoordinator {
         return try body(AccessModePolicy(mode: verified.mode, configuration: config))
     }
 
+    /// Restricted-transcript work of the ready B root, main application only. The grant must
+    /// not outlive `body`; the transcript store revalidates it on every call anyway.
+    func withRestrictedTranscriptGrant<T>(_ ticket: AccessTicket, _ body: (AuthenticatedModeGrant) throws -> T) throws -> T {
+        mutex.lock(); defer { mutex.unlock() }
+        let verified = try requireLocal(ticket, requireReady: true)
+        guard process == .mainApplication, verified.mode == .b else { throw AccessError.authenticationRequired }
+        return try body(verified)
+    }
+
     /// Attach the cover before calling; replacement authority remains preparing until
     /// the UI has discarded old results and prepared the new revision/root.
     public func setHidden(_ chat: ChatIdentity, hidden: Bool, ticket: AccessTicket) throws -> AccessTicket {

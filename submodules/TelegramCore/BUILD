@@ -114,3 +114,23 @@ ios_unit_test(
     deps = [":HiddenChatSearchResultsTestsLib"],
     visibility = ["//visibility:public"],
 )
+
+# Dual PIN: the restricted transcript's boundary from messages.getPeerDialogs.
+swift_library(
+    name = "RestrictedTranscriptBoundaryTestsLib",
+    testonly = True,
+    srcs = ["Tests/RestrictedTranscriptBoundaryTests.swift"],
+    deps = [
+        ":TelegramCore",
+        "//submodules/Postbox:Postbox",
+        "//submodules/TelegramApi:TelegramApi",
+    ],
+)
+
+ios_unit_test(
+    name = "RestrictedTranscriptBoundaryTests",
+    minimum_os_version = "15.0",
+    runner = ":TelegramCoreTestRunner",
+    deps = [":RestrictedTranscriptBoundaryTestsLib"],
+    visibility = ["//visibility:public"],
+)
