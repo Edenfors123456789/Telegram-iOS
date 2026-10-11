@@ -292,6 +292,33 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         XCTAssertEqual(restricted?.associatedMessages.count, 0)
     }
 
+    func testTheCallsListLeavesOutARestrictedChatsExcludedCalls() {
+        // The calls tab reads every chat's call messages through one global-tag view.
+        self.seed()
+        let calls = GlobalMessageTags(rawValue: 1 << 0)
+        let other = MessageHistoryTableFixture.peerId(931)
+        let otherCall = MessageId(peerId: other, namespace: self.namespace, id: 1)
+        self.fixture.transaction { transaction in
+            transaction.updatePeersInternal([FixturePeer(id: other, title: "Other")], update: { _, updated in updated })
+            transaction.replaceGlobalMessageTagsHole(globalTags: calls, index: MessageIndex.absoluteUpperBound(), with: nil, messages: [
+                MessageHistoryTableFixture.storeMessage(id: self.id(8), timestamp: 800, flags: [.Incoming], globalTags: calls),
+                MessageHistoryTableFixture.storeMessage(id: otherCall, timestamp: 900, flags: [.Incoming], globalTags: calls),
+            ])
+        }
+        func callIds() -> [MessageId] {
+            let recorder = self.fixture.observe(.globalMessageTags(globalTag: calls, position: MessageIndex.absoluteUpperBound(), count: 20, groupingPredicate: nil), as: GlobalMessageTagsView.self)
+            return (recorder.waitForValues(count: 1).last?.entries ?? []).compactMap { entry -> MessageId? in
+                if case let .message(message) = entry {
+                    return message.id
+                }
+                return nil
+            }
+        }
+        XCTAssertEqual(Set(callIds()), [self.id(8), otherCall], "control")
+        self.restrict()
+        XCTAssertEqual(callIds(), [otherCall], "an old call with a hidden chat is not listed")
+    }
+
     func testReleasingTheRestrictionShowsTheFullHistory() {
         self.seed()
         let restriction = self.restrict()

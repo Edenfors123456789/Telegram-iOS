@@ -87,6 +87,8 @@ final class MutableGlobalMessageTagsView: MutablePostboxView {
     private let groupingPredicate: ((Message, Message) -> Bool)?
     
     fileprivate var entries: [InternalGlobalMessageTagsEntry]
+    /// Messages of restricted chats their restrictions exclude: kept for paging, not reported.
+    fileprivate var excludedMessageIds = Set<MessageId>()
     fileprivate var earlier: MessageIndex?
     fileprivate var later: MessageIndex?
     
@@ -114,6 +116,11 @@ final class MutableGlobalMessageTagsView: MutablePostboxView {
     
     func replay(postbox: PostboxImpl, transaction: PostboxTransaction) -> Bool {
         var hasChanges = false
+        if !transaction.updatedHistoryRestrictionPeerIds.isEmpty {
+            let previous = self.excludedMessageIds
+            self.render(postbox: postbox)
+            hasChanges = self.excludedMessageIds != previous
+        }
         
         let context = MutableGlobalMessageTagsViewReplayContext()
         
@@ -479,6 +486,14 @@ final class MutableGlobalMessageTagsView: MutablePostboxView {
                 self.entries[i] = .message(postbox.renderIntermediateMessage(message))
             }
         }
+        self.excludedMessageIds.removeAll()
+        if postbox.hasHistoryRestrictions {
+            for entry in self.entries {
+                if case let .message(message) = entry, let restriction = postbox.historyRestriction(peerId: message.id.peerId), !restriction.includes(message) {
+                    self.excludedMessageIds.insert(message.id)
+                }
+            }
+        }
     }
     
     func immutableView() -> PostboxView {
@@ -496,7 +511,9 @@ public final class GlobalMessageTagsView: PostboxView {
         for entry in view.entries {
             switch entry {
                 case let .message(message):
-                    entries.append(.message(message))
+                    if !view.excludedMessageIds.contains(message.id) {
+                        entries.append(.message(message))
+                    }
                 case let .hole(index):
                     entries.append(.hole(index))
                 case .intermediateMessage:
