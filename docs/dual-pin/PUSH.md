@@ -17,6 +17,9 @@ records how it is built and what is left.
 - **No permission prompts.** `registerForNotifications` reports "not authorized" without asking
   the system (every system prompt goes through it), and the start-up permission flow in
   `ApplicationContext` never offers the notifications step or sets its warning notice.
+- **No "notifications are off" prompts.** Settings ▸ Notifications and Sounds drops its
+  permission item and button, and `shouldDisplayNotificationsPermissionWarning` is always false
+  (the Settings tab's "!" and the settings row warning).
 - **Tokens stay inside.** A token is never written to the log and never reaches
   `initConnection`'s app data (`regularDeviceToken` stays nil), which upstream filled from the
   APNs token on every connection.
@@ -60,8 +63,6 @@ app's own log lines never contain a token.
 
 ## Not yet
 
-- Settings ▸ Notifications and Sounds still shows its "notifications are off" item, whose action
-  can no longer enable anything; the profile's notification warning reads the same notice.
 - Notification Service / Content extensions still built into the app (plan: not included in the
   final v1 configuration).
 - Call notifications without CallKit (`SharedNotificationManager` local call notification) and

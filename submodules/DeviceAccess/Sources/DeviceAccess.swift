@@ -52,13 +52,11 @@ public enum DeviceAccessSubject {
 
 private let cachedMediaLibraryAccessStatus = Atomic<Bool?>(value: nil)
 
+/// Dual PIN v1: push is disabled (plan §7, docs/dual-pin/PUSH.md), so there is never a
+/// notification permission to warn about. (Upstream warned unless the status was `.allowed`,
+/// or `.unreachable`/`.notDetermined` with the warning suppressed.)
 public func shouldDisplayNotificationsPermissionWarning(status: AccessType, suppressed: Bool) -> Bool {
-    switch (status, suppressed) {
-        case (.allowed, _), (.unreachable, true), (.notDetermined, true):
-            return false
-        default:
-            return true
-    }
+    return false
 }
 
 // A single shared probe used only to read authorization state. The iOS 14 replacements for
