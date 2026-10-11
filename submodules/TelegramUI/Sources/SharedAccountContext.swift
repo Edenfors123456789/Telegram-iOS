@@ -473,6 +473,11 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     private var callController: CallController?
     
     private var currentCall: PresentationCurrentCall?
+    /// Dual PIN: the mode whose root was shown when the current call began, and the mode of the
+    /// last published root. A call never moves to the other mode (user decision 2026-10-12): it
+    /// survives a lock and a return to the same mode, and ends when the other mode is unlocked.
+    private var currentCallMode: AccessMode?
+    private var modeRootMode: AccessMode?
     
     public let hasOngoingCall = ValuePromise<Bool>(false)
     private var awaitingCallConnectionDisposable: Disposable?
@@ -1445,6 +1450,11 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         }
         
         self.currentCall = call
+        if call == nil {
+            self.currentCallMode = nil
+        } else if self.currentCallMode == nil {
+            self.currentCallMode = self.modeAccountAccessRequired ? self.modeRootMode : nil
+        }
         
         let beginDisplayingCallStatusBar = Promise<Void>()
         
@@ -2077,8 +2087,28 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         try self.publishModeRoot(preparation)
     }
 
+    /// Ends the current call when it began under the other mode; its screens close before the
+    /// new root is published, so nothing of it is shown there.
+    private func endCallFromOtherMode(_ mode: AccessMode) {
+        guard let call = self.currentCall, let callMode = self.currentCallMode, callMode != mode else {
+            return
+        }
+        Logger.shared.log("AccessMode", "ending a call of the other mode")
+        switch call {
+        case let .call(value):
+            let _ = value.hangUp().start()
+        case let .group(.group(value)):
+            let _ = value.leave(terminateIfPossible: false).start()
+        case let .group(.conferenceSource(value)):
+            let _ = value.hangUp().start()
+        }
+        self.updateCurrentCall(call: nil)
+    }
+
     private func publishModeRoot(_ preparation: AccessRootPreparation) throws {
         guard let driver = self.modeRootPresentation else { throw AccessError.authenticationRequired }
+        self.endCallFromOtherMode(preparation.mode)
+        self.modeRootMode = preparation.mode
         let raw = self.activeAccountsValue?.accounts ?? []
         let (context, undiscoverable): (AccountContext?, [EnginePeer.Id: ChatIdentity]) = try driver.withPreparingPolicy(preparation) { policy in
             let projection = try policy.projectAccounts(raw.map { self.observedAccount($0.1.account) })
