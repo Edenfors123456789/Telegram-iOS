@@ -225,6 +225,26 @@ public final class AccessRootPresentation {
         return try setHidden(action.chat, hidden: !action.isHidden)
     }
 
+    /// Membership changes the configuration, so this is a root transition:
+    /// covered and detached before the write, then a fresh root to prepare.
+    /// Every decision yields one; only `.new` selects the confirmed account.
+    /// `.existingVisible`/`.unavailable` leave the provisional owner for cleanup.
+    public func completeEnrollment(_ permit: AccountEnrollmentPermit, confirmedAccount: AccountIdentity,
+                                   isPremium: Bool) throws -> (decision: AccountEnrollmentDecision, preparation: AccessRootPreparation) {
+        precondition(Thread.isMainThread)
+        guard active != nil else { throw AccessError.staleAuthorization }
+        // No membership write from a backgrounded app: lock before it.
+        guard isApplicationActive() else { try lock(); throw AccessError.invalidTransition }
+        var decision = AccountEnrollmentDecision.unavailable
+        let preparation = try transition { old in
+            let (result, ticket) = try coordinator.completeEnrollment(permit, confirmedAccount: confirmedAccount,
+                isPremium: isPremium, ticket: old.ticket)
+            decision = result
+            return ticket
+        } preflight: { _ in }
+        return (decision, preparation)
+    }
+
     public func preparePINChange() throws -> AccessPINChangeRequest {
         precondition(Thread.isMainThread)
         guard let old = active else { throw AccessError.staleAuthorization }

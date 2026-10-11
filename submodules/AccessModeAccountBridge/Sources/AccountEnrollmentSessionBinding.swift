@@ -140,6 +140,31 @@ extension AccountEnrollmentBridge {
     static func bindOriginalSessionKey(source: AccountEnrollmentSessionKeySource,
         accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
         permit: AccountEnrollmentPermit, ticket: AccessTicket) -> Signal<Bool, NoError> {
+        bindOriginalSessionKey(source: source, accountManager: accountManager, coordinator: coordinator,
+            permit: permit, ticket: ticket, markAttempt: false)
+    }
+
+    /// Call, and wait for true, before every request that may authorize the
+    /// provisional key (sign-in, sign-up, password, passkey, QR, payment, any
+    /// reply that can carry `sentCodeSuccess`). Binds the account's current main
+    /// key and marks it as attempted. False means: do not send.
+    public static func prepareAuthorizationAttempt(account: UnauthorizedAccount,
+        accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
+        permit: AccountEnrollmentPermit, ticket: AccessTicket) -> Signal<Bool, NoError> {
+        prepareAuthorizationAttempt(source: NativeEnrollmentSessionKeySource(account: account), accountManager: accountManager,
+            coordinator: coordinator, permit: permit, ticket: ticket)
+    }
+
+    static func prepareAuthorizationAttempt(source: AccountEnrollmentSessionKeySource,
+        accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
+        permit: AccountEnrollmentPermit, ticket: AccessTicket) -> Signal<Bool, NoError> {
+        bindOriginalSessionKey(source: source, accountManager: accountManager, coordinator: coordinator,
+            permit: permit, ticket: ticket, markAttempt: true)
+    }
+
+    private static func bindOriginalSessionKey(source: AccountEnrollmentSessionKeySource,
+        accountManager: AccountManager<TelegramAccountManagerTypes>, coordinator: AccessModeCoordinator,
+        permit: AccountEnrollmentPermit, ticket: AccessTicket, markAttempt: Bool) -> Signal<Bool, NoError> {
         let consumed = Atomic<Bool>(value: false)
         return Signal { subscriber in
             guard !consumed.swap(true) else {
@@ -180,6 +205,15 @@ extension AccountEnrollmentBridge {
                         try? coordinator.lock()
                         return false
                     }
+                    if markAttempt {
+                        // Only a key confirmed current is marked: a stale mark is a
+                        // key the logout transport can no longer reach.
+                        try coordinator.markEnrollmentAuthorizationAttempt(permit, sessionKey: fingerprint, ticket: ticket)
+                        guard source.persistentFingerprint() == fingerprint else {
+                            try? coordinator.lock()
+                            return false
+                        }
+                    }
                     return true
                 } catch { return false }
             }.start(next: { result in
@@ -191,3 +225,4 @@ extension AccountEnrollmentBridge {
         }
     }
 }
+

@@ -300,6 +300,34 @@ AccountManager finished initializing (Postbox disk I/O assertion, XCTest
 relaunch); the fixture now waits, and the complete red ran 86 cases with six
 expected failures. Evidence: `build-input/dual-pin-stage0/startup-recovery-20261010/`.
 
+## Enrollment screen building blocks
+
+`AccountEnrollmentBridge.prepareAuthorizationAttempt(account:…)` is the one
+call the enrollment screen makes, and must see return true, before every request
+that may authorize the provisional key. In one AccountManager transaction it
+binds the account's current main key (the same checks as
+`bindOriginalSessionKey`: exact attached auth, no promoted record, environment,
+native root) and marks it; the key is re-read after binding and again after
+marking, and a change locks and refuses, so a mark always names the key the
+next request will use. With no key yet, nothing is written. Repeating it before
+each request is idempotent. `sendCode` is not prepared (it may move the account
+to another datacenter and, with logout tokens disabled, cannot authorize), so a
+key used only before a migration is never marked.
+
+`AccessRootPresentation.completeEnrollment(permit, confirmedAccount, isPremium)`
+completes membership as a root transition: it refuses without an active root,
+locks before any write when the app is inactive, then covers and detaches,
+writes the decision and returns a fresh preparation for every decision. `.new`
+selects the added account; `.unavailable` (for example B signing in to A's
+hidden account) keeps the mode's own account and leaves the provisional owner
+for cleanup, so only the new session is removed. An enrollment begun under an
+older root (any configuration change since) fails and locks.
+
+Verification: bridge red 91 cases / 8 expected failures, Core red 4 cases /
+6 failures (stub), then 181 Mac / 183 hosted Core, 91 bridge and 29 legacy
+cases and the full app build passed with the source digest unchanged across
+the run. Evidence: `build-input/dual-pin-stage0/{attempt-preparation,root-enrollment}-20261011/`.
+
 ## Native integration still pending
 
 `AccessModeAccountBridge` now implements the metadata-creation boundary in an
