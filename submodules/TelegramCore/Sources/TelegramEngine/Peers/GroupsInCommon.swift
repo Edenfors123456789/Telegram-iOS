@@ -174,22 +174,32 @@ private final class GroupsInCommonContextImpl {
 public final class GroupsInCommonContext {
     private let queue: Queue = .mainQueue()
     private let impl: QueueLocalObject<GroupsInCommonContextImpl>
+    private let postbox: Postbox
     
     public var state: Signal<GroupsInCommonState, NoError> {
-        return Signal { subscriber in
+        let impl = self.impl
+        // Dual PIN: groups kept out of the lists are not named here either.
+        return withChatsHiddenFromLists(self.postbox, Signal { subscriber in
             let disposable = MetaDisposable()
             
-            self.impl.with { impl in
+            impl.with { impl in
                 disposable.set(impl.state.start(next: { value in
                     subscriber.putNext(value)
                 }))
             }
             
             return disposable
-        }
+        }, { state, hidden in
+            var state = state
+            let count = state.peers.count
+            state.peers = state.peers.filter { !hidden.contains($0.peerId) }
+            state.count = state.count.map { max(0, $0 - (count - state.peers.count)) }
+            return state
+        })
     }
     
     public init(account: Account, peerId: PeerId, hintGroupInCommon: PeerId? = nil) {
+        self.postbox = account.postbox
         let queue = self.queue
         self.impl = QueueLocalObject(queue: queue, generate: {
             return GroupsInCommonContextImpl(queue: queue, account: account, peerId: peerId, hintGroupInCommon: hintGroupInCommon)

@@ -861,7 +861,8 @@ public extension TelegramEngine {
         }
 
         public func notificationExceptionsList() -> Signal<NotificationExceptionsList, NoError> {
-            return combineLatest(
+            // Dual PIN: chats kept out of the lists are not named here either.
+            return withChatsHiddenFromLists(self.account.postbox, combineLatest(
                 _internal_notificationExceptionsList(accountPeerId: self.account.peerId, postbox: self.account.postbox, network: self.account.network, isStories: false),
                 _internal_notificationExceptionsList(accountPeerId: self.account.peerId, postbox: self.account.postbox, network: self.account.network, isStories: true)
             )
@@ -870,7 +871,9 @@ public extension TelegramEngine {
                     peers: lhs.peers.merging(rhs.peers, uniquingKeysWith: { a, _ in a }),
                     settings: lhs.settings.merging(rhs.settings, uniquingKeysWith: { a, _ in a })
                 )
-            }
+            }, { list, hidden in
+                return NotificationExceptionsList(peers: list.peers.filter { !hidden.contains($0.key) }, settings: list.settings.filter { !hidden.contains($0.key) })
+            })
         }
 
         public func fetchAndUpdateCachedPeerData(peerId: PeerId, sourceMessageId: EngineMessage.Id? = nil) -> Signal<Bool, NoError> {
