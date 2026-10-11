@@ -1390,6 +1390,7 @@ private final class ChatListFilterPresetController: ItemListController {
 }
 
 public func chatListFilterPresetController(context: AccountContext, currentPreset initialPreset: ChatListFilter?, updated: @escaping ([ChatListFilter]) -> Void) -> ViewController {
+    let hiddenPeerIds = context.sharedContext.chatListHiddenPeerIds(context: context)
     let initialName: ChatFolderTitle
     if let initialPreset {
         initialName = initialPreset.title
@@ -1405,8 +1406,10 @@ public func chatListFilterPresetController(context: AccountContext, currentPrese
         excludeMuted: initialPreset?.data?.excludeMuted ?? false,
         excludeRead: initialPreset?.data?.excludeRead ?? false,
         excludeArchived: initialPreset?.data?.excludeArchived ?? false,
-        additionallyIncludePeers: initialPreset?.data?.includePeers.peers ?? [],
-        additionallyExcludePeers: initialPreset?.data?.excludePeers ?? [],
+        // Dual PIN: the restricted mode never sees its hidden members; saving keeps them
+        // (TelegramCore restores them in every folder edit).
+        additionallyIncludePeers: (initialPreset?.data?.includePeers.peers ?? []).filter { !hiddenPeerIds.contains($0) },
+        additionallyExcludePeers: (initialPreset?.data?.excludePeers ?? []).filter { !hiddenPeerIds.contains($0) },
         expandedSections: []
     )
     initialState.colorUpdated = true

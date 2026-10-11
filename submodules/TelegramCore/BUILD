@@ -98,6 +98,7 @@ swift_library(
     testonly = True,
     srcs = [
         "Tests/HiddenChatSearchResultsTests.swift",
+        "Tests/HiddenChatFoldersTests.swift",
         "Tests/SparseMessageFixtures.swift",
     ],
     deps = [

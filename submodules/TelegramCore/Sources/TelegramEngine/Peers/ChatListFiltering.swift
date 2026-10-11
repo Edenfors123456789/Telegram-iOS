@@ -1114,13 +1114,51 @@ func _internal_generateNewChatListFilterId(filters: [ChatListFilter]) -> Int32 {
     }
 }
 
+/// Dual PIN: an edit made while chats are hidden from lists cannot drop the hidden chats a
+/// folder already had (the editor never showed them). Their includes (and pin positions) and
+/// exclusions are restored per folder; creating or deleting a folder is left as edited.
+func preservingChatsHiddenFromLists(previous: [ChatListFilter], updated: [ChatListFilter], hidden: Set<PeerId>) -> [ChatListFilter] {
+    if hidden.isEmpty {
+        return updated
+    }
+    var previousData: [Int32: ChatListFilterData] = [:]
+    for case let .filter(id, _, _, data) in previous {
+        previousData[id] = data
+    }
+    return updated.map { filter -> ChatListFilter in
+        guard case let .filter(id, title, emoticon, data) = filter, let old = previousData[id] else {
+            return filter
+        }
+        var peers = data.includePeers.peers
+        var pinnedPeers = data.includePeers.pinnedPeers
+        for peerId in old.includePeers.peers where hidden.contains(peerId) && !peers.contains(peerId) {
+            peers.append(peerId)
+        }
+        for (index, peerId) in old.includePeers.pinnedPeers.enumerated() where hidden.contains(peerId) && !pinnedPeers.contains(peerId) {
+            pinnedPeers.insert(peerId, at: min(index, pinnedPeers.count))
+        }
+        var excludePeers = data.excludePeers
+        for peerId in old.excludePeers where hidden.contains(peerId) && !excludePeers.contains(peerId) {
+            excludePeers.append(peerId)
+        }
+        if peers == data.includePeers.peers && pinnedPeers == data.includePeers.pinnedPeers && excludePeers == data.excludePeers {
+            return filter
+        }
+        var updatedData = data
+        updatedData.includePeers = ChatListFilterIncludePeers(peers: peers, pinnedPeers: pinnedPeers)
+        updatedData.excludePeers = excludePeers
+        return .filter(id: id, title: title, emoticon: emoticon, data: updatedData)
+    }
+}
+
 func _internal_updateChatListFiltersInteractively(postbox: Postbox, _ f: @escaping ([ChatListFilter]) -> [ChatListFilter]) -> Signal<[ChatListFilter], NoError> {
     return postbox.transaction { transaction -> [ChatListFilter] in
         var updated: [ChatListFilter] = []
         var hasUpdates = false
+        let hidden = transaction.chatIdsHiddenFromLists
         transaction.updatePreferencesEntry(key: PreferencesKeys.chatListFilters, { entry in
             var state = entry?.get(ChatListFiltersState.self) ?? ChatListFiltersState.default
-            let updatedFilters = f(state.filters)
+            let updatedFilters = preservingChatsHiddenFromLists(previous: state.filters, updated: f(state.filters), hidden: hidden)
             if updatedFilters != state.filters {
                 state.filters = updatedFilters
                 hasUpdates = true
@@ -1177,9 +1215,10 @@ func _internal_updateChatListFiltersDisplayTagsInteractively(postbox: Postbox, d
 
 func _internal_updateChatListFiltersInteractively(transaction: Transaction, _ f: ([ChatListFilter]) -> [ChatListFilter]) {
     var hasUpdates = false
+    let hidden = transaction.chatIdsHiddenFromLists
     transaction.updatePreferencesEntry(key: PreferencesKeys.chatListFilters, { entry in
         var state = entry?.get(ChatListFiltersState.self) ?? ChatListFiltersState.default
-        let updatedFilters = f(state.filters)
+        let updatedFilters = preservingChatsHiddenFromLists(previous: state.filters, updated: f(state.filters), hidden: hidden)
         if updatedFilters != state.filters {
             state.filters = updatedFilters
             hasUpdates = true

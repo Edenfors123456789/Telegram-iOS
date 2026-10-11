@@ -283,6 +283,14 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         return (try? driver.makeHiddenChatManagementRequest()) != nil
     }
 
+    public func chatListHiddenPeerIds(context: AccountContext) -> Set<EnginePeer.Id> {
+        assert(Queue.mainQueue().isCurrent())
+        guard let origin = self.pendingModeRoot, origin.mode == .b, origin.account.recordID == context.account.id.int64 else {
+            return []
+        }
+        return Set(self.modeUndiscoverableChats.keys)
+    }
+
     public func hiddenChatMarkerPeerIds(context: AccountContext) -> Set<EnginePeer.Id> {
         // Chat-list layouts run off-main. Capture once on the native root's
         // main-thread construction; never dispatch a layout back into authority.

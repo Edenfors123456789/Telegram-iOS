@@ -1430,6 +1430,9 @@ public protocol SharedAccountContext: AnyObject {
     func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError>
     /// Immutable presentation snapshot for a fresh A root; carries no action authority.
     func hiddenChatMarkerPeerIds(context: AccountContext) -> Set<EnginePeer.Id>
+    /// Dual PIN restricted mode: the chats of `context`'s account kept out of every list
+    /// (main thread). Screens that list chats from their own data leave these out.
+    func chatListHiddenPeerIds(context: AccountContext) -> Set<EnginePeer.Id>
     /// Dual PIN: non-nil only while `account` is the provisional account of an
     /// add-account flow in a mode. The authorization screen must call it, and see
     /// true, before every request that may authorize the account's current key;
@@ -1784,6 +1787,7 @@ public extension SharedAccountContext {
     func canManageHiddenChats(context: AccountContext) -> Bool { false }
     func makeHiddenChatManagementController(context: AccountContext) -> Signal<ViewController?, NoError> { .single(nil) }
     func hiddenChatMarkerPeerIds(context: AccountContext) -> Set<EnginePeer.Id> { [] }
+    func chatListHiddenPeerIds(context: AccountContext) -> Set<EnginePeer.Id> { [] }
     func modeEnrollmentAuthorizationGate(account: UnauthorizedAccount) -> ((UnauthorizedAccount) -> Signal<Bool, NoError>)? { nil }
 }
 
