@@ -1148,6 +1148,10 @@ public extension TelegramEngine {
 
         public func getOpaqueChatInterfaceState(peerId: PeerId, threadId: Int64?) -> Signal<OpaqueChatInterfaceState?, NoError> {
             return self.account.postbox.transaction { transaction -> OpaqueChatInterfaceState? in
+                // Dual PIN: a restricted chat's screen neither reads the shared draft...
+                if transaction.historyRestriction(peerId: peerId) != nil {
+                    return nil
+                }
                 let storedState: StoredPeerChatInterfaceState?
                 if let threadId = threadId {
                     storedState = transaction.getPeerChatThreadInterfaceState(peerId, threadId: threadId)
@@ -1172,6 +1176,10 @@ public extension TelegramEngine {
 
         public func setOpaqueChatInterfaceState(peerId: PeerId, threadId: Int64?, state: OpaqueChatInterfaceState) -> Signal<Never, NoError> {
             return self.account.postbox.transaction { transaction -> Void in
+                // ...nor overwrites it (or uploads it as the cloud draft).
+                if transaction.historyRestriction(peerId: peerId) != nil {
+                    return
+                }
                 guard let data = try? AdaptedPostboxEncoder().encode(InternalChatInterfaceState(
                     synchronizeableInputState: state.synchronizeableInputState,
                     historyScrollMessageIndex: state.historyScrollMessageIndex,

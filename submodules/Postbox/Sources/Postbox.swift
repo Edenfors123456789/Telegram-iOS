@@ -3778,6 +3778,11 @@ final class PostboxImpl {
     }
     
     private func initialMessageHistoryData(peerId: PeerId, threadId: Int64?) -> InitialMessageHistoryData {
+        if self.historyRestriction(peerId: peerId) != nil {
+            // The stored interface state (draft, reply, scroll position) belongs to the
+            // unrestricted chat; a restricted chat's screen starts without it.
+            return InitialMessageHistoryData(peer: self.peerTable.get(peerId), storedInterfaceState: nil, associatedMessages: [:])
+        }
         if let threadId = threadId {
             let chatInterfaceState = self.peerChatThreadInterfaceStateTable.get(PeerChatThreadId(peerId: peerId, threadId: threadId))
             var associatedMessages: [MessageId: Message] = [:]

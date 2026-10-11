@@ -275,6 +275,23 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         }
     }
 
+    func testTheChatScreenGetsNoStoredDraftOfARestrictedChat() {
+        // The stored interface state is A's draft (and its reply), shared by both modes.
+        self.seed()
+        self.fixture.transaction { transaction in
+            transaction.setPeerChatInterfaceState(self.chat, state: StoredPeerChatInterfaceState(overrideChatTimestamp: nil, historyScrollMessageIndex: nil, associatedMessageIds: [self.id(10)], data: Data([1, 2, 3])))
+        }
+        func initialData() -> InitialMessageHistoryData? {
+            let recorder = self.fixture.observe(self.fixture.postbox.aroundMessageHistoryViewForLocation(.peer(peerId: self.chat, threadId: nil), anchor: .upperBound, ignoreMessagesInTimestampRange: nil, ignoreMessageIds: [], count: 20, fixedCombinedReadStates: nil, topTaggedMessageIdNamespaces: [], tag: nil, appendMessagesFromTheSameGroup: false, namespaces: .all, orderStatistics: []) |> map { $0.2 })
+            return recorder.waitForValues(count: 1).first ?? nil
+        }
+        XCTAssertNotNil(initialData()?.storedInterfaceState, "control: an ordinary chat restores it")
+        self.restrict()
+        let restricted = initialData()
+        XCTAssertNil(restricted?.storedInterfaceState)
+        XCTAssertEqual(restricted?.associatedMessages.count, 0)
+    }
+
     func testReleasingTheRestrictionShowsTheFullHistory() {
         self.seed()
         let restriction = self.restrict()
