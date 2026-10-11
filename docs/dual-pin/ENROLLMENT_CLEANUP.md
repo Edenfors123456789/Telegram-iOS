@@ -201,6 +201,27 @@ hosted Core and 77 bridge cases passed (one bridge case completes a flow whose
 two keys were never marked). Evidence:
 `build-input/dual-pin-stage0/authorization-attempts-20261010/`.
 
+### Server behaviour for a never-authorized key (measured 2026-10-11)
+
+Probe against Telegram **test** DC2 (`149.154.167.40:443`, dc 10002, test RSA
+key), using the vendored engine's `mtproto_core` and this build's api id: a
+fresh permanent key (no PFS, no account) sent `help.getNearestDc` and then
+`auth.logOut`. Three runs, three fresh keys: every `auth.logOut` returned
+`auth.loggedOut` (`0xc3a2835f`, flags 0), never `401 AUTH_KEY_UNREGISTERED`.
+So the server confirms a logout for a key that was never authorized; a
+receipt for such a key can be obtained, and a success never proves that a
+session existed, only that none remains on that key. Not measured: the same
+over a PFS temporary key bound to a never-authorized permanent key, and
+whether a main-DC logout revokes authorizations imported on other
+datacenters (needs a signed-in test account). The probe binary was a
+temporary Bazel target, removed afterwards; source, digest and logs are in
+`build-input/dual-pin-stage0/logout-probe-20261011/`.
+
+Consequence for marking: marking a key too early costs a logout of that key,
+which the server confirms, as long as the native transport can still reach it.
+It cannot for a key that is no longer the account's main key (the old
+datacenter after `PHONE_MIGRATE`), so marks must not precede a migration.
+
 ## Local completion
 
 `AccountEnrollmentBridge.completeProvisionalCleanup` runs after the scoped
