@@ -1865,14 +1865,13 @@ ios_application(
     strings = [
         ":AppStringResources",
     ],
+    # Dual PIN v1 (plan §7, docs/dual-pin/EXTERNAL.md): the notification service/content,
+    # Siri intents and widget extensions are not part of the app. Share and Broadcast stay
+    # pending their own access integration.
     extensions = select({
         ":disableExtensionsSetting": [],
         "//conditions:default": [
             ":ShareExtension",
-            ":NotificationContentExtension",
-            ":NotificationServiceExtension" + notificationServiceExtensionVersion,
-            ":IntentsExtension",
-            ":WidgetExtension",
             ":BroadcastUploadExtension",
         ],
     }),

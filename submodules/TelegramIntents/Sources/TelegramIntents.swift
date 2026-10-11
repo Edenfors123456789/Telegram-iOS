@@ -54,7 +54,12 @@ public enum SendMessageIntentSubject: CaseIterable {
     }
 }
 
+/// Dual PIN v1: Siri donations are disabled (plan §7, docs/dual-pin/EXTERNAL.md); this donates nothing.
 public func donateSendMessageIntent(account: Account, sharedContext: SharedAccountContext, intentContext: SendMessageIntentContext, peerIds: [EnginePeer.Id]) {
+    let donationsDisabledByDualPIN = true
+    if donationsDisabledByDualPIN {
+        return
+    }
     if #available(iOSApplicationExtension 13.2, iOS 13.2, *) {
         let _ = (sharedContext.accountManager.transaction { transaction -> Bool in
             if case .none = transaction.getAccessChallengeData() {

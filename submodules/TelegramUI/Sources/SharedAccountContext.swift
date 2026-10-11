@@ -551,8 +551,6 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     
     private let displayUpgradeProgress: (Float?) -> Void
     
-    private var spotlightDataContext: SpotlightDataContext?
-    private var widgetDataContext: WidgetDataContext?
     
     private weak var appDelegate: AppDelegate?
     
@@ -1333,29 +1331,9 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.updateNotificationTokensRegistration()
         
         if applicationBindings.isMainApp {
-            self.widgetDataContext = WidgetDataContext(basePath: self.basePath, inForeground: self.applicationBindings.applicationInForeground, activeAccounts: self.activeAccountContexts
-            |> map { _, accounts, _ in
-                return accounts.map { $0.1.account }
-            }, presentationData: self.presentationData, appLockContext: self.appLockContext as! AppLockContextImpl)
-            
-            let enableSpotlight = accountManager.sharedData(keys: Set([ApplicationSpecificSharedDataKeys.intentsSettings]))
-            |> map { sharedData -> Bool in
-                let intentsSettings: IntentsSettings = sharedData.entries[ApplicationSpecificSharedDataKeys.intentsSettings]?.get(IntentsSettings.self) ?? .defaultSettings
-                return intentsSettings.contacts
-            }
-            |> distinctUntilChanged
-            self.spotlightDataContext = SpotlightDataContext(appBasePath: applicationBindings.containerPath, accountManager: accountManager, accounts: combineLatest(enableSpotlight, self.activeAccountContexts
-            |> map { _, accounts, _ in
-                return accounts.map { _, account, _ in
-                    return account.account
-                }
-            }) |> map { enableSpotlight, accounts in
-                if enableSpotlight {
-                    return accounts
-                } else {
-                    return []
-                }
-            })
+            // Dual PIN v1 (docs/dual-pin/EXTERNAL.md): no widget data, Spotlight index or Siri
+            // donations; remove what an earlier build published.
+            removeExternalSurfaceData(rootPath: self.basePath, accountManagerBasePath: accountManager.basePath)
         }
         
         /*if #available(iOS 13.0, *) {
