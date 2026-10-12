@@ -303,6 +303,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     private let quickActionsDisposable = MetaDisposable()
     
     private var pushRegistry: PKPushRegistry?
+    /// Dual PIN: when the last verified PIN started preparing its mode's root (unlock timing log).
+    private var modeUnlockStartTime: CFAbsoluteTime?
     
     private let notificationAuthorizationDisposable = MetaDisposable()
     
@@ -1466,6 +1468,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                                 self.appLockContextImpl?.lock()
                                 return
                             }
+                            if let start = self.modeUnlockStartTime {
+                                self.modeUnlockStartTime = nil
+                                Logger.shared.log("AccessMode", "unlock: root ready \(Int((CFAbsoluteTimeGetCurrent() - start) * 1000)) ms after the PIN was verified")
+                            }
                         }
                         var authorizeNotifications = true
                         if #available(iOS 10.0, *) {
@@ -2144,8 +2150,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             sharedContext.modePasscodeSettingsFactory = { [weak self] context in
                 self?.makeModePasscodeSettings(context: context)
             }
-            let authentication = ModePINEntryAuthentication(coordinator: coordinator, prepareRoot: { [weak sharedContext, weak appLock] ticket in
+            let authentication = ModePINEntryAuthentication(coordinator: coordinator, prepareRoot: { [weak self, weak sharedContext, weak appLock] ticket in
                 guard let sharedContext, let appLock else { throw AccessError.unavailable }
+                self?.modeUnlockStartTime = CFAbsoluteTimeGetCurrent()
                 let preparation = try driver.prepare(ticket)
                 appLock.refreshModePresentation()
                 try sharedContext.prepareModeAccountRoot(preparation)

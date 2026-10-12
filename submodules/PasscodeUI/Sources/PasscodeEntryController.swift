@@ -287,7 +287,13 @@ public final class PasscodeEntryController: ViewController {
             self.controllerNode.updateCredentialError(true)
             return
         }
+        let verificationStart = CFAbsoluteTimeGetCurrent()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            defer {
+                if modeAuthentication != nil {
+                    Logger.shared.log("AccessMode", "unlock: PIN checked in \(Int((CFAbsoluteTimeGetCurrent() - verificationStart) * 1000)) ms")
+                }
+            }
             let result: Result<PINVerification, Error> = Result {
                 if let modeAuthentication, let modeRequest {
                     return .mode(try modeAuthentication.coordinator.beginUnlock(pin: code, request: modeRequest))
