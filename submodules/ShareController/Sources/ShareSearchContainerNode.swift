@@ -314,9 +314,19 @@ final class ShareSearchContainerNode: ASDisplayNode, ShareContentContainerNode {
                 let foundPeers = Promise<FoundPeers>()
                 foundPeers.set(combineLatest(
                     foundLocalPeers,
-                    foundRemotePeers
+                    foundRemotePeers,
+                    context.stateManager.postbox.chatIdsHiddenFromLists()
                 )
-               |> map { foundLocalPeers, foundRemotePeers -> FoundPeers in
+               |> map { foundLocalPeers, foundRemotePeers, hidden -> FoundPeers in
+                    // Dual PIN: a picker is a list, and a chat hidden from this mode's lists is
+                    // never offered as a recipient, not even as a public match (a send there would
+                    // not belong to the mode's transcript).
+                    if !hidden.isEmpty {
+                        return FoundPeers(
+                            foundLocalPeers: foundLocalPeers.filter { !hidden.contains($0.peerId) },
+                            foundRemotePeers: (foundRemotePeers.0.filter { !hidden.contains($0.peer.id) }, foundRemotePeers.1.filter { !hidden.contains($0.peer.id) }, foundRemotePeers.2)
+                        )
+                    }
                     return FoundPeers(
                         foundLocalPeers: foundLocalPeers,
                         foundRemotePeers: foundRemotePeers
