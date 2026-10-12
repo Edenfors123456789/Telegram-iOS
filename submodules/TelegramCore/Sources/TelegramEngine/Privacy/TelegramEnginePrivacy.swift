@@ -26,7 +26,7 @@ public extension TelegramEngine {
         }
 
         public func requestAccountPrivacySettings() -> Signal<AccountPrivacySettings, NoError> {
-            return _internal_requestAccountPrivacySettings(account: self.account)
+            return withChatsHiddenFromLists(self.account.postbox, _internal_requestAccountPrivacySettings(account: self.account), excludingChatsHiddenFromLists)
         }
         
         public func updateGlobalPrivacySettings() -> Signal<Never, NoError> {

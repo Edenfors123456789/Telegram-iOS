@@ -41,6 +41,28 @@ final class HiddenChatSearchResultsTests: XCTestCase {
         XCTAssertEqual(filtered.deviceFreeSpace, 500)
     }
 
+    private func privacyPeer(_ id: PeerId) -> SelectivePrivacyPeer {
+        return SelectivePrivacyPeer(peer: self.user(id), participantCount: nil)
+    }
+
+    func testPrivacyExceptionsLeaveOutHiddenChats() {
+        let settings = SelectivePrivacySettings.enableContacts(enableFor: [self.hiddenUser: self.privacyPeer(self.hiddenUser), self.visibleUser: self.privacyPeer(self.visibleUser)], disableFor: [self.hiddenUser: self.privacyPeer(self.hiddenUser)], enableForPremium: false, enableForBots: false)
+        let filtered = excludingChatsHiddenFromLists(settings, [self.hiddenUser])
+        XCTAssertEqual(Set(filtered.enabledPeers.keys), [self.visibleUser])
+        XCTAssertEqual(Set(filtered.disabledPeers.keys), [])
+    }
+
+    func testSavingFromTheRestrictedModeKeepsTheHiddenExceptions() {
+        // The server's rule has the hidden user under "never"; B saved the visible list only.
+        let previous = SelectivePrivacySettings.enableEveryone(disableFor: [self.hiddenUser: self.privacyPeer(self.hiddenUser), self.visibleUser: self.privacyPeer(self.visibleUser)])
+        let updated = SelectivePrivacySettings.enableEveryone(disableFor: [:])
+        let merged = preservingChatsHiddenFromLists(updated, previous: previous, hidden: [self.hiddenUser])
+        XCTAssertEqual(Set(merged.disabledPeers.keys), [self.hiddenUser], "the hidden exception stays; the removed visible one stays removed")
+        // A side the new rule does not have cannot hold it, as when A switches the rule itself.
+        let toNobody = preservingChatsHiddenFromLists(.disableEveryone(enableFor: [:], enableForCloseFriends: false, enableForPremium: false, enableForBots: false), previous: previous, hidden: [self.hiddenUser])
+        XCTAssertEqual(Set(toNobody.enabledPeers.keys), [])
+    }
+
     func testANothingHiddenResultIsUnchanged() {
         let message = SparseFixtures.message(self.visibleUser, 2, timestamp: 20)
         let result = SearchMessagesResult(messages: [message], readStates: [:], threadInfo: [:], totalCount: 1, completed: true)

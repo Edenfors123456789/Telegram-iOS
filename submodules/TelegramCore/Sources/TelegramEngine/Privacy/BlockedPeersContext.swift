@@ -36,7 +36,14 @@ public final class BlockedPeersContext {
     }
     private let _statePromise = Promise<BlockedPeersContextState>()
     public var state: Signal<BlockedPeersContextState, NoError> {
-        return self._statePromise.get()
+        // Dual PIN: a chat hidden from this mode's lists is not named in a blocked list either.
+        return withChatsHiddenFromLists(self.account.postbox, self._statePromise.get(), { state, hidden in
+            var state = state
+            let count = state.peers.count
+            state.peers = state.peers.filter { !hidden.contains($0.peerId) }
+            state.totalCount = state.totalCount.map { max(0, $0 - (count - state.peers.count)) }
+            return state
+        })
     }
     
     private let disposable = MetaDisposable()

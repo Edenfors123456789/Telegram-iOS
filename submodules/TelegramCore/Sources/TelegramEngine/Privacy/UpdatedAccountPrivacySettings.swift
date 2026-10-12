@@ -540,6 +540,38 @@ private func apiUserAndGroupIds(peerIds: [PeerId: SelectivePrivacyPeer]) -> (use
 }
 
 func _internal_updateSelectiveAccountPrivacySettings(account: Account, type: UpdateSelectiveAccountPrivacySettingsType, settings: SelectivePrivacySettings) -> Signal<Void, NoError> {
+    // Dual PIN: the restricted mode edits a list without its hidden chats; read the server's rule
+    // first and keep the hidden chats it names.
+    return account.postbox.chatIdsHiddenFromLists()
+    |> take(1)
+    |> mapToSignal { hidden -> Signal<Void, NoError> in
+        if hidden.isEmpty {
+            return _internal_applySelectiveAccountPrivacySettings(account: account, type: type, settings: settings)
+        }
+        return account.network.request(Api.functions.account.getPrivacy(key: type.apiKey))
+        |> retryRequest
+        |> mapToSignal { result -> Signal<Void, NoError> in
+            return account.postbox.transaction { transaction -> SelectivePrivacySettings in
+                switch result {
+                case let .privacyRules(privacyRulesData):
+                    var peers: [PeerId: SelectivePrivacyPeer] = [:]
+                    for peerId in hidden {
+                        if let peer = transaction.getPeer(peerId) {
+                            peers[peerId] = SelectivePrivacyPeer(peer: peer, participantCount: nil)
+                        }
+                    }
+                    let previous = SelectivePrivacySettings(apiRules: privacyRulesData.rules, peers: peers)
+                    return preservingChatsHiddenFromLists(settings, previous: previous, hidden: hidden)
+                }
+            }
+            |> mapToSignal { merged -> Signal<Void, NoError> in
+                return _internal_applySelectiveAccountPrivacySettings(account: account, type: type, settings: merged)
+            }
+        }
+    }
+}
+
+private func _internal_applySelectiveAccountPrivacySettings(account: Account, type: UpdateSelectiveAccountPrivacySettingsType, settings: SelectivePrivacySettings) -> Signal<Void, NoError> {
     return account.postbox.transaction { transaction -> Signal<Void, NoError> in
         var rules: [Api.InputPrivacyRule] = []
         switch settings {

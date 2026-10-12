@@ -21,8 +21,12 @@ while integrating, or something only a physical iPhone can confirm.
 - Counters derived on the server and shown as numbers only may still include hidden chats where
   the client has no per-chat breakdown (none found on screen; listed for the device review).
 - Folder chat limit: the server's per-folder limit counts hidden chats kept in a folder.
-- Privacy exception lists, blocked users and similar account-level settings can name a hidden
-  user; they are shared by both modes.
+- Privacy exception lists and the blocked list: since 2026-10-12 the restricted mode does not see
+  hidden chats there (`requestAccountPrivacySettings`, `BlockedPeersContext.state`), and saving an
+  exception list from it reads the server's rule first and keeps the hidden chats on their side
+  (`preservingChatsHiddenFromLists`, mutation-checked). Not exercised in the UI (it would change the
+  real account's privacy). The blocked list's total still comes from the server when not all pages
+  are loaded.
 - Secret chats: hiding, transcript boundary (local top message) and filtering use the same code
   paths as cloud chats, but no secret chat was available on the test simulator; unverified.
 - Gallery opened from outside a chat (global media search, downloads): served by filtered views
