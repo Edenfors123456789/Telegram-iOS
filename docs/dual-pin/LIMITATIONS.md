@@ -32,8 +32,10 @@ while integrating, or something only a physical iPhone can confirm.
   explicit open of a secret chat in B is not possible by design (it has no public route).
 - Gallery opened from outside a chat: B's global-search Media tab shows none of a hidden chat's
   album (simulator 2026-10-12); B has its own downloads list.
-- Story feed and the groups-in-common tab: compile-verified only (no hidden peer on the test
-  setup has stories or shared groups).
+- Groups-in-common tab: accepted on the simulator 2026-10-12 (a group with Ton2 hidden in A; Ton2's
+  profile shows Media/Links/Groups in A and only Media/Links in B, B's media tab empty).
+- Story feed: compile-verified only (stories appear in the feed only for contacts; the test peer is
+  not one).
 
 ## Physical iPhone checklist
 
