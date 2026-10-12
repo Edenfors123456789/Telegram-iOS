@@ -27,10 +27,11 @@ while integrating, or something only a physical iPhone can confirm.
   (`preservingChatsHiddenFromLists`, mutation-checked). Not exercised in the UI (it would change the
   real account's privacy). The blocked list's total still comes from the server when not all pages
   are loaded.
-- Secret chats: hiding, transcript boundary (local top message) and filtering use the same code
-  paths as cloud chats, but no secret chat was available on the test simulator; unverified.
-- Gallery opened from outside a chat (global media search, downloads): served by filtered views
-  and searches, and B has its own downloads list; not exercised end to end.
+- Secret chats: accepted on the simulator 2026-10-12 for lists and search (a secret chat from Ton2
+  hidden in A: absent from B's list, and searching "Ton2" in B finds neither it nor Ton2). An
+  explicit open of a secret chat in B is not possible by design (it has no public route).
+- Gallery opened from outside a chat: B's global-search Media tab shows none of a hidden chat's
+  album (simulator 2026-10-12); B has its own downloads list.
 - Story feed and the groups-in-common tab: compile-verified only (no hidden peer on the test
   setup has stories or shared groups).
 
