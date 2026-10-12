@@ -50,6 +50,21 @@ final class OrderedItemListRedirectionTests: XCTestCase {
         return disposable
     }
 
+    func testAReaderCanTellThatAListIsRedirected() {
+        // Server sync of a recents list must not write the full mode's list into the
+        // restricted mode's one, so it asks first.
+        XCTAssertEqual(self.fixture.transaction { $0.isOrderedItemListRedirected(collectionId: self.list) }, false)
+        let disposable = self.redirect()
+        XCTAssertEqual(self.fixture.transaction { $0.isOrderedItemListRedirected(collectionId: self.list) }, true)
+        XCTAssertEqual(self.fixture.transaction { $0.isOrderedItemListRedirected(collectionId: self.separate) }, false)
+        disposable.dispose()
+        let deadline = Date().addingTimeInterval(5.0)
+        while self.fixture.transaction({ $0.isOrderedItemListRedirected(collectionId: self.list) }) == true && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertEqual(self.fixture.transaction { $0.isOrderedItemListRedirected(collectionId: self.list) }, false)
+    }
+
     func testARedirectedListIsReadAndWrittenSeparately() {
         self.add(1)
         let redirection = self.redirect()

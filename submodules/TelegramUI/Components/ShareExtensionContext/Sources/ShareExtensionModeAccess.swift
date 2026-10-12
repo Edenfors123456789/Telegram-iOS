@@ -38,7 +38,7 @@ enum ShareExtensionModeAccess {
     static func register(scope: ShareAccessScope, recordId: AccountRecordId, postbox: Postbox) -> Disposable {
         let disposables = DisposableSet()
         if scope.redirectsRecentSearches {
-            disposables.add(postbox.addOrderedItemListRedirection(from: Namespaces.OrderedItemList.RecentlySearchedPeerIds, to: Namespaces.OrderedItemList.RestrictedModeRecentlySearchedPeerIds))
+            disposables.add(addRestrictedModeListRedirections(postbox: postbox))
         }
         if let chats = scope.hiddenChats[recordId.int64], !chats.isEmpty {
             let peerIds = chats.map { PeerId(namespace: ._internalFromInt32Value($0.peerNamespace), id: ._internalFromInt64Value($0.peerID)) }

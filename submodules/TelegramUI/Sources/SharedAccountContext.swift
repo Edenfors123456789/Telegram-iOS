@@ -2125,7 +2125,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         // the same Postbox queue, so none of them is ever filled without it.
         self.releaseModeTranscripts()
         if let context, preparation.mode == .b {
-            self.modeRecentSearchesRedirection.set(context.account.postbox.addOrderedItemListRedirection(from: Namespaces.OrderedItemList.RecentlySearchedPeerIds, to: Namespaces.OrderedItemList.RestrictedModeRecentlySearchedPeerIds))
+            self.modeRecentSearchesRedirection.set(addRestrictedModeListRedirections(postbox: context.account.postbox))
         } else {
             self.modeRecentSearchesRedirection.set(nil)
         }

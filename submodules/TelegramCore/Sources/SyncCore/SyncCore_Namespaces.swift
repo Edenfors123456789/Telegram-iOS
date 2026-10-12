@@ -81,6 +81,14 @@ public struct Namespaces {
         /// Dual PIN: the restricted mode's own recent searches (`RecentlySearchedPeerIds` is
         /// redirected here while that mode's root is shown).
         public static let RestrictedModeRecentlySearchedPeerIds: Int32 = 1002
+        /// Dual PIN: the activity lists the restricted mode keeps apart from the full mode's
+        /// (recent stickers, saved GIFs — sent GIFs are saved automatically —, inline bots,
+        /// hashtags, downloads, emoji, reactions). Each is redirected to `1000 + id` while that
+        /// mode's root is shown, and its server sync pauses meanwhile.
+        public static let restrictedModeSeparateLists: [Int32] = [CloudRecentStickers, CloudRecentGifs, RecentlySearchedPeerIds, CloudRecentInlineBots, RecentlyUsedHashtags, RecentDownloads, LocalRecentEmoji, CloudRecentReactions]
+        public static func restrictedModeList(for collectionId: Int32) -> Int32 {
+            return 1000 + collectionId
+        }
         public static let CloudRecentInlineBots: Int32 = 3
         public static let CloudFeaturedStickerPacks: Int32 = 4
         public static let CloudArchivedStickerPacks: Int32 = 5

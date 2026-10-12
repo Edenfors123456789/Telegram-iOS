@@ -15,6 +15,11 @@ private func hashForIds(_ ids: [Int64]) -> Int64 {
 
 private func managedRecentMedia(postbox: Postbox, network: Network, collectionId: Int32, extractItemId: @escaping (MemoryBuffer) -> Int64?, reverseHashOrder: Bool, forceFetch: Bool, fetch: @escaping (Int64) -> Signal<[OrderedItemListEntry]?, NoError>) -> Signal<Void, NoError> {
     return postbox.transaction { transaction -> Signal<Void, NoError> in
+        // Dual PIN: while the restricted mode keeps its own copy of this list, the server's
+        // (the account's full history) is not written into it.
+        if transaction.isOrderedItemListRedirected(collectionId: collectionId) {
+            return .complete()
+        }
         var itemIds = transaction.getOrderedListItemIds(collectionId: collectionId).compactMap(extractItemId)
         if reverseHashOrder {
             itemIds.reverse()

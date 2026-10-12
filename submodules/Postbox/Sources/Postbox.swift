@@ -683,6 +683,18 @@ public final class Transaction {
         }
     }
     
+    /// Whether reads and writes of `collectionId` currently go to another list
+    /// (`Postbox.addOrderedItemListRedirection`). Server sync of such a list must not run: it
+    /// would write the full list into the separate one.
+    public func isOrderedItemListRedirected(collectionId: Int32) -> Bool {
+        assert(!self.disposed)
+        if let postbox = postbox {
+            return postbox.resolvedOrderedItemListId(collectionId) != collectionId
+        } else {
+            return false
+        }
+    }
+    
     public func getOrderedListItems(collectionId: Int32) -> [OrderedItemListEntry] {
         assert(!self.disposed)
         if let postbox = postbox {

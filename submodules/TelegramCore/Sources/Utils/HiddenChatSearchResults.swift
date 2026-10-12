@@ -48,3 +48,13 @@ func excludingChatsHiddenFromLists(_ recent: RecentPeers, _ hidden: Set<PeerId>)
 func excludingChatsHiddenFromLists(myResults: [FoundPeer], _ hidden: Set<PeerId>) -> [FoundPeer] {
     return myResults.filter { !hidden.contains($0.peer.id) }
 }
+
+/// Dual PIN: gives the restricted mode its own copy of every activity list
+/// (`Namespaces.OrderedItemList.restrictedModeSeparateLists`) for as long as the result is held.
+public func addRestrictedModeListRedirections(postbox: Postbox) -> Disposable {
+    let disposables = DisposableSet()
+    for collectionId in Namespaces.OrderedItemList.restrictedModeSeparateLists {
+        disposables.add(postbox.addOrderedItemListRedirection(from: collectionId, to: Namespaces.OrderedItemList.restrictedModeList(for: collectionId)))
+    }
+    return disposables
+}
