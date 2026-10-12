@@ -1549,9 +1549,23 @@ func peerInfoScreenData(
             
             let forcedLinkedCommunityId = Atomic<PeerId?>(value: nil)
             
+            // Dual PIN: the server's common-group count includes groups hidden from this mode's
+            // lists, so while any are hidden the tab appears only once the filtered list (the
+            // one the tab shows) has a group.
+            let groupsInCommonListed: Signal<Bool, NoError>
+            if let groupsInCommon {
+                groupsInCommonListed = combineLatest(context.account.postbox.chatIdsHiddenFromLists(), groupsInCommon.state)
+                |> map { hidden, state -> Bool in
+                    return hidden.isEmpty || !state.peers.isEmpty
+                }
+                |> distinctUntilChanged
+            } else {
+                groupsInCommonListed = .single(true)
+            }
+            
             return combineLatest(
                 context.account.viewTracker.peerView(peerId, updateData: true),
-                peerInfoAvailableMediaPanes(context: context, peerId: peerId, chatLocation: chatLocation, isMyProfile: isMyProfile, chatLocationContextHolder: chatLocationContextHolder, sharedMediaFromForumTopic: sharedMediaFromForumTopic),
+                combineLatest(peerInfoAvailableMediaPanes(context: context, peerId: peerId, chatLocation: chatLocation, isMyProfile: isMyProfile, chatLocationContextHolder: chatLocationContextHolder, sharedMediaFromForumTopic: sharedMediaFromForumTopic), groupsInCommonListed),
                 context.engine.data.subscribe(TelegramEngine.EngineData.Item.NotificationSettings.Global()),
                 secretChatKeyFingerprint,
                 status,
@@ -1573,8 +1587,9 @@ func peerInfoScreenData(
                 savedMusicContext.state,
                 businessConnectedBot
             )
-            |> mapToSignal { peerView, availablePanes, globalNotificationSettings, encryptionKeyFingerprint, status, hasStories, hasStoryArchive, recommendedBots, accountIsPremium, savedMessagesPeer, hasSavedMessagesChats, hasSavedMessages, hasSavedMessageTags, hasBotPreviewItems, personalChannel, privacySettings, starsRevenueContextAndState, revenueContextAndState, premiumGiftOptions, webAppPermissions, savedMusicState, businessConnectedBot -> Signal<PeerInfoScreenData, NoError> in
-                var availablePanes = availablePanes
+            |> mapToSignal { peerView, availablePanesAndGroupsInCommonListed, globalNotificationSettings, encryptionKeyFingerprint, status, hasStories, hasStoryArchive, recommendedBots, accountIsPremium, savedMessagesPeer, hasSavedMessagesChats, hasSavedMessages, hasSavedMessageTags, hasBotPreviewItems, personalChannel, privacySettings, starsRevenueContextAndState, revenueContextAndState, premiumGiftOptions, webAppPermissions, savedMusicState, businessConnectedBot -> Signal<PeerInfoScreenData, NoError> in
+                var availablePanes = availablePanesAndGroupsInCommonListed.0
+                let groupsInCommonListed = availablePanesAndGroupsInCommonListed.1
                 if isMyProfile {
                     availablePanes?.insert(.stories, at: 0)
                     if availablePanes != nil, profileGiftsContext != nil, let cachedData = peerView.cachedData as? CachedUserData {
@@ -1597,7 +1612,7 @@ func peerInfoScreenData(
                     }
                     
                     if availablePanes != nil, groupsInCommon != nil, let cachedData = peerView.cachedData as? CachedUserData {
-                        if cachedData.commonGroupCount != 0 {
+                        if cachedData.commonGroupCount != 0 && groupsInCommonListed {
                             availablePanes?.append(.groupsInCommon)
                         }
                     }
