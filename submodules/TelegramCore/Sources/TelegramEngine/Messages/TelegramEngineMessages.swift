@@ -1041,7 +1041,19 @@ public extension TelegramEngine {
             }
         }
         
+        /// Dual PIN: peers whose chats are hidden from this mode's lists have no entry in the
+        /// story feed either (a hidden channel's stories would reveal the subscription).
         public func storySubscriptions(isHidden: Bool, tempKeepNewlyArchived: Bool = false) -> Signal<EngineStorySubscriptions, NoError> {
+            return withChatsHiddenFromLists(self.account.postbox, self.storySubscriptionsUnfiltered(isHidden: isHidden, tempKeepNewlyArchived: tempKeepNewlyArchived), { subscriptions, hidden in
+                let items = subscriptions.items.filter { !hidden.contains($0.peer.id) }
+                if items.count == subscriptions.items.count {
+                    return subscriptions
+                }
+                return EngineStorySubscriptions(accountItem: subscriptions.accountItem, items: items, hasMoreToken: subscriptions.hasMoreToken)
+            })
+        }
+        
+        private func storySubscriptionsUnfiltered(isHidden: Bool, tempKeepNewlyArchived: Bool) -> Signal<EngineStorySubscriptions, NoError> {
             return `deferred` { () -> Signal<EngineStorySubscriptions, NoError> in
                 let debugTimerSignal: Signal<Bool, NoError>
 #if DEBUG && false

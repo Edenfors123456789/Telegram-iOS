@@ -41,3 +41,4 @@ for an account the mode cannot see. B never receives the management list
   next B root registers it again before publishing.
 - A chat whose identity cannot be expressed as a Postbox peer id makes the B root fail rather
   than show it.
+- Story feed (2026-10-12): `engine.messages.storySubscriptions` (chat list header, archive, story viewer, camera) leaves out peers whose chats are hidden from lists, so a hidden channel's or user's stories do not reveal the relation in B. Compile-verified; no hidden peer on the test simulator has stories.
