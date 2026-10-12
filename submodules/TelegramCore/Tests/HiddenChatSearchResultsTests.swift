@@ -25,6 +25,22 @@ final class HiddenChatSearchResultsTests: XCTestCase {
         XCTAssertFalse(filtered.completed)
     }
 
+    func testStorageUsageLeavesOutHiddenChatsAndTheirShare() {
+        // Storage usage names chats and lists their cached media.
+        let hiddenMessage = EngineMessage.Id(peerId: self.hiddenUser, namespace: Namespaces.Message.Cloud, id: 1)
+        let visibleMessage = EngineMessage.Id(peerId: self.visibleUser, namespace: Namespaces.Message.Cloud, id: 2)
+        let total = StorageUsageStats(categories: [.photos: StorageUsageStats.CategoryData(size: 300, messages: [hiddenMessage: 100, visibleMessage: 150])])
+        let stats = AllStorageUsageStats(deviceAvailableSpace: 1000, deviceFreeSpace: 500, totalStats: total, peers: [
+            self.hiddenUser: AllStorageUsageStats.PeerStats(peer: EnginePeer(self.user(self.hiddenUser)), stats: StorageUsageStats(categories: [:])),
+            self.visibleUser: AllStorageUsageStats.PeerStats(peer: EnginePeer(self.user(self.visibleUser)), stats: StorageUsageStats(categories: [:])),
+        ])
+        let filtered = excludingChatsHiddenFromLists(stats, [self.hiddenUser])
+        XCTAssertEqual(Set(filtered.peers.keys), [self.visibleUser])
+        XCTAssertEqual(filtered.totalStats.categories[.photos]?.messages.keys.map { $0 }, [visibleMessage])
+        XCTAssertEqual(filtered.totalStats.categories[.photos]?.size, 200)
+        XCTAssertEqual(filtered.deviceFreeSpace, 500)
+    }
+
     func testANothingHiddenResultIsUnchanged() {
         let message = SparseFixtures.message(self.visibleUser, 2, timestamp: 20)
         let result = SearchMessagesResult(messages: [message], readStates: [:], threadInfo: [:], totalCount: 1, completed: true)

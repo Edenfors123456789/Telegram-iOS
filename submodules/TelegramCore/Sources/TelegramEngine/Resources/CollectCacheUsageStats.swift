@@ -106,6 +106,27 @@ public final class AllStorageUsageStats {
     }
 }
 
+/// Dual PIN: storage usage names chats and lists their cached media, so chats hidden from lists
+/// leave it — their row, their messages in every category and their share of the sizes.
+func excludingChatsHiddenFromLists(_ stats: AllStorageUsageStats, _ hidden: Set<PeerId>) -> AllStorageUsageStats {
+    var peers = stats.peers
+    for peerId in hidden {
+        peers.removeValue(forKey: peerId)
+    }
+    var categories = stats.totalStats.categories
+    for (key, data) in stats.totalStats.categories {
+        let removed = data.messages.filter { hidden.contains($0.key.peerId) }
+        if removed.isEmpty {
+            continue
+        }
+        categories[key] = StorageUsageStats.CategoryData(
+            size: max(0, data.size - removed.values.reduce(0, +)),
+            messages: data.messages.filter { !hidden.contains($0.key.peerId) }
+        )
+    }
+    return AllStorageUsageStats(deviceAvailableSpace: stats.deviceAvailableSpace, deviceFreeSpace: stats.deviceFreeSpace, totalStats: StorageUsageStats(categories: categories), peers: peers)
+}
+
 private extension StorageUsageStats {
     convenience init(_ stats: StorageBox.Stats) {
         var mappedCategories: [StorageUsageStats.CategoryKey: StorageUsageStats.CategoryData] = [:]

@@ -252,7 +252,7 @@ public extension TelegramEngine {
         }
         
         public func collectStorageUsageStats() -> Signal<AllStorageUsageStats, NoError> {
-            return _internal_collectStorageUsageStats(account: self.account)
+            return withChatsHiddenFromLists(self.account.postbox, _internal_collectStorageUsageStats(account: self.account), excludingChatsHiddenFromLists)
         }
 
         public func renderStorageUsageStatsMessages(stats: StorageUsageStats, categories: [StorageUsageStats.CategoryKey], existingMessages: [EngineMessage.Id: EngineMessage]) -> Signal<[EngineMessage.Id: EngineMessage], NoError> {
