@@ -251,6 +251,31 @@ public extension TelegramEngine {
             return _internal_collectCacheUsageStats(account: self.account, peerId: peerId, additionalCachePaths: additionalCachePaths, logFilesPath: logFilesPath)
         }
         
+        /// Dual PIN: the bytes cached for chats hidden from this mode's lists (0 when none is
+        /// hidden), so an overall total can leave them out.
+        public func storageUsageOfChatsHiddenFromLists() -> Signal<Int64, NoError> {
+            let account = self.account
+            return account.postbox.chatIdsHiddenFromLists()
+            |> take(1)
+            |> mapToSignal { hidden -> Signal<Int64, NoError> in
+                if hidden.isEmpty {
+                    return .single(0)
+                }
+                return _internal_collectStorageUsageStats(account: account)
+                |> map { stats -> Int64 in
+                    var size: Int64 = 0
+                    for peerId in hidden {
+                        if let peerStats = stats.peers[peerId] {
+                            for (_, category) in peerStats.stats.categories {
+                                size += category.size
+                            }
+                        }
+                    }
+                    return size
+                }
+            }
+        }
+
         public func collectStorageUsageStats() -> Signal<AllStorageUsageStats, NoError> {
             return withChatsHiddenFromLists(self.account.postbox, _internal_collectStorageUsageStats(account: self.account), excludingChatsHiddenFromLists)
         }

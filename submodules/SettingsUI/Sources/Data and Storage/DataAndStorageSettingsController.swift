@@ -694,9 +694,11 @@ public func dataAndStorageController(context: AccountContext, focusOnItemTag: Da
     let usageSignal: Signal<UsageData, NoError> = combineLatest(
         context.account.postbox.mediaBox.storageBox.totalSize(),
         context.account.postbox.mediaBox.cacheStorageBox.totalSize(),
-        accountNetworkUsageStats(account: context.account, reset: [])
+        accountNetworkUsageStats(account: context.account, reset: []),
+        // Dual PIN: the total does not include what is cached for chats hidden from this mode.
+        .single(0) |> then(context.engine.resources.storageUsageOfChatsHiddenFromLists())
     )
-    |> map { disk1, disk2, networkStats -> UsageData in
+    |> map { disk1, disk2, networkStats, hiddenSize -> UsageData in
         var network: Int64 = 0
         
         var keys: [KeyPath<NetworkUsageStats, Int64>] = []
@@ -745,7 +747,7 @@ public func dataAndStorageController(context: AccountContext, focusOnItemTag: Da
             network += networkStats[keyPath: key]
         }
         
-        return UsageData(network: network, storage: disk1 + disk2)
+        return UsageData(network: network, storage: max(0, disk1 + disk2 - hiddenSize))
     }
     
     let dataAndStorageDataPromise = Promise<DataAndStorageData>()

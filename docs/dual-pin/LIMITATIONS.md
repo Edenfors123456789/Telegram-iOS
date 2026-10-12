@@ -17,7 +17,7 @@ while integrating, or something only a physical iPhone can confirm.
 
 ## Gaps known in the implementation
 
-- Storage usage: the overall size still includes hidden chats' cache (a number, no names).
+- Storage usage: since 2026-10-12 the overall size in Data and Storage leaves out the hidden chats' cache too (`storageUsageOfChatsHiddenFromLists`; simulator: B 64.4 MB vs A 66.1 MB). The chat list's "cache is large" check still uses the raw size (a threshold, nothing shown by name).
 - Counters derived on the server and shown as numbers only may still include hidden chats where
   the client has no per-chat breakdown (none found on screen; listed for the device review).
 - Folder chat limit: the server's per-folder limit counts hidden chats kept in a folder.

@@ -115,14 +115,16 @@ func excludingChatsHiddenFromLists(_ stats: AllStorageUsageStats, _ hidden: Set<
     }
     var categories = stats.totalStats.categories
     for (key, data) in stats.totalStats.categories {
-        let removed = data.messages.filter { hidden.contains($0.key.peerId) }
-        if removed.isEmpty {
+        // A chat's own stats count everything cached for it (avatars too), not only its messages.
+        var removedSize: Int64 = 0
+        for peerId in hidden {
+            removedSize += stats.peers[peerId]?.stats.categories[key]?.size ?? 0
+        }
+        let messages = data.messages.filter { !hidden.contains($0.key.peerId) }
+        if removedSize == 0 && messages.count == data.messages.count {
             continue
         }
-        categories[key] = StorageUsageStats.CategoryData(
-            size: max(0, data.size - removed.values.reduce(0, +)),
-            messages: data.messages.filter { !hidden.contains($0.key.peerId) }
-        )
+        categories[key] = StorageUsageStats.CategoryData(size: max(0, data.size - removedSize), messages: messages)
     }
     return AllStorageUsageStats(deviceAvailableSpace: stats.deviceAvailableSpace, deviceFreeSpace: stats.deviceFreeSpace, totalStats: StorageUsageStats(categories: categories), peers: peers)
 }

@@ -31,7 +31,7 @@ final class HiddenChatSearchResultsTests: XCTestCase {
         let visibleMessage = EngineMessage.Id(peerId: self.visibleUser, namespace: Namespaces.Message.Cloud, id: 2)
         let total = StorageUsageStats(categories: [.photos: StorageUsageStats.CategoryData(size: 300, messages: [hiddenMessage: 100, visibleMessage: 150])])
         let stats = AllStorageUsageStats(deviceAvailableSpace: 1000, deviceFreeSpace: 500, totalStats: total, peers: [
-            self.hiddenUser: AllStorageUsageStats.PeerStats(peer: EnginePeer(self.user(self.hiddenUser)), stats: StorageUsageStats(categories: [:])),
+            self.hiddenUser: AllStorageUsageStats.PeerStats(peer: EnginePeer(self.user(self.hiddenUser)), stats: StorageUsageStats(categories: [.photos: StorageUsageStats.CategoryData(size: 100, messages: [hiddenMessage: 100])])),
             self.visibleUser: AllStorageUsageStats.PeerStats(peer: EnginePeer(self.user(self.visibleUser)), stats: StorageUsageStats(categories: [:])),
         ])
         let filtered = excludingChatsHiddenFromLists(stats, [self.hiddenUser])
