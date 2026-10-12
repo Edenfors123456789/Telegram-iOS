@@ -1,0 +1,44 @@
+# Known limitations and device checklist (stage 6 input)
+
+State on 2026-10-12. Each item is either a deliberate limit of the approved design, a gap found
+while integrating, or something only a physical iPhone can confirm.
+
+## By design (documented in the plan)
+
+- Hiding is local presentation. The server dialog, the full history and A's view are unchanged;
+  other Telegram clients of the same account show everything.
+- Content already present in a chat B can see stays visible there: a hidden channel's posts
+  forwarded into a visible chat, or the automatic copies of a hidden channel's posts in its
+  **discussion group** when that group itself is not hidden. Hide the discussion group too.
+  (Comment threads are built in the discussion group: with the group hidden, opening comments in
+  B shows only what that group's restricted transcript admits.)
+- No push in either mode: messages and calls arrive only while the app runs.
+- Earlier notifications, sounds and anything another app or person saved cannot be undone.
+
+## Gaps known in the implementation
+
+- Storage usage: the overall size still includes hidden chats' cache (a number, no names).
+- Counters derived on the server and shown as numbers only may still include hidden chats where
+  the client has no per-chat breakdown (none found on screen; listed for the device review).
+- Folder chat limit: the server's per-folder limit counts hidden chats kept in a folder.
+- Privacy exception lists, blocked users and similar account-level settings can name a hidden
+  user; they are shared by both modes.
+- Secret chats: hiding, transcript boundary (local top message) and filtering use the same code
+  paths as cloud chats, but no secret chat was available on the test simulator; unverified.
+- Gallery opened from outside a chat (global media search, downloads): served by filtered views
+  and searches, and B has its own downloads list; not exercised end to end.
+- Story feed and the groups-in-common tab: compile-verified only (no hidden peer on the test
+  setup has stories or shared groups).
+
+## Physical iPhone checklist
+
+1. App-switcher snapshot and the opaque cover on background, lock, termination and reboot; no
+   frame of the previous mode when switching (screen recording, frame by frame).
+2. PIN timing on device (simulator: PIN check ≈ 520 ms, root ≈ 120–350 ms).
+3. No APNs/PushKit registration on a clean install; cancellation of earlier registrations after
+   an update from a build that registered.
+4. Calls: no CallKit UI, a hidden chat's call is silent in B and missed in A, a call of the other
+   mode ends on unlock (all accepted on the simulator 2026-10-12).
+5. Share extension with PIN A / PIN B, including with Face ID enabled in the old settings.
+6. Broadcast (ReplayKit) from a group call, then a mode change.
+7. Signed build: App Group and Keychain sharing between the app and the share extension.
