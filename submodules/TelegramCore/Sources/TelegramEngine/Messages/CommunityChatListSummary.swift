@@ -45,8 +45,9 @@ private func communityChatListLinkedPeers(postbox: Postbox, communityIds: [PeerI
         return .peer(peerId: communityId, components: [.cachedData])
     }
 
-    return postbox.combinedView(keys: keys)
-    |> map { views -> CommunityChatListLinkedPeers in
+    // Dual PIN: chats hidden from this mode's lists are not summarized (nor counted) inside a community.
+    return combineLatest(postbox.combinedView(keys: keys), postbox.chatIdsHiddenFromLists())
+    |> map { views, hidden -> CommunityChatListLinkedPeers in
         var peerIds: [PeerId: [PeerId]] = [:]
         var collapsedCommunityIds: Set<PeerId> = []
         for communityId in communityIds {
@@ -59,7 +60,7 @@ private func communityChatListLinkedPeers(postbox: Postbox, communityIds: [PeerI
                 continue
             }
             peerIds[communityId] = uniquePeerIds(cachedData.linkedPeers.compactMap { linkedPeer -> PeerId? in
-                if linkedPeer.peerId == communityId {
+                if linkedPeer.peerId == communityId || hidden.contains(linkedPeer.peerId) {
                     return nil
                 }
                 return linkedPeer.peerId

@@ -2264,14 +2264,15 @@ final class ChatListSearchListPaneNode: ASDisplayNode, ChatListSearchPaneNode {
                     foundLocalPeers = .single(([], [:], Set()))
                 } else if let communityId {
                     let queryTokens = stringIndexTokens(query.lowercased(), transliteration: .combined)
-                    foundLocalPeers = context.engine.data.subscribe(
+                    foundLocalPeers = combineLatest(context.engine.data.subscribe(
                         TelegramEngine.EngineData.Item.Peer.CachedData(id: communityId)
-                    )
-                    |> mapToSignal { cachedData -> Signal<(peers: [EngineRenderedPeer], unread: [EnginePeer.Id: (Int32, Bool)], recentlySearchedPeerIds: Set<EnginePeer.Id>), NoError> in
+                    ), context.engine.peers.chatIdsHiddenFromLists())
+                    |> mapToSignal { cachedData, hidden -> Signal<(peers: [EngineRenderedPeer], unread: [EnginePeer.Id: (Int32, Bool)], recentlySearchedPeerIds: Set<EnginePeer.Id>), NoError> in
                         guard let communityData = cachedData as? CachedCommunityData else {
                             return .single((peers: [], unread: [:], recentlySearchedPeerIds: Set()))
                         }
-                        let peerIds = communityData.linkedPeers.map(\.peerId)
+                        // Dual PIN: chats hidden from this mode's lists are not shown inside a community.
+                        let peerIds = communityData.linkedPeers.map(\.peerId).filter { !hidden.contains($0) }
                         if peerIds.isEmpty {
                             return .single((peers: [], unread: [:], recentlySearchedPeerIds: Set()))
                         }

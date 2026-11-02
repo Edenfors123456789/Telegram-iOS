@@ -585,27 +585,6 @@ official_background_gpu_fragment = """
 """
 background_gpu_fragment = official_background_gpu_fragment if telegram_bundle_id == "ph.telegra.Telegraph" else ""
 
-# Dual PIN: the share extension opens the app's access vault and account data, both in the
-# App Group (which also serves as the vault key's keychain group). Without this a build signed
-# without profiles (the simulator) gave the extension no App Group and it showed a blank sheet.
-share_app_groups_fragment = """
-    <key>com.apple.security.application-groups</key>
-    <array>
-        <string>group.{telegram_bundle_id}</string>
-    </array>
-    <key>application-identifier</key>
-    <string>{telegram_team_id}.{telegram_bundle_id}.Share</string>
-""".format(
-    telegram_team_id=telegram_team_id,
-    telegram_bundle_id=telegram_bundle_id
-)
-
-plist_fragment(
-    name = "ShareEntitlements",
-    extension = "entitlements",
-    template = share_app_groups_fragment,
-)
-
 plist_fragment(
     name = "TelegramEntitlements",
     extension = "entitlements",

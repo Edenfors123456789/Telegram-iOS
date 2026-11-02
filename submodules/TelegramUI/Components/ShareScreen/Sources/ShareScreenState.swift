@@ -248,11 +248,12 @@ final class ShareScreenState {
                 self.scheduleChange()
             }
         }))
-        self.recommendationsDisposable.set((context.engine.peers.recentPeers()
-        |> deliverOnMainQueue).start(next: { [weak self] recent in
+        // Dual PIN: recent peers leave out chats hidden from this mode's lists.
+        self.recommendationsDisposable.set((combineLatest(context.engine.peers.recentPeers(), context.engine.peers.chatIdsHiddenFromLists())
+        |> deliverOnMainQueue).start(next: { [weak self] recent, hidden in
             guard let self else { return }
             if case let .peers(peers) = recent {
-                self.recommendations = peers.map(EnginePeer.init).filter { canSendMessagesToPeer($0) && $0.id != context.account.peerId }
+                self.recommendations = peers.map(EnginePeer.init).filter { canSendMessagesToPeer($0) && $0.id != context.account.peerId && !hidden.contains($0.id) }
             } else {
                 self.recommendations = []
             }
@@ -304,11 +305,12 @@ final class ShareScreenState {
         self.communityLoading = cached == nil
         // Navigation starts on the tap; database updates only populate the page.
         self.changed(animated: true)
-        self.communityDisposable.set((self.context.engine.data.subscribe(
+        self.communityDisposable.set((combineLatest(self.context.engine.data.subscribe(
             TelegramEngine.EngineData.Item.Peer.CachedData(id: peer.id)
-        ) |> mapToSignal { [weak self] cachedData -> Signal<([EnginePeer], [EnginePeer.Id: Int], Bool), NoError> in
+        ), self.context.engine.peers.chatIdsHiddenFromLists()) |> mapToSignal { [weak self] cachedData, hidden -> Signal<([EnginePeer], [EnginePeer.Id: Int], Bool), NoError> in
             guard let self, let data = cachedData as? CachedCommunityData else { return .single(([], [:], true)) }
-            let ids = data.linkedPeers.map(\.peerId)
+            // Dual PIN: chats hidden from this mode's lists are not shown inside a community either.
+            let ids = data.linkedPeers.map(\.peerId).filter { !hidden.contains($0) }
             return self.context.engine.data.subscribe(
                 EngineDataMap(ids.map(TelegramEngine.EngineData.Item.Peer.Peer.init(id:))),
                 EngineDataMap(ids.map(TelegramEngine.EngineData.Item.Messages.TopMessage.init(id:))),
@@ -541,7 +543,11 @@ final class ShareScreenState {
                 return (local.compactMap(\.peer) + (remote.0 + remote.1).map(\.peer), false)
             }
         }
-        return signal
+        // Dual PIN: a picker is a list; a chat hidden from this mode's lists is never offered, not even as a public match.
+        return combineLatest(signal, context.engine.peers.chatIdsHiddenFromLists() |> take(1))
+        |> map { result, hidden in
+            return (hidden.isEmpty ? result.0 : result.0.filter { !hidden.contains($0.id) }, result.1)
+        }
     }
 
     private func filteredPeers(_ peers: [EnginePeer], filterId: Int32) -> [EnginePeer] {
