@@ -34,7 +34,7 @@ final class InitialPINSetupController: ViewController {
             background: data.theme.list.blocksBackgroundColor, fieldBackground: data.theme.list.itemBlocksBackgroundColor,
             textColor: data.theme.list.itemPrimaryTextColor, accent: data.theme.list.itemAccentColor,
             initialFailure: initialFailure)
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: data, style: .glass))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: data))
         self.title = "Dual PIN"
         self.statusBar.statusBarStyle = data.theme.rootController.statusBarStyle.style
         self.form.submitted = { record, owner, a, b in

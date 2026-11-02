@@ -1,7 +1,7 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 
 /// Dual PIN restricted transcript: the history that existed when a hidden chat was opened in
 /// the restricted mode. Only messages newer than this (and the mode's own sends) are shown.

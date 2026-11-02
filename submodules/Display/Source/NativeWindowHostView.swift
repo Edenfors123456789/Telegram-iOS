@@ -387,6 +387,7 @@ private final class NativeWindow: SnapshotProtectedWindow, WindowHost {
 
 public func nativeWindowHostView() -> (SnapshotProtectedWindow & WindowHost, WindowHostView) {
     let window = NativeWindow(frame: UIScreen.main.bounds)
+    registerMainWindowForScreenBounds(window)
     
     let rootViewController = WindowRootViewController()
     window.rootViewController = rootViewController

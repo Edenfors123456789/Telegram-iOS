@@ -19,7 +19,7 @@ final class OwnPINChangeController: ViewController {
             submit: data.strings.Common_Done, error: data.strings.PasscodeSettings_UpdateError),
             background: data.theme.list.blocksBackgroundColor, fieldBackground: data.theme.list.itemBlocksBackgroundColor,
             textColor: data.theme.list.itemPrimaryTextColor, accent: data.theme.list.itemAccentColor)
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: data, style: .glass))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: data))
         self.title = data.strings.PasscodeSettings_ChangePasscode
         self.statusBar.statusBarStyle = data.theme.rootController.statusBarStyle.style
         self.form.submitted = { current, replacement in

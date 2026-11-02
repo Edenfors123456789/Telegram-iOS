@@ -77,6 +77,9 @@
     
     MTTimer *_requestsServiceTimer;
     MTTimer *_requestsTimeoutTimer;
+    
+    bool _handingOver;
+    void (^_handOverReleased)(MTRequest *, bool, double);
 }
 
 @end
@@ -133,6 +136,11 @@
                 MTLog(@"[MTRequestMessageService#%" PRIxPTR " add request %@]", (intptr_t)self, request.metadata);
             }
             
+            if (self->_handingOver) {
+                self->_handOverReleased(request, false, 0.0);
+                return;
+            }
+            
             [_requests addObject:request];
             [mtProto requestTransportTransaction];
         }
@@ -157,7 +165,7 @@
         {
             index++;
             
-            if ([request.internalId isEqual:internalId])
+            if ([[request scanInternalId] isEqual:internalId])
             {
                 if (request.requestContext != nil)
                 {
@@ -249,7 +257,7 @@
         
         for (MTRequest *request in _requests)
         {
-            if (request.errorContext != nil)
+            if ([request scanErrorContext] != nil)
             {
                 if (request.errorContext.waitingForRequestToComplete != nil) {
                     bool foundDependency = false;
@@ -328,7 +336,7 @@
     bool needTimer = false;
     
     for (MTRequest *request in _requests) {
-        if (!request.needsTimeoutTimer) {
+        if (![request scanNeedsTimeoutTimer]) {
             continue;
         }
         if (request.errorContext != nil) {
@@ -585,6 +593,10 @@ static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger
 
 - (MTMessageTransaction *)mtProtoMessageTransaction:(MTProto *)mtProto authInfoSelector:(MTDatacenterAuthInfoSelector)authInfoSelector selectedAuthInfo:(MTDatacenterAuthInfo *)selectedAuthInfo sessionInfo:(MTSessionInfo *)sessionInfo scheme:(MTTransportScheme *)scheme
 {
+    if (_handingOver) {
+        [self _releaseHandedOverRequests];
+    }
+    
     NSMutableArray *messages = nil;
     NSMutableDictionary *requestInternalIdToMessageInternalId = nil;
     NSMutableArray<MTRequest *> *deniedRequests = [[NSMutableArray alloc] init];
@@ -599,6 +611,9 @@ static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger
             [deniedRequests addObject:request];
             continue;
         }
+        if (_handingOver && request.requestContext == nil)
+            continue;
+        
         if (request.dependsOnPasswordEntry && [_context isPasswordInputRequiredForDatacenterWithId:mtProto.datacenterId])
             continue;
         
@@ -768,6 +783,7 @@ static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger
                         requestContext.willInitializeApi = requestsWillInitializeApi;
                         requestContext.waitingForMessageId = true;
                         request.requestContext = requestContext;
+                        request.mayHaveReachedServer = true;
                     }
                 }
             }
@@ -800,6 +816,7 @@ static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger
                         requestContext.sentTimestamp = CFAbsoluteTimeGetCurrent();
                         requestContext.willInitializeApi = requestsWillInitializeApi;
                         request.requestContext = requestContext;
+                        request.mayHaveReachedServer = true;
                     }
                 }
             }
@@ -1104,6 +1121,7 @@ static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger
                     request.requestContext = nil;
                     
                     if (restartRequest) {
+                        request.mayHaveReachedServer = false;
                     } else {
                         void (^completed)(id result, MTRequestResponseInfo *info, id error) = [request.completed copy];
                         [removeRequests addObject:request];
@@ -1124,6 +1142,10 @@ static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger
             
             for (MTRequest *request in removeRequests) {
                 [_requests removeObject:request];
+            }
+            
+            if (_handingOver) {
+                [self _releaseHandedOverRequests];
             }
             
             if (!requestFound) {
@@ -1299,6 +1321,85 @@ static bool MTRequestMatchesAuthKeyScope(MTRequestAuthKeyScope *scope, NSInteger
                 request.progressUpdated(progress, packetLength);
         }
     }
+}
+
+- (void)handOverRequests:(void (^)(MTRequest *, bool, double))released
+{
+    [_queue dispatchOnQueue:^
+    {
+        if (self->_handingOver || released == nil) {
+            return;
+        }
+        self->_handingOver = true;
+        self->_handOverReleased = [released copy];
+        [self _releaseHandedOverRequests];
+    }];
+}
+
+- (void)releaseHandedOverRequests
+{
+    [_queue dispatchOnQueue:^
+    {
+        if (!self->_handingOver) {
+            return;
+        }
+        NSArray *remaining = [self->_requests copy];
+        [self->_requests removeAllObjects];
+        for (MTRequest *request in remaining) {
+            bool mayHaveReachedServer = request.requestContext != nil || request.mayHaveReachedServer;
+            [self _handBack:request mayHaveReachedServer:mayHaveReachedServer];
+        }
+        [self updateRequestsTimer];
+        [self updateRequestsTimeoutTimerWithReset:false];
+    }];
+}
+
+- (void)_releaseHandedOverRequests
+{
+    NSMutableArray *held = [[NSMutableArray alloc] init];
+    NSMutableArray *released = [[NSMutableArray alloc] init];
+    for (MTRequest *request in _requests) {
+        if (request.requestContext != nil) {
+            [held addObject:request];
+            continue;
+        }
+        bool waits = false;
+        if (request.shouldDependOnRequest != nil) {
+            for (MTRequest *other in held) {
+                if (request.shouldDependOnRequest(other)) {
+                    waits = true;
+                    break;
+                }
+            }
+        }
+        if (waits) {
+            [held addObject:request];
+            continue;
+        }
+        [released addObject:request];
+    }
+    if (released.count == 0) {
+        return;
+    }
+    [_requests removeObjectsInArray:released];
+    for (MTRequest *request in released) {
+        [self _handBack:request mayHaveReachedServer:request.mayHaveReachedServer];
+    }
+    [self updateRequestsTimer];
+    [self updateRequestsTimeoutTimerWithReset:false];
+}
+
+- (void)_handBack:(MTRequest *)request mayHaveReachedServer:(bool)mayHaveReachedServer
+{
+    double retryAfter = 0.0;
+    if (!mayHaveReachedServer && request.errorContext != nil) {
+        retryAfter = MAX(0.0, request.errorContext.minimalExecuteTime - MTAbsoluteSystemTime());
+    }
+    request.requestContext = nil;
+    if (MTLogEnabled()) {
+        MTLog(@"[MTRequestMessageService#%" PRIxPTR " hands over %@ (%s, retry after %.1f s)]", (intptr_t)self, request.metadata, mayHaveReachedServer ? "may have reached the server" : "never ran", retryAfter);
+    }
+    _handOverReleased(request, mayHaveReachedServer, retryAfter);
 }
 
 - (void)mtProtoDidChangeSession:(MTProto *)mtProto

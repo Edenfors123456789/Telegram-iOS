@@ -1,7 +1,6 @@
 import Foundation
 import AccessModeCore
 import TelegramCore
-import TelegramApi
 import SwiftSignalKit
 
 enum AccountEnrollmentLogoutReply {
@@ -62,8 +61,7 @@ extension AccountEnrollmentBridge {
         let transport = ScopedEnrollmentLogoutTransport(source: source, accountManager: accountManager,
             coordinator: coordinator, cleanup: cleanup, engineKind: { source.network.engineKind }, stopServiceTasks: stopServiceTasks,
             request: { scope in
-                source.network.request(Api.functions.auth.logOut(), automaticFloodWait: false, authKeyScope: scope)
-                |> map { _ in () }
+                source.network.requestAuthLogOut(authKeyScope: scope)
             })
         return revokeSession(transport: transport, accountManager: accountManager, coordinator: coordinator, cleanup: cleanup)
     }

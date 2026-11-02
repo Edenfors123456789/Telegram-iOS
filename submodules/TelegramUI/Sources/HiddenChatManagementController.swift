@@ -18,7 +18,7 @@ final class HiddenChatManagementController: ViewController {
         self.management = try HiddenChatManagementView(items: items, searchPlaceholder: data.strings.Common_Search,
             emptyText: "Нет скрытых чатов", background: data.theme.list.blocksBackgroundColor,
             textColor: data.theme.list.itemPrimaryTextColor, accent: data.theme.list.itemAccentColor)
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: data, style: .glass))
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: data))
         self.title = "Скрытые чаты"
         self.statusBar.statusBarStyle = data.theme.rootController.statusBarStyle.style
         self.management.selected = { id in

@@ -1,20 +1,22 @@
 import Foundation
 import Postbox
 import SwiftSignalKit
-import TelegramApi
+internal import TelegramApi
 import MtProtoKit
 
 class UpdateMessageService: NSObject, NetworkEngineUpdateSink {
     var peerId: PeerId!
+    private var ignoresShortSentMessages = false
     let pipe: ValuePipe<[UpdateGroup]> = ValuePipe()
     
     override init() {
         super.init()
     }
     
-    convenience init(peerId: PeerId) {
+    convenience init(peerId: PeerId, ignoresShortSentMessages: Bool) {
         self.init()
         self.peerId = peerId
+        self.ignoresShortSentMessages = ignoresShortSentMessages
     }
     
     func networkSessionDidReset() {
@@ -79,6 +81,9 @@ class UpdateMessageService: NSObject, NetworkEngineUpdateSink {
             case .updatesTooLong:
                 self.pipe.putNext([.reset])
             case let .updateShortSentMessage(updateShortSentMessageData):
+                if self.ignoresShortSentMessages {
+                    return
+                }
                 let (pts, ptsCount) = (updateShortSentMessageData.pts, updateShortSentMessageData.ptsCount)
                 self.pipe.putNext([.updatePts(pts: pts, ptsCount: ptsCount)])
         }

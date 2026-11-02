@@ -692,8 +692,8 @@ public func dataAndStorageController(context: AccountContext, focusOnItemTag: Da
         var storage: Int64
     }
     let usageSignal: Signal<UsageData, NoError> = combineLatest(
-        context.account.postbox.mediaBox.storageBox.totalSize(),
-        context.account.postbox.mediaBox.cacheStorageBox.totalSize(),
+        context.engine.resources.storageTotalSize(),
+        context.engine.resources.cacheStorageTotalSize(),
         accountNetworkUsageStats(account: context.account, reset: []),
         // Dual PIN: the total does not include what is cached for chats hidden from this mode.
         .single(0) |> then(context.engine.resources.storageUsageOfChatsHiddenFromLists())

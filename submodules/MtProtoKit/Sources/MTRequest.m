@@ -77,6 +77,18 @@
 
 @implementation MTRequest
 
+- (bool)scanNeedsTimeoutTimer {
+    return _needsTimeoutTimer;
+}
+
+- (MTRequestErrorContext *)scanErrorContext {
+    return _errorContext;
+}
+
+- (id)scanInternalId {
+    return _internalId;
+}
+
 - (instancetype)init
 {
     return [self initWithAuthKeyScope:nil];
