@@ -573,7 +573,8 @@ func _internal_adminedPublicChannels(account: Account, scope: AdminedPublicChann
     
     let accountPeerId = account.peerId
     
-    return account.network.request(Api.functions.channels.getAdminedPublicChannels(flags: flags))
+    // Dual PIN: chats hidden from this mode's lists never appear among the admined channels, for every scope.
+    return withChatsHiddenFromLists(account.postbox, account.network.request(Api.functions.channels.getAdminedPublicChannels(flags: flags))
     |> retryRequestIfNotFrozen
     |> mapToSignal { result -> Signal<[TelegramAdminedPublicChannel], NoError> in
         guard let result else {
@@ -612,7 +613,9 @@ func _internal_adminedPublicChannels(account: Account, scope: AdminedPublicChann
             }
             return peers
         }
-    }
+    }, { channels, hidden in
+        return channels.filter { !hidden.contains($0.peer.id) }
+    })
 }
 
 final class CachedStorySendAsPeers: Codable {

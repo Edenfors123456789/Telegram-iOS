@@ -1719,14 +1719,20 @@ func peerInfoScreenData(
 
                     linkedCommunityData = combineLatest(
                         context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: linkedCommunityId)),
-                        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: linkedCommunityId))
+                        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: linkedCommunityId)),
+                        context.engine.peers.chatIdsHiddenFromLists()
                     )
-                    |> map { peer, cachedData -> PeerInfoLinkedCommunityData? in
+                    |> map { peer, cachedData, hidden -> PeerInfoLinkedCommunityData? in
                         guard let peer else {
                             return nil
                         }
                         if case let .community(community) = peer {
-                            return PeerInfoLinkedCommunityData(peer: community, cachedData: cachedData as? CachedCommunityData)
+                            var communityData = cachedData as? CachedCommunityData
+                            // Dual PIN: the chat count leaves out chats hidden from this mode's lists except the open profile's own chat (in memory only, never written back).
+                            if let data = communityData, !hidden.isEmpty {
+                                communityData = data.withUpdatedLinkedPeers(data.linkedPeers.filter { $0.peerId == userPeerId || !hidden.contains($0.peerId) })
+                            }
+                            return PeerInfoLinkedCommunityData(peer: community, cachedData: communityData)
                         } else {
                             return nil
                         }
@@ -2020,14 +2026,20 @@ func peerInfoScreenData(
 
                     linkedCommunityData = combineLatest(
                         context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: linkedCommunityId)),
-                        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: linkedCommunityId))
+                        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: linkedCommunityId)),
+                        context.engine.peers.chatIdsHiddenFromLists()
                     )
-                    |> map { peer, cachedData -> PeerInfoLinkedCommunityData? in
+                    |> map { peer, cachedData, hidden -> PeerInfoLinkedCommunityData? in
                         guard let peer else {
                             return nil
                         }
                         if case let .community(community) = peer {
-                            return PeerInfoLinkedCommunityData(peer: community, cachedData: cachedData as? CachedCommunityData)
+                            var communityData = cachedData as? CachedCommunityData
+                            // Dual PIN: the chat count leaves out chats hidden from this mode's lists except the open profile's own chat (in memory only, never written back).
+                            if let data = communityData, !hidden.isEmpty {
+                                communityData = data.withUpdatedLinkedPeers(data.linkedPeers.filter { $0.peerId == peerId || !hidden.contains($0.peerId) })
+                            }
+                            return PeerInfoLinkedCommunityData(peer: community, cachedData: communityData)
                         } else {
                             return nil
                         }
@@ -2404,14 +2416,20 @@ func peerInfoScreenData(
 
                     linkedCommunityData = combineLatest(
                         context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: linkedCommunityId)),
-                        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: linkedCommunityId))
+                        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: linkedCommunityId)),
+                        context.engine.peers.chatIdsHiddenFromLists()
                     )
-                    |> map { peer, cachedData -> PeerInfoLinkedCommunityData? in
+                    |> map { peer, cachedData, hidden -> PeerInfoLinkedCommunityData? in
                         guard let peer else {
                             return nil
                         }
                         if case let .community(community) = peer {
-                            return PeerInfoLinkedCommunityData(peer: community, cachedData: cachedData as? CachedCommunityData)
+                            var communityData = cachedData as? CachedCommunityData
+                            // Dual PIN: the chat count leaves out chats hidden from this mode's lists except the open profile's own chat (in memory only, never written back).
+                            if let data = communityData, !hidden.isEmpty {
+                                communityData = data.withUpdatedLinkedPeers(data.linkedPeers.filter { $0.peerId == groupId || !hidden.contains($0.peerId) })
+                            }
+                            return PeerInfoLinkedCommunityData(peer: community, cachedData: communityData)
                         } else {
                             return nil
                         }
