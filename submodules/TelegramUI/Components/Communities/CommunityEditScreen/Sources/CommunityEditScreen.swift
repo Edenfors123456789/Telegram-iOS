@@ -836,11 +836,13 @@ private final class CommunityEditScreenComponent: Component {
                 return
             }
             component.context.account.viewTracker.forceUpdateCachedPeerData(peerId: communityId)
+            // Dual PIN: chats hidden from this mode's lists are dropped from the linked chats at the source (names, counts, add-chat exclusions). Saving here only writes title and rights, never the linked list, so the server list is untouched.
             self.dataDisposable = (combineLatest(
                 component.context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: communityId)),
-                component.context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: communityId))
+                component.context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.CachedData(id: communityId)),
+                component.context.engine.peers.chatIdsHiddenFromLists()
             )
-            |> deliverOnMainQueue).startStrict(next: { [weak self] peer, cachedData in
+            |> deliverOnMainQueue).startStrict(next: { [weak self] peer, cachedData, hidden in
                 guard let self else {
                     return
                 }
@@ -857,7 +859,11 @@ private final class CommunityEditScreenComponent: Component {
                     community = nil
                 }
                 self.community = community
-                self.cachedData = cachedData as? CachedCommunityData
+                if let communityData = cachedData as? CachedCommunityData, !hidden.isEmpty {
+                    self.cachedData = communityData.withUpdatedLinkedPeers(communityData.linkedPeers.filter { !hidden.contains($0.peerId) })
+                } else {
+                    self.cachedData = cachedData as? CachedCommunityData
+                }
                 let linkedPeerIds = self.cachedData?.linkedPeers.map(\.peerId) ?? []
                 self.updateLinkedPeerSignals(component: component, ids: linkedPeerIds)
 

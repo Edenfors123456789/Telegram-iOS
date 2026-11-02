@@ -865,7 +865,8 @@ public class ShareRootControllerImpl {
                    let state = try? JSONDecoder().decode(LockState.self, from: data) {
                     requiresPasscode = isAppLocked(state: state)
                 }
-                if !requiresPasscode {
+                // Dual PIN: the upstream no-passcode shortcut must never bypass the mode PIN branch below.
+                if !requiresPasscode && !modeBootstrap.requiresModeAuthentication {
                     displayShare()
                     return
                 }

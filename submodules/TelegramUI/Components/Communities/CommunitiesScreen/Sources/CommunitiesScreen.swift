@@ -185,9 +185,10 @@ private final class CommunitiesScreenComponent: Component {
                         ),
                         component.context.engine.data.subscribe(
                             EngineDataMap(communityIds.map(TelegramEngine.EngineData.Item.Peer.CachedData.init(id:)))
-                        )
+                        ),
+                        component.context.engine.peers.chatIdsHiddenFromLists()
                     )
-                    |> map { peersById, cachedDataById -> [CommunityListEntry] in
+                    |> map { peersById, cachedDataById, hidden -> [CommunityListEntry] in
                         var result: [CommunityListEntry] = []
                         for id in communityIds {
                             if let maybePeer = peersById[id], let peer = maybePeer {
@@ -197,6 +198,10 @@ private final class CommunitiesScreenComponent: Component {
                                 var cachedCommunityData: CachedCommunityData?
                                 if let maybeCachedData = cachedDataById[id], let cachedData = maybeCachedData {
                                     cachedCommunityData = cachedData as? CachedCommunityData
+                                    // Dual PIN: the chat count leaves out chats hidden from this mode's lists.
+                                    if let data = cachedCommunityData, !hidden.isEmpty {
+                                        cachedCommunityData = data.withUpdatedLinkedPeers(data.linkedPeers.filter { !hidden.contains($0.peerId) })
+                                    }
                                 }
                                 result.append(CommunityListEntry(peer: peer, cachedData: cachedCommunityData))
                             }

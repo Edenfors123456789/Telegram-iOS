@@ -6,7 +6,7 @@ final class FixturePeer: Peer {
     static let register: Void = {
         declareEncodable(FixturePeer.self, f: { FixturePeer(decoder: $0) })
         declareEncodable(FixtureCachedPeerData.self, f: { FixtureCachedPeerData(decoder: $0) })
-        declareEncodable(FixtureReplyAttribute.self, f: { FixtureReplyAttribute(decoder: $0) })
+        declareEncodable(DualPinFixtureReplyAttribute.self, f: { DualPinFixtureReplyAttribute(decoder: $0) })
     }()
 
     let id: PeerId
@@ -100,7 +100,7 @@ final class FixtureCachedPeerData: CachedPeerData {
 }
 
 /// A reply: the message it names is rendered into `associatedMessages`, as a reply quote is.
-final class FixtureReplyAttribute: MessageAttribute {
+final class DualPinFixtureReplyAttribute: MessageAttribute {
     let messageId: MessageId
 
     init(messageId: MessageId) {

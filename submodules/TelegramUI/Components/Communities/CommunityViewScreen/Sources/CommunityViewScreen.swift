@@ -2280,11 +2280,13 @@ private final class CommunityViewScreenComponent: Component {
 
         private func ensureDataSignal(component: CommunityViewScreenComponent) {
             if self.dataDisposable == nil {
-                self.dataDisposable = (component.context.engine.data.subscribe(
+                // Dual PIN: chats hidden from this mode's lists are dropped from the community's linked chats at the source, so rows, previews and counts never see them.
+                self.dataDisposable = (combineLatest(component.context.engine.data.subscribe(
                     TelegramEngine.EngineData.Item.Peer.Peer(id: component.communityId),
                     TelegramEngine.EngineData.Item.Peer.CachedData(id: component.communityId)
-                )
-                |> deliverOnMainQueue).startStrict(next: { [weak self] peer, cachedData in
+                ), component.context.engine.peers.chatIdsHiddenFromLists())
+                |> deliverOnMainQueue).startStrict(next: { [weak self] data, hidden in
+                    let (peer, cachedData) = data
                     guard let self else {
                         return
                     }
@@ -2298,7 +2300,11 @@ private final class CommunityViewScreenComponent: Component {
                     } else {
                         self.community = nil
                     }
-                    self.cachedData = cachedData as? CachedCommunityData
+                    if let communityData = cachedData as? CachedCommunityData, !hidden.isEmpty {
+                        self.cachedData = communityData.withUpdatedLinkedPeers(communityData.linkedPeers.filter { !hidden.contains($0.peerId) })
+                    } else {
+                        self.cachedData = cachedData as? CachedCommunityData
+                    }
 
                     let ids = self.cachedData?.linkedPeers.map(\.peerId) ?? []
                     self.updateLinkedPeerSignals(component: component, ids: ids)

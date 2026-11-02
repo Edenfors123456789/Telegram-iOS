@@ -37,7 +37,7 @@ final class MessageHistoryRestrictionTests: XCTestCase {
     private func message(_ id: Int32, timestamp: Int32, incoming: Bool, randomId: Int64? = nil, replyTo: Int32? = nil, tags: MessageTags = []) -> StoreMessage {
         var attributes: [MessageAttribute] = []
         if let replyTo {
-            attributes.append(FixtureReplyAttribute(messageId: self.id(replyTo)))
+            attributes.append(DualPinFixtureReplyAttribute(messageId: self.id(replyTo)))
         }
         return StoreMessage(id: self.id(id), customStableId: nil, globallyUniqueId: randomId, groupingKey: nil, threadId: nil, timestamp: timestamp, flags: incoming ? [.Incoming] : [], tags: tags, globalTags: [], localTags: [], forwardInfo: nil, authorId: nil, text: "m\(id)", attributes: attributes, media: [])
     }
