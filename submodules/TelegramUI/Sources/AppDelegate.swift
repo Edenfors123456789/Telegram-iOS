@@ -62,11 +62,6 @@ import MTProtoRustEngine
 import AlertComponent
 #endif
 
-#if canImport(AppCenter)
-import AppCenter
-import AppCenterCrashes
-#endif
-
 private let handleVoipNotifications = false
 
 private func isTonTransferUrl(_ url: URL) -> Bool {
@@ -1482,6 +1477,12 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                         self.mainWindow.debugAction = nil
                         self.mainWindow.viewController = context.rootController
                     
+                        #if DEBUG
+                        if firstTime {
+                            self.runCommentsCacheResetLaunchArguments(context: context.context)
+                        }
+                        #endif
+
                         if firstTime {
                             let layer = context.rootController.view.layer
                             layer.allowsGroupOpacity = true
@@ -1699,14 +1700,6 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         
         self.maybeCheckForUpdates()
-
-        #if canImport(AppCenter)
-        if !buildConfig.isAppStoreBuild, let appCenterId = buildConfig.appCenterId, !appCenterId.isEmpty {
-            AppCenter.start(withAppSecret: buildConfig.appCenterId, services: [
-                Crashes.self
-            ])
-        }
-        #endif
         
         if #available(iOS 13.0, *) {
             let cleanupTaskId = "\(baseAppBundleId).cleanup"
@@ -3201,6 +3194,52 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         context.context.sharedContext.presentGlobalController(UndoOverlayController(presentationData: presentationData, content: .info(title: nil, text: presentationData.strings.Wallet_Unavailable, timeout: nil, customUndoText: nil), action: { _ in return false }), nil)
     }
 
+    #if DEBUG
+    /// `-resetCommentsCache designmdk/6860,contest/462` forgets those posts' stored comments before anything
+    /// opens them (`-resetCommentsCacheDropPosts` forgets the posts too); `-resetForumCache twochannel` forgets
+    /// those forums' stored messages; `-debugOpenUrl <url>` then opens a link through the universal-link path.
+    /// Used to measure cold comment and topic loads.
+    private func runCommentsCacheResetLaunchArguments(context: AccountContext) {
+        let arguments = ProcessInfo.processInfo.arguments
+        func value(after flag: String) -> String? {
+            guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else {
+                return nil
+            }
+            return arguments[index + 1]
+        }
+        var reset: Signal<Never, NoError> = .complete()
+        if let postsValue = value(after: "-resetCommentsCache") {
+            let posts = postsValue.split(separator: ",").compactMap { item -> (username: String, postId: Int32)? in
+                let parts = item.split(separator: "/")
+                guard parts.count == 2, let postId = Int32(parts[1]) else {
+                    return nil
+                }
+                return (username: String(parts[0]), postId: postId)
+            }
+            reset = context.engine.messages.debugResetDiscussionCaches(posts: posts, dropPosts: arguments.contains("-resetCommentsCacheDropPosts"))
+            |> afterCompleted {
+                Logger.shared.log("ReplyThreadOpen", "reset done")
+            }
+        }
+        if let forumsValue = value(after: "-resetForumCache") {
+            reset = reset |> then(context.engine.messages.debugResetForumHistory(usernames: forumsValue.split(separator: ",").map(String.init))
+            |> afterCompleted {
+                Logger.shared.log("ReplyThreadOpen", "forum reset done")
+            })
+        }
+        let url = value(after: "-debugOpenUrl").flatMap(URL.init(string:))
+        if url == nil && value(after: "-resetCommentsCache") == nil && value(after: "-resetForumCache") == nil {
+            return
+        }
+        let _ = (reset
+        |> deliverOnMainQueue).startStandalone(completed: { [weak self] in
+            if let url {
+                self?.openUrl(url: url)
+            }
+        })
+    }
+    #endif
+    
     private func openUrl(url: URL) {
         let _ = (self.sharedContextPromise.get()
         |> take(1)
@@ -3612,6 +3651,18 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
     
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.notification.request.content.userInfo[CallUnlockVideoNotificationState.userInfoKey] != nil {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                let _ = (self.sharedContextPromise.get()
+                |> take(1)
+                |> deliverOnMainQueue).start(next: { sharedApplicationContext in
+                    sharedApplicationContext.sharedContext.navigateToCurrentCall()
+                })
+            }
+            completionHandler()
+            return
+        }
+        
         let _ = (accountIdFromNotification(response.notification, sharedContext: self.sharedContextPromise.get())
         |> deliverOnMainQueue).start(next: { accountId in
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
@@ -3733,6 +3784,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     
     @available(iOS 10.0, *)
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        if notification.request.content.userInfo[CallUnlockVideoNotificationState.userInfoKey] != nil {
+            completionHandler([])
+            return
+        }
+        
         let _ = (accountIdFromNotification(notification, sharedContext: self.sharedContextPromise.get())
         |> deliverOnMainQueue).start(next: { accountId in
             if let context = self.contextValue {

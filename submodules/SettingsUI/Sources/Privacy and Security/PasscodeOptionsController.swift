@@ -661,7 +661,7 @@ public func passcodeOptionsController(context: AccountContext, focusOnItemTag: P
             }, action: { _, f in
                 f(.default)
                 setAction(t)
-            })))
+            }, accessibilityIsSelected: currentAutolockTimeout == t)))
         }
         
         guard let sourceNode = findAutolockReferenceNode?() else {
