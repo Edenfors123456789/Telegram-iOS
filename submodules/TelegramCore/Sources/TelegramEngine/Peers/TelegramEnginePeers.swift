@@ -1134,6 +1134,10 @@ public extension TelegramEngine {
         
         public func getNextUnreadForumTopic(peerId: PeerId, topicId: Int32) -> Signal<(id: Int64, data: MessageHistoryThreadData)?, NoError> {
             return self.account.postbox.transaction { transaction -> (id: Int64, data: MessageHistoryThreadData)? in
+                // A restricted chat (explicitly opened hidden chat) must not name topics from its raw index.
+                if transaction.historyRestriction(peerId: peerId) != nil {
+                    return nil
+                }
                 var unreadThreads: [(id: Int64, data: MessageHistoryThreadData, index: MessageIndex)] = []
                 for item in transaction.getMessageHistoryThreadIndex(peerId: peerId, limit: 100) {
                     if item.threadId == Int64(topicId) {

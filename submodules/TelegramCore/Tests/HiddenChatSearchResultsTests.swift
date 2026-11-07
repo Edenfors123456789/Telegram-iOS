@@ -63,6 +63,19 @@ final class HiddenChatSearchResultsTests: XCTestCase {
         XCTAssertEqual(Set(toNobody.enabledPeers.keys), [])
     }
 
+    func testASavedMessagesResultInAHiddenSubChatLeavesTheResultAndItsCount() {
+        // Saved Messages results sit in the account's own chat; the thread id names the sub-chat.
+        let hidden: Set<PeerId> = [self.hiddenUser]
+        let inHiddenSubChat = SparseFixtures.message(self.visibleUser, 1, timestamp: 10, threadId: self.hiddenUser.toInt64())
+        let inVisibleSubChat = SparseFixtures.message(self.visibleUser, 2, timestamp: 20, threadId: self.visibleUser.toInt64())
+        let result = SearchMessagesResult(messages: [inVisibleSubChat, inHiddenSubChat], readStates: [:], threadInfo: [:], totalCount: 40, completed: false)
+        let filtered = excludingChatsHiddenFromLists(result, hidden)
+        XCTAssertEqual(filtered.messages.map(\.id), [inVisibleSubChat.id])
+        XCTAssertEqual(filtered.totalCount, 39)
+        let onlyVisible = SearchMessagesResult(messages: [inVisibleSubChat], readStates: [:], threadInfo: [:], totalCount: 1, completed: true)
+        XCTAssertEqual(excludingChatsHiddenFromLists(onlyVisible, hidden).messages.map(\.id), [inVisibleSubChat.id])
+    }
+
     func testANothingHiddenResultIsUnchanged() {
         let message = SparseFixtures.message(self.visibleUser, 2, timestamp: 20)
         let result = SearchMessagesResult(messages: [message], readStates: [:], threadInfo: [:], totalCount: 1, completed: true)

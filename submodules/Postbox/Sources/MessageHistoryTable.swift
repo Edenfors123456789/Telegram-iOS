@@ -358,7 +358,7 @@ final class MessageHistoryTable: Table {
                     // A server copy of a stored message carries no random id (the server never
                     // sends one); keep the stored one. Dual PIN's restricted transcript admits B's
                     // sends by it, and an album send is re-stored this way from its updateNewMessage.
-                    let storeMessage = self.keepingStoredGloballyUniqueId(incomingStoreMessage)
+                    let storeMessage = self.keepingStoredGloballyUniqueId(incomingStoreMessage, storedAt: incomingStoreMessage.index)
                     commitAccumulatedAddedIndices()
                     processIndexOperationsCommitAccumulatedRemoveIndices(peerId: peerId, accumulatedRemoveIndices: &accumulatedRemoveIndices, updatedCombinedState: &updatedCombinedState, invalidateReadState: &invalidateReadState, unsentMessageOperations: &unsentMessageOperations, outputOperations: &outputOperations, globalTagsOperations: &globalTagsOperations, pendingActionsOperations: &pendingActionsOperations, updatedMessageActionsSummaries: &updatedMessageActionsSummaries, updatedMessageTagSummaries: &updatedMessageTagSummaries, invalidateMessageTagSummaries: &invalidateMessageTagSummaries, localTagsOperations: &localTagsOperations, timestampBasedMessageAttributesOperations: &timestampBasedMessageAttributesOperations)
                     
@@ -373,7 +373,9 @@ final class MessageHistoryTable: Table {
                 case let .Remove(index):
                     commitAccumulatedAddedIndices()
                     accumulatedRemoveIndices.append(index)
-                case let .Update(index, storeMessage):
+                case let .Update(index, incomingStoreMessage):
+                    // The row being updated is at `index`; the replacement's own index may differ.
+                    let storeMessage = self.keepingStoredGloballyUniqueId(incomingStoreMessage, storedAt: index)
                     commitAccumulatedAddedIndices()
                     processIndexOperationsCommitAccumulatedRemoveIndices(peerId: peerId, accumulatedRemoveIndices: &accumulatedRemoveIndices, updatedCombinedState: &updatedCombinedState, invalidateReadState: &invalidateReadState, unsentMessageOperations: &unsentMessageOperations, outputOperations: &outputOperations, globalTagsOperations: &globalTagsOperations, pendingActionsOperations: &pendingActionsOperations, updatedMessageActionsSummaries: &updatedMessageActionsSummaries, updatedMessageTagSummaries: &updatedMessageTagSummaries, invalidateMessageTagSummaries: &invalidateMessageTagSummaries, localTagsOperations: &localTagsOperations, timestampBasedMessageAttributesOperations: &timestampBasedMessageAttributesOperations)
                     
@@ -1565,8 +1567,8 @@ final class MessageHistoryTable: Table {
         })
     }
     
-    private func keepingStoredGloballyUniqueId(_ message: InternalStoreMessage) -> InternalStoreMessage {
-        guard message.globallyUniqueId == nil, let stored = self.getMessage(message.index)?.globallyUniqueId else {
+    private func keepingStoredGloballyUniqueId(_ message: InternalStoreMessage, storedAt index: MessageIndex) -> InternalStoreMessage {
+        guard message.globallyUniqueId == nil, let stored = self.getMessage(index)?.globallyUniqueId else {
             return message
         }
         return InternalStoreMessage(id: message.id, customStableId: message.customStableId, timestamp: message.timestamp, globallyUniqueId: stored, groupingKey: message.groupingKey, threadId: message.threadId, flags: message.flags, tags: message.tags, globalTags: message.globalTags, localTags: message.localTags, customTags: message.customTags, forwardInfo: message.forwardInfo, authorId: message.authorId, text: message.text, attributes: message.attributes, media: message.media)

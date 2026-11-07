@@ -17,7 +17,7 @@ enum SparseFixtures {
         return MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: id)
     }
 
-    static func message(_ peerId: PeerId, _ id: Int32, timestamp: Int32) -> Message {
+    static func message(_ peerId: PeerId, _ id: Int32, timestamp: Int32, threadId: Int64? = nil) -> Message {
         let stableId = UInt32(truncatingIfNeeded: peerId.id._internalGetInt64Value()) &* 1_000_000 &+ UInt32(bitPattern: id)
         return Message(
             stableId: stableId,
@@ -26,7 +26,7 @@ enum SparseFixtures {
             globallyUniqueId: nil,
             groupingKey: nil,
             groupInfo: nil,
-            threadId: nil,
+            threadId: threadId,
             timestamp: timestamp,
             flags: [],
             tags: [],

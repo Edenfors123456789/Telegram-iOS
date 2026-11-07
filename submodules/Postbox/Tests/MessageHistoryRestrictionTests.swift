@@ -34,12 +34,12 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         return MessageId(peerId: self.chat, namespace: self.namespace, id: value)
     }
 
-    private func message(_ id: Int32, timestamp: Int32, incoming: Bool, randomId: Int64? = nil, replyTo: Int32? = nil, tags: MessageTags = []) -> StoreMessage {
+    private func message(_ id: Int32, timestamp: Int32, incoming: Bool, randomId: Int64? = nil, replyTo: Int32? = nil, tags: MessageTags = [], threadId: Int64? = nil) -> StoreMessage {
         var attributes: [MessageAttribute] = []
         if let replyTo {
             attributes.append(DualPinFixtureReplyAttribute(messageId: self.id(replyTo)))
         }
-        return StoreMessage(id: self.id(id), customStableId: nil, globallyUniqueId: randomId, groupingKey: nil, threadId: nil, timestamp: timestamp, flags: incoming ? [.Incoming] : [], tags: tags, globalTags: [], localTags: [], forwardInfo: nil, authorId: nil, text: "m\(id)", attributes: attributes, media: [])
+        return StoreMessage(id: self.id(id), customStableId: nil, globallyUniqueId: randomId, groupingKey: nil, threadId: threadId, timestamp: timestamp, flags: incoming ? [.Incoming] : [], tags: tags, globalTags: [], localTags: [], forwardInfo: nil, authorId: nil, text: "m\(id)", attributes: attributes, media: [])
     }
 
     private func seed(holeBelow: Bool = false) {
@@ -197,6 +197,30 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         XCTAssertEqual(self.ids(recorder.values.last), [12, 13])
         let stored = self.fixture.transaction { $0.getMessage(self.id(13))?.globallyUniqueId }
         XCTAssertEqual(stored ?? nil, self.bSendRandomId)
+    }
+
+    func testAnUpdateOfABSendWithoutARandomIdKeepsItAndStaysAdmitted() {
+        // The same, through `.Update`: the stored row is at the updated index, whatever id the
+        // replacement carries. A random id of its own is kept.
+        self.seed()
+        self.restrict()
+        let recorder = self.observe()
+        XCTAssertEqual(self.ids(recorder.waitForValues(count: 1).last), [12, 13])
+        self.fixture.transaction { transaction in
+            transaction.updateMessage(self.id(13)) { _ in .update(self.message(13, timestamp: 1400, incoming: false)) }
+        }
+        self.fixture.transaction { _ in }
+        XCTAssertEqual(self.ids(recorder.values.last), [12, 13])
+        XCTAssertEqual(self.fixture.transaction { $0.getMessage(self.id(13))?.globallyUniqueId } ?? nil, self.bSendRandomId)
+        self.fixture.transaction { transaction in
+            transaction.updateMessage(self.id(13)) { _ in .update(self.message(20, timestamp: 1450, incoming: false)) }
+        }
+        self.eventually(recorder) { self.ids($0) == [12, 20] }
+        XCTAssertEqual(self.fixture.transaction { $0.getMessage(self.id(20))?.globallyUniqueId } ?? nil, self.bSendRandomId, "kept under the replacement's id")
+        self.fixture.transaction { transaction in
+            transaction.updateMessage(self.id(20)) { _ in .update(self.message(20, timestamp: 1450, incoming: false, randomId: 66)) }
+        }
+        XCTAssertEqual(self.fixture.transaction { $0.getMessage(self.id(20))?.globallyUniqueId } ?? nil, 66, "its own random id wins")
     }
 
     func testATaggedViewIsRestrictedToo() {
@@ -398,6 +422,76 @@ final class MessageHistoryRestrictionTests: XCTestCase {
         self.restrict(restriction)
         let recorder = self.observe()
         XCTAssertEqual(self.ids(recorder.waitForValues(count: 1).last), [12, 13, 17])
+    }
+
+    // MARK: - Topic and sub-chat lists
+
+    // Thread 101's top message is the old incoming 10, thread 102's the new incoming 12.
+    private func seedThreads() {
+        self.fixture.transaction { transaction in
+            transaction.updatePeersInternal([FixturePeer(id: self.chat, title: "Hidden")], update: { _, updated in updated })
+            let _ = transaction.addMessages([
+                self.message(10, timestamp: 1000, incoming: true, threadId: 101),
+                self.message(12, timestamp: 1300, incoming: true, threadId: 102),
+            ], location: .Random)
+            for threadId: Int64 in [101, 102] {
+                transaction.setMessageHistoryThreadInfo(peerId: self.chat, threadId: threadId, info: StoredMessageHistoryThreadInfo(data: CodableEntry(data: Data()), summary: StoredMessageHistoryThreadInfo.Summary(totalUnreadCount: 0, isMarkedUnread: false, mutedUntil: nil, maxOutgoingReadId: 0)))
+            }
+            transaction.setPeerThreadCombinedState(peerId: self.chat, state: StoredPeerThreadCombinedState(data: CodableEntry(data: Data()), validIndexBoundary: StoredPeerThreadCombinedState.Index(timestamp: 0, threadId: 0, messageId: 1)))
+        }
+    }
+
+    private func observeTopics() -> PostboxFixture.Recorder<MessageHistoryThreadIndexView> {
+        return self.fixture.observe(.messageHistoryThreadIndex(id: self.chat, summaryComponents: ChatListEntrySummaryComponents()), as: MessageHistoryThreadIndexView.self)
+    }
+
+    private func observeSubChats() -> PostboxFixture.Recorder<MessageHistorySavedMessagesIndexView> {
+        return self.fixture.observe(.savedMessagesIndex(peerId: self.chat), as: MessageHistorySavedMessagesIndexView.self)
+    }
+
+    private func topicIds(_ view: MessageHistoryThreadIndexView?) -> [Int64] {
+        return (view?.items ?? []).map(\.id).sorted()
+    }
+
+    private func subChatIds(_ view: MessageHistorySavedMessagesIndexView?) -> [Int64] {
+        return (view?.items ?? []).map(\.id).sorted()
+    }
+
+    func testWithoutARestrictionBothListsKeepEveryRow() {
+        self.seedThreads()
+        XCTAssertEqual(self.topicIds(self.observeTopics().waitForValues(count: 1).last), [101, 102])
+        XCTAssertEqual(self.subChatIds(self.observeSubChats().waitForValues(count: 1).last), [101, 102])
+    }
+
+    func testARestrictedTopicListLeavesOutATopicWhoseTopMessageIsExcluded() {
+        self.seedThreads()
+        self.restrict()
+        let view = self.observeTopics().waitForValues(count: 1).last
+        XCTAssertEqual(self.topicIds(view), [102])
+        XCTAssertEqual(view?.items.first?.topMessage?.id, self.id(12))
+    }
+
+    func testARestrictedSubChatListLeavesOutASubChatWhoseTopMessageIsExcluded() {
+        self.seedThreads()
+        self.restrict()
+        let view = self.observeSubChats().waitForValues(count: 1).last
+        XCTAssertEqual(self.subChatIds(view), [102])
+        XCTAssertEqual(view?.items.first?.topMessage?.id, self.id(12))
+    }
+
+    func testTheLiveListsFollowTheRestriction() {
+        self.seedThreads()
+        let topics = self.observeTopics()
+        let subChats = self.observeSubChats()
+        XCTAssertEqual(self.topicIds(topics.waitForValues(count: 1).last), [101, 102])
+        XCTAssertEqual(self.subChatIds(subChats.waitForValues(count: 1).last), [101, 102])
+        let restriction = self.restrict()
+        self.eventually(topics) { self.topicIds($0) == [102] }
+        self.eventually(subChats) { self.subChatIds($0) == [102] }
+        restriction.dispose()
+        self.fixture.transaction { _ in }
+        self.eventually(topics) { self.topicIds($0) == [101, 102] }
+        self.eventually(subChats) { self.subChatIds($0) == [101, 102] }
     }
 
     func testReleasingTheRestrictionShowsTheFullHistory() {

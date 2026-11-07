@@ -67,8 +67,14 @@ final class MutableMessageHistorySavedMessagesIndexView: MutablePostboxView {
         if !self.isLoading {
             let pinnedThreadIds = postbox.messageHistoryThreadPinnedTable.get(peerId: self.peerId)
         
+            let isRestricted = postbox.historyRestriction(peerId: self.peerId) != nil
             for item in postbox.messageHistoryThreadIndexTable.getAll(peerId: self.peerId) {
                 if self.currentHiddenPeerIds.contains(PeerId(item.threadId)) {
+                    continue
+                }
+                let topMessage = postbox.visibleUnderHistoryRestrictions(postbox.getMessage(item.index.id))
+                // Under a restriction a sub-chat whose top message is excluded has no row at all.
+                if isRestricted && topMessage == nil {
                     continue
                 }
                 var pinnedIndex: Int?
@@ -83,7 +89,7 @@ final class MutableMessageHistorySavedMessagesIndexView: MutablePostboxView {
                     peer: postbox.peerTable.get(PeerId(item.threadId)),
                     pinnedIndex: pinnedIndex,
                     index: item.index,
-                    topMessage: postbox.getMessage(item.index.id),
+                    topMessage: topMessage,
                     unreadCount: Int(item.info.summary.totalUnreadCount),
                     markedUnread: item.info.summary.isMarkedUnread,
                     embeddedInterfaceState: embeddedInterfaceState
@@ -114,7 +120,7 @@ final class MutableMessageHistorySavedMessagesIndexView: MutablePostboxView {
             return true
         }
         
-        if transaction.updatedMessageThreadPeerIds.contains(self.peerId) || transaction.updatedPinnedThreads.contains(self.peerId) || transaction.updatedPeerThreadCombinedStates.contains(self.peerId) || transaction.currentUpdatedMessageTagSummaries.contains(where: { $0.key.peerId == self.peerId }) || transaction.currentUpdatedMessageActionsSummaries.contains(where: { $0.key.peerId == self.peerId }) || transaction.currentUpdatedPeerChatListEmbeddedStates.contains(self.peerId) || transaction.currentUpdatedPeerNotificationSettings[self.peerId] != nil || transaction.updatedPinnedThreads.contains(self.peerId) {
+        if transaction.updatedMessageThreadPeerIds.contains(self.peerId) || transaction.updatedPinnedThreads.contains(self.peerId) || transaction.updatedPeerThreadCombinedStates.contains(self.peerId) || transaction.currentUpdatedMessageTagSummaries.contains(where: { $0.key.peerId == self.peerId }) || transaction.currentUpdatedMessageActionsSummaries.contains(where: { $0.key.peerId == self.peerId }) || transaction.currentUpdatedPeerChatListEmbeddedStates.contains(self.peerId) || transaction.currentUpdatedPeerNotificationSettings[self.peerId] != nil || transaction.updatedPinnedThreads.contains(self.peerId) || transaction.updatedHistoryRestrictionPeerIds.contains(self.peerId) {
             self.reload(postbox: postbox)
             updated = true
         }

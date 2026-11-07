@@ -18,7 +18,9 @@ func withChatsHiddenFromLists<T>(_ postbox: Postbox, _ signal: Signal<T, NoError
 /// Messages of hidden chats leave the result and its count; their read states and thread
 /// data go with them.
 func excludingChatsHiddenFromLists(_ result: SearchMessagesResult, _ hidden: Set<PeerId>) -> SearchMessagesResult {
-    let messages = result.messages.filter { !hidden.contains($0.id.peerId) }
+    // A Saved Messages result sits in the account's own chat; its thread id names the source chat.
+    // A forum topic id decodes to a namespace-0 peer id, which is never in the hidden set.
+    let messages = result.messages.filter { !hidden.contains($0.id.peerId) && $0.threadId.map({ hidden.contains(PeerId($0)) }) != true }
     if messages.count == result.messages.count && !result.readStates.keys.contains(where: hidden.contains) {
         return result
     }
