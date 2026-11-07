@@ -321,10 +321,14 @@ final class ChatListTable: Table {
     
     func getUnreadChatListPeerIds(postbox: PostboxImpl, currentTransaction: Transaction, groupId: PeerGroupId, filterPredicate: ChatListFilterPredicate?, additionalFilter: ((Peer) -> Bool)?, stopOnFirstMatch: Bool) -> [PeerId] {
         let globalNotificationSettings = postbox.getGlobalNotificationSettings(transaction: currentTransaction)
+        let hiddenChatIds = postbox.hiddenChatIds
         
         var result: [PeerId] = []
         self.valueBox.range(self.table, start: self.upperBound(groupId: groupId), end: self.lowerBound(groupId: groupId), keys: { key in
             let (_, _, messageIndex, _) = extractKey(key)
+            if hiddenChatIds.contains(messageIndex.id.peerId) {
+                return true
+            }
             if let state = postbox.readStateTable.getCombinedState(messageIndex.id.peerId), state.isUnread, let peer = postbox.peerTable.get(messageIndex.id.peerId) {
                 var passFilter: Bool
                 if let filterPredicate = filterPredicate {
@@ -906,6 +910,7 @@ final class ChatListTable: Table {
         let upper: ValueBoxKey
         
         let globalNotificationSettings = postbox.getGlobalNotificationSettings(transaction: currentTransaction)
+        let hiddenChatIds = postbox.hiddenChatIds
         
         switch position {
             case let .earlier(index):
@@ -931,6 +936,9 @@ final class ChatListTable: Table {
             let index = ChatListIndex(pinningIndex: pinningIndex, messageIndex: messageIndex)
             if type == ChatListEntryType.message.rawValue {
                 let peerId = index.messageIndex.id.peerId
+                if hiddenChatIds.contains(peerId) {
+                    return true
+                }
                 if let readState = postbox.readStateTable.getCombinedState(peerId), readState.isUnread {
                     if filtered {
                         if let peer = postbox.peerTable.get(peerId) {

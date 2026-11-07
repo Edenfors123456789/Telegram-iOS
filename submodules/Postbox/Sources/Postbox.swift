@@ -1421,7 +1421,11 @@ public final class Transaction {
     public func searchSubPeers(peerId: PeerId, query: String, indexNameMapping: [PeerId: [PeerIndexNameRepresentation]]) -> [Peer] {
         let allThreads = self.postbox!.messageHistoryThreadIndexTable.getAll(peerId: peerId)
         var matchingPeers: [(Peer, MessageIndex)] = []
+        let hiddenChatIds = self.postbox!.hiddenChatIds
         for (threadId, index, _) in allThreads {
+            if hiddenChatIds.contains(PeerId(threadId)) {
+                continue
+            }
             if let peer = self.postbox!.peerTable.get(PeerId(threadId)) {
                 if let mappings = indexNameMapping[peer.id] {
                     inner: for mapping in mappings {
