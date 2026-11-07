@@ -2210,7 +2210,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             self.startProvisionalCleanupRecovery()
         }
         self.pendingModeRoot = nil
-        self.switchingData = (nil, nil, nil)
+        self.switchingData = (nil, nil, nil, nil)
         self.modeChatListExclusion.set(nil)
         self.modeRecentSearchesRedirection.set(nil)
         self.releaseModeTranscripts()
@@ -2423,7 +2423,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 // Another mode's account, or one already here: remove only the new session.
                 self.startProvisionalCleanupRecovery()
             }
-            self.switchingData = (nil, nil, nil)
+            self.switchingData = (nil, nil, nil, nil)
             try self.prepareModeAccountRoot(preparation)
         } catch {
             Logger.shared.log("AccessMode", "mode enrollment: completion failed \(error)")
@@ -2443,7 +2443,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                     return identity
                 }
                 let preparation = try driver.selectAccount(identity)
-                self.switchingData = (nil, nil, nil)
+                self.switchingData = (nil, nil, nil, nil)
                 try self.prepareModeAccountRoot(preparation)
             } catch {
                 // Denied IDs preserve the current permitted root. Failed mutations
