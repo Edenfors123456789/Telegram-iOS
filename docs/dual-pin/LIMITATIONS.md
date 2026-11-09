@@ -36,6 +36,17 @@ while integrating, or something only a physical iPhone can confirm.
   profile shows Media/Links/Groups in A and only Media/Links in B, B's media tab empty).
 - Story feed: compile-verified only (stories appear in the feed only for contacts; the test peer is
   not one).
+- Raw unread reads (since 2026-11-07): the next-unread-channel hint, "Mark all as read" and the
+  next-unread jump skip hidden chats in Postbox (`ChatListTable`, `HiddenChatRawReadsTests`).
+  Postbox-tested only; not exercised in the UI ("Mark all as read" would read the real account's chats).
+- Topic and sub-chat lists of an explicitly opened restricted chat (forum, monoforum, bot threads,
+  13.2's chat side list) leave out every row whose top message the restriction excludes. A row whose
+  top message is admitted still shows the topic's raw unread count (a number, not content).
+- Saved Messages: sub-chats and message search leave out chats hidden from lists. Since 13.2 Saved
+  Messages opens as one flat chat on phones, so messages saved from a hidden chat show there with
+  their forward header (literal content, as above).
+- Message widgets (13.2): on by default (server kill switch only). Widget storage is per message and
+  not split by mode; a widget in B gets the account's wallet like B's own wallet screen does.
 
 ## Physical iPhone checklist
 
